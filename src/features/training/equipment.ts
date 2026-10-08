@@ -171,3 +171,15 @@ export function normalizeEquipmentList(items: readonly unknown[]): Equipment[] {
   set.delete('bodyweight');
   return EQUIPMENT.filter((item) => set.has(item));
 }
+
+/**
+ * The gear in a list, in plain words and in the list's order ("Dumbbells, Bench"); '' when it
+ * needs none (`bodyweight` is implicit and never named). An item this app version does not know is
+ * shown as given rather than hidden, so a newer server's gear still reads as something.
+ */
+export function describeEquipment(items: readonly string[]): string {
+  return items
+    .filter((item) => item !== 'bodyweight')
+    .map((item) => (isEquipment(item) ? EQUIPMENT_LABELS[item] : item))
+    .join(', ');
+}

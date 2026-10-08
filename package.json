@@ -15,7 +15,9 @@
     "test": "jest",
     "validate:sync": "node scripts/validate-sync-config.mjs",
     "db:test": "bash scripts/db-test.sh",
-    "check": "npm run typecheck && npm run lint && npm test && npm run validate:sync"
+    "check:library": "node scripts/library/starter-library-sql.mjs --check",
+    "test:scripts": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"scripts/**/*.test.mjs\"",
+    "check": "npm run typecheck && npm run lint && npm test && npm run test:scripts && npm run validate:sync && npm run check:library"
   },
   "dependencies": {
     "@azure/core-asynciterator-polyfill": "1.0.2",

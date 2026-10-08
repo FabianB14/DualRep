@@ -15,11 +15,18 @@ friends. Android first, then iOS, then Meta glasses.
 
 ## Status
 
-**Phase 0 (Foundation) is done: its gate passed on 2026-10-08** on a real Android
-phone. A row created offline appeared in Postgres after reconnecting. The app, the
-database (23 tables with row level security, 523 pgTAP tests), PowerSync sync,
-email-code sign-in, design tokens and the Sync Check screen are in this repo; the
-hosted setup is in [docs/SETUP.md](docs/SETUP.md). Next is Phase 1, the core loop:
+**Phase 1 (Core loop) is built; its gate is next.** The study → move → study loop
+runs on the phone, offline: a focus timer with an end-of-block alert, a workout that
+appears by itself when the timer ends, a one-tap set logger with a rules-based
+spotter, and a countdown back into the next focus block. With it: 90 starter
+exercises written by Interverse, gym and home setups, focus presets, the exercise
+library, history, settings and a Timer check. The gate (a study → lift → study cycle
+in airplane mode, with a home setup and a gym setup) is run on the phone:
+[docs/SETUP.md §16](docs/SETUP.md#16-phase-1-the-core-loop-on-your-phone).
+
+**Phase 0 (Foundation) passed its gate on 2026-10-08** on a real Android phone: a
+row created offline appeared in Postgres after reconnecting. The database has 23
+tables with row level security (542 pgTAP tests). Progress and next steps:
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Stack
@@ -47,8 +54,8 @@ Full step-by-step setup for Windows, including the hosted services:
 Prerequisites: Node.js 22.13+, Git, and for local Android builds JDK 17 plus the
 Android SDK (Platform 36, Build-Tools 36.0.0, NDK 27.1.12297006, CMake 3.30.5).
 
-The Phase 0 code is on the branch `claude/bold-fermi-oglgch` until its pull
-request is merged into `main` ([docs/SETUP.md §4](docs/SETUP.md#first-put-the-phase-0-code-on-main)).
+Phase 0 is on `main`. The Phase 1 code is on the branch `claude/bold-fermi-oglgch`
+until its pull request is merged ([docs/SETUP.md §16](docs/SETUP.md#step-8-put-the-phase-1-code-on-main)).
 Until then, add `-b claude/bold-fermi-oglgch` to the `git clone` line below.
 
 ```powershell
@@ -56,7 +63,7 @@ git clone https://github.com/FabianB14/DualRep.git dualrep
 cd dualrep
 npm ci
 Copy-Item .env.example .env   # then fill in the three EXPO_PUBLIC_ values
-npm run check                 # typecheck, lint, unit tests, sync-config check
+npm run check                 # typecheck, lint, all tests, sync-config and library checks
 npm run android               # build + install the development build on a USB-connected phone
 npm start                     # afterwards: start Metro for the installed development build
 ```
@@ -78,12 +85,15 @@ Without them the app opens on a "Setup needed" screen instead of crashing.
 | `npm start` | Starts Metro for an installed development build (`expo start --dev-client`) |
 | `npm run android` | Builds the native app and installs it on a connected phone or emulator (`expo run:android`) |
 | `npm run prebuild:android` | Regenerates the `android/` folder from `app.config.ts` (it is generated, never edited) |
-| `npm run check` | Everything below except `db:test`, in one go |
+| `npm run check` | `typecheck`, `lint`, `test`, `test:scripts`, `validate:sync` and `check:library` below, in one go |
 | `npm run typecheck` | TypeScript, strict |
 | `npm run lint` | ESLint (`expo lint`) |
-| `npm test` | Unit tests (jest-expo) |
+| `npm test` | App tests (jest-expo), including a full study → move → study cycle played offline |
+| `npm run test:scripts` | Tests for the Node scripts in `scripts/` (the exercise import), with Node's built-in test runner |
 | `npm run validate:sync` | Compiles `powersync/sync-config.yaml` with PowerSync's compiler against the schema snapshot and checks it against the app's table registry |
-| `npm run db:test` | Applies the migrations to a throwaway Postgres 16 and runs the pgTAP tests; rewrites `supabase/schema.snapshot.json` (Linux or WSL, with pgvector and pgTAP; CI runs it) |
+| `npm run check:library` | Fails if the starter-library migration is out of date with the app's list (`src/features/training/starterLibraryData.ts`) |
+| `node scripts/library/starter-library-sql.mjs` | Rewrites the starter-library migration from that list (after changing it; see [DECISIONS.md](docs/DECISIONS.md) D21) |
+| `npm run db:test` | Applies the migrations to a throwaway Postgres 16 and runs the pgTAP tests (14 files); rewrites `supabase/schema.snapshot.json` (Linux or WSL, with pgvector and pgTAP; CI runs it) |
 
 ## Repo layout
 
@@ -92,13 +102,13 @@ Without them the app opens on a "Setup needed" screen instead of crashing.
 | `src/app/` | Screens and navigation (expo-router) |
 | `src/auth/` | Sign-in with an emailed 6-digit code; session state |
 | `src/db/` | The on-device database: table registry, PowerSync schema, Supabase connector, Sync Check helpers |
-| `src/features/` | Feature code: sync status, the Sync Check, "Setup needed" |
+| `src/features/` | Feature code: the study → move → study cycle (`cycle/`), the timer and its alerts (`timer/`), training (starter library, circuits, spotter, units, swaps), setups, presets, the user's own exercises, history, settings, sync status, the Sync Check, "Setup needed" |
 | `src/components/`, `src/theme/` | Shared UI and design tokens |
-| `src/lib/` | Configuration, the Supabase client, secure session storage, ids |
-| `supabase/` | Migrations, pgTAP tests, email templates, local CLI config, schema snapshot |
+| `src/lib/` | Configuration, the Supabase client, secure session storage, ids, timestamps |
+| `supabase/` | Migrations (the schema, then the starter library), pgTAP tests, email templates, local CLI config, schema snapshot |
 | `powersync/` | Sync Streams config and PowerSync instance config |
-| `scripts/` | The database test harness, the sync-config validator, and the 16 KB page-size check for APKs (`check-16kb.sh`) |
-| `.github/workflows/` | CI (`ci.yml`) and the installable APK build (`android.yml`) |
+| `scripts/` | The database test harness, the sync-config validator, the 16 KB page-size check for APKs (`check-16kb.sh`), the starter-library generator (`library/`) and the exercise dataset import (`exercise-import/`) |
+| `.github/workflows/` | CI (`ci.yml`), the installable APK build (`android.yml`) and the exercise import SQL (`exercise-import.yml`, run by hand) |
 | `docs/` | Plan, roadmap, setup and guides |
 
 ## Docs
@@ -107,7 +117,7 @@ Without them the app opens on a "Setup needed" screen instead of crashing.
   pricing, and the 8-phase roadmap with gates.
 - [Roadmap](docs/ROADMAP.md): every phase as a checklist, and where we are now.
 - [Setup](docs/SETUP.md): from a fresh Windows PC and an Android phone to the
-  Phase 0 gate.
+  Phase 0 gate, then the Phase 1 gate (§16).
 - [Android guide](docs/ANDROID.md): platform rules and a checklist per phase.
 - [Data model](docs/DATA_MODEL.md): every table, who writes it, how it syncs,
   and what changed from the plan.

@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 
 import { useAuth } from '@/auth/AuthProvider';
 import { connectSync, disconnectAndClearSync } from '@/db/database';
+import { cancelAllAlerts } from '@/features/timer/notifications';
 
 import { getLocalDataOwner, setLocalDataOwner } from './localDataOwner';
 
@@ -17,7 +18,8 @@ import { getLocalDataOwner, setLocalDataOwner } from './localDataOwner';
  *   nothing syncs down, and any upload attempt (the SDK tries again on the next local write or when
  *   the stream reconnects) is deferred by the connector (NoSessionError) without sending anything,
  *   until the same user signs in again and the queue goes up. If a different account signs in, the
- *   local database is cleared before connecting.
+ *   local database is cleared before connecting, and the previous account's alerts (a block-end alert
+ *   scheduled before its session was lost) are withdrawn so they never ring for this one.
  * - Missing configuration: this component is not mounted (the root layout shows "Setup needed").
  *
  * Errors are logged, never thrown: a sync problem must not take the app down, and the Sync status card
@@ -56,7 +58,8 @@ async function startSync(
     owner = undefined;
   }
   if (owner !== undefined && owner !== userId) {
-    // Rows from another account (or of unknown origin) must never be shown to this one.
+    // Rows from another account (or of unknown origin) must never be shown to this one, nor its alerts.
+    await cancelAllAlerts();
     await disconnectAndClearSync();
     await setLocalDataOwner(userId);
   }

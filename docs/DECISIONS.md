@@ -119,6 +119,9 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
 - **Revisit when:** Phase 1, after measuring the alert delay. Audio study mode (Phase 2) is different:
   it does need `mediaPlayback` and `microphone` foreground services. See
   [ANDROID.md](ANDROID.md#phase-1-core-loop).
+- **Status (2026-10-08):** built this way in Phase 1
+  ([D28](#d28-phase-1-timer-alerts-a-scheduled-notification-until-measured-2026-10-08)). Still a
+  proposal until the Timer check screen has measured the delay on the founder's phone.
 
 ## D9. Exercise dataset: structured fields only, for now (2026-10-08)
 
@@ -134,6 +137,9 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
 - **Alternatives:** import everything and hope; pay for an exercise API; write every entry by hand.
 - **Revisit when:** someone signs off legally, or DualRep has its own instructions (Claude drafts, a
   person reviews) and clearly licensed or self-made images.
+- **Phase 1 note:** the 90 starter exercises ([D21](#d21-an-interverse-starter-library-ships-with-the-app-2026-10-08))
+  have instructions written by Interverse, so this question doesn't touch them. Dataset rows still
+  have none.
 
 ## D10. Explicit grants on every table (2026-10-08)
 
@@ -256,6 +262,8 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
   `reviewed` marks curated library content, which a user row must not claim.
 - **Alternatives:** trust the RLS insert rules alone.
 - **Revisit when:** Phase 1, when the import script is written.
+- **Closed (2026-10-08):** the Phase 1 import relies on it: it matches rows on `dataset_id` alone
+  ([D27](#d27-the-exercise-import-pinned-safe-to-run-again-curators-work-kept-2026-10-08)).
 
 ## D19. HTTP 401 is retried, and nothing uploads without a session (2026-10-08)
 
@@ -279,3 +287,239 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
   is misconfigured, so a row in Postgres alone didn't prove that sync works.
 - **Alternatives:** trust the user's tap; check only that the row reached Postgres.
 - **Revisit when:** the gate has passed; the screen can stay as a diagnostic.
+
+## D21. An Interverse starter library ships with the app (2026-10-08)
+
+- **Decision:** Phase 1 runs on 90 exercises written by Interverse, not on the imported dataset.
+  The migration `20261008120000_starter_library.sql` seeds them (`origin = 'interverse'`,
+  `reviewed = true`, no owner, no images, instructions in our own words), and the app bundles the
+  same list ([`starterLibraryData.ts`](../src/features/training/starterLibraryData.ts)). So circuits
+  work before the first sync and in airplane mode. The free-exercise-db import is built
+  ([D27](#d27-the-exercise-import-pinned-safe-to-run-again-curators-work-kept-2026-10-08)), but
+  curating its 876 rows is not needed for the gate.
+- **Rules for the list:**
+  - Ids are fixed: `00000000-0000-4000-8000-0000000e0001` to `…0000000e005a` today, in file order.
+    A new exercise takes the next number after the highest one used. A removed id is never reused (a
+    logged set may still point at it). The app treats the whole `…0000000eXXXX` range as starter
+    ids.
+  - Location: `gym` when any item is gym-only; `home` only for desk-side moves that need furniture
+    (chair, desk, wall, doorway) and no equipment; otherwise `both`.
+  - Heavy barbell lifts are demand level 3 and never go in a short circuit (`micro_ok = false`). Also
+    kept out of short circuits: Dip (shoulder strain when tired) and Treadmill intervals (stepping on
+    and off a moving belt every station).
+  - Measure (counted in reps or in seconds) is "seconds" for conditioning, mobility, carries, wall
+    sit, plank and side plank, and "reps" for everything else. It is not a database column: the app
+    keeps it with the bundled list.
+  - Isolation moves (curls, raises, calf work) use the movement pattern `other`, so a swap matches
+    them by muscle instead.
+  - Every setup template (home with just your body, home with dumbbells and bands, gym) has at least
+    2 short-circuit options per strength pattern, 4 core, 5 conditioning (some low-impact) and 6 per
+    body region. A unit test checks this.
+- **Changing it:** edit the data file, run `node scripts/library/starter-library-sql.mjs`, and commit
+  both (`npm run check:library` fails while they differ). A migration runs only once per database, so
+  once this one is on the hosted project, a later change needs a **new** migration file: set
+  `MIGRATION` in the script to a new timestamp and leave the old file alone. The new file sets every
+  column of every starter row, so it replaces the old one's effect. Retiring an exercise needs a
+  hand-written delete.
+- **Why:** the gate needs circuits for every preset and setup from day one, offline, before any sync.
+  Hand-written entries can be checked against the rules the circuit builder relies on, and their
+  instructions are ours, so the licence question in D9 doesn't touch them. Curating the dataset is
+  weeks of review.
+- **Alternatives:** curate the dataset first (blocks the gate, and still no instructions until D9 is
+  settled); a library that only arrives by sync (no circuits until the first sync).
+- **Revisit when:** the dataset curation pass is done (reviewed dataset rows then join the circuits
+  without code changes), or D9 is settled.
+
+## D22. Default circuits are built on the phone, the same way every time (2026-10-08)
+
+- **Decision:** there are no stored circuit tables. `buildDefaultCircuit`
+  ([`circuits.ts`](../src/features/training/circuits.ts)) builds each move block on the phone from
+  the preset's split, the setup and the library. The same input always gives the same circuit. A
+  `variant` (the local day number plus the block number) rotates the choices, so blocks differ
+  through a day and across a week.
+  - **Short circuits (5, 10 or 15 minutes):** 50-second stations (work, then change-over); 2 rounds
+    under 8 minutes, else 3. So 5 min = 3 stations × 2 rounds, 10 = 4 × 3, 15 = 6 × 3. Only
+    exercises marked for short circuits, at demand level 1 or 2.
+  - **Full sessions (30, 45 or 60 minutes):** 3 straight sets of each exercise; 120 s rest for demand
+    level 3, 60 s otherwise. The number of exercises is picked so the estimate is closest to the time
+    asked.
+  - Stations are shared out by the split with largest-remainder rounding. A region at 0% never gets
+    one.
+  - Time model: 3 s per rep plus rest. Warm-up sets are not counted, so a session with heavy lifts
+    runs a little longer than its estimate.
+  - At most 2 heavy (demand level 3) lifts per full session. This is our own rule, not the plan's:
+    confirm or tune it.
+  - Default targets never guess a weight. It comes from the last session's sets (the spotter's
+    next-session advice, [D24](#d24-the-spotters-rules-and-the-5-cap-with-double-progression-2026-10-08))
+    or from the user.
+  - **Swap** offers up to 5 alternatives that fit the setup: same movement pattern and muscle first.
+  - The six system presets are bundled in the app as well (a test checks them against the first
+    migration), so presets also work before the first sync.
+- **Why:** the plan asks for default circuits for every preset × location × length, offline.
+  Building them is cheap (about 4 ms for a full session from a 990-exercise library, in tests) and
+  copes with custom splits, custom setups and the user's own exercises, which a fixed table can't.
+  Because the output is predictable it can be tested: every system preset × 3 setups × every length
+  is checked for fit, balance and time (estimates land at 92–109% of the time asked).
+- **Alternatives:** precomputed tables in the database (don't adapt to custom splits or gear); built
+  on the server (needs a connection).
+- **Revisit when:** Phase 3, when Tracy's planner proposes circuits (this builder stays as the offline
+  fallback), or if testers find the circuits repetitive.
+
+## D23. The running cycle is saved on the phone, in a local-only table (2026-10-08)
+
+- **Decision:** the loop's state lives in `local_state`, a local-only PowerSync table: a key and a
+  JSON value, never synced or uploaded, cleared on sign-out. The running cycle is saved under the key
+  `cycle`, and the timer check's measurement under `alert-test`.
+  - The loop is a pure state machine ([`cycleMachine.ts`](../src/features/cycle/cycleMachine.ts)).
+    It never writes anything itself. It lists each database write and each alert as data; the store
+    saves that state first, then carries them out one at a time, in order.
+  - Every row id is made in advance, and an insert is skipped when the row already exists. So a write
+    that runs twice after a crash changes nothing, and a set is never lost or logged twice.
+  - A failed write is retried (after 1 s, then doubling, up to 30 s). A write the app itself refuses
+    as invalid can never succeed, so it is dropped and shown instead of blocking the loop.
+  - Timers keep their end time, not a countdown, so a killed app reopens in the right place. A block
+    that ended meanwhile hands off at once.
+  - The loop only ticks while the cycle screen is open. The block-end alert covers the focus timer.
+    A return countdown that ran out while you were on another screen starts the next block when you
+    come back, or finishes the cycle if that was more than 5 minutes later.
+  - Signing out stops the cycle first (it waits for a write in progress) and withdraws every alert,
+    before the phone's data is cleared.
+- **Why:** an app restart, a killed process or a flat battery must never lose a logged set or write
+  it twice, and Phase 1 adds no tables or columns to the database. The cycle belongs to this phone,
+  not to the account. Keeping it in the same SQLite file as the loop's rows avoids a second storage
+  engine.
+- **Alternatives:** AsyncStorage (another package and a second store); a synced table (a schema
+  change, and two phones would fight over one cycle); memory only (lost when Android kills the app).
+- **Revisit when:** Phase 4 live sessions need a timer shared between phones.
+
+## D24. The spotter's rules, and the 5% cap with double progression (2026-10-08)
+
+- **Decision:** the spotter is plain rules in [`spotter.ts`](../src/features/training/spotter.ts);
+  the file's header is the product spec. In short:
+  - **The next set:** on target → carry on. 1 rep short → same weight, 30 s more rest (up to 180 s).
+    2 or more short → drop the weight 10%, 15% or 20% (2, 3, or 4+ short), rounded down to a real
+    weight; with no weight, lower the target to what was done. Last planned set 2+ short → one
+    rest-pause mini-set (20 s rest, then the missing reps). Stop the exercise for today when a set
+    comes up short and a quarter of the target or less was done, or the effort was 10; or when a set
+    the spotter already eased (a drop or a rest-pause) comes up 2 or more short again. The weight
+    never goes up within a session.
+  - **The next session:** raise only when every normal set hit its target with effort 8 or less (or
+    not rated). Lower 10% when more than half the sets were 2+ short. Otherwise hold.
+  - Timed sets use the same rules on seconds; every full 5 s short counts as 1 rep short.
+  - Weights move in real steps ([`units.ts`](../src/features/training/units.ts)): 5 lb; in kg,
+    2.5 kg, or 2 kg for dumbbells; 4 kg for kettlebells in both units.
+- **The cap:** the weight rises at most 5% from one session to the next, and only on a raise. When one
+  step is more than 5% (20 lb dumbbells: 5 lb is 25%), reps go up instead (double progression: +2
+  from 10 reps, +1 below 10, up to 15). At 15 reps the weight goes up one step and the reps reset so
+  that the estimated strength the set needs (Epley: weight × (1 + reps / 30)) still rises 5% at most.
+  For example, 20 lb × 15 becomes 25 lb × 7. If that would leave fewer than 5 reps, the step is too
+  big: hold. A test checks the cap over about 100,000 cases.
+- **Why:** the plan asks for "load increases capped per session, starting at 5 percent". A cap on the
+  weight alone would freeze anyone on light dumbbells forever. Rules give the same answer every time,
+  explain themselves in one line, and work offline in well under a millisecond.
+- **Alternatives:** cap the weight only (no progress on small dumbbells); fractional plates (most home
+  gyms don't have them); a learned model (needs data and a connection).
+- **Revisit when:** the Phase 3 decision on the load cap, or beta feedback on how fast weights climb.
+
+## D25. How a logged set is stored (2026-10-08)
+
+- **Decision:**
+  - The effort chips set `exercise_sets.rpe`: Easy = 6, Solid = 8, All out = 10. No chip = null
+    (unknown). The 1–5 rating of a focus block is separate (`interval_blocks.effort_rating`).
+  - A timed set stores its seconds of work in `reps` and `target_reps`. The exercise's measure says
+    how to read them (bundled for starter exercises; worked out from the movement and the name for
+    others).
+  - `rest_seconds` is the rest taken before the set: the time since the previous set, minus this
+    set's work (3 s per rep, or the set's seconds). It is null for the workout's first set.
+  - `set_index` counts from 0 across the whole workout. `exercise_name` is always filled.
+  - Weights are stored in pounds exactly as converted from kg, never rounded (rounding would make kg
+    weights land just under their real step).
+  - One tap on **Done** logs the target as done; the − and + buttons change the numbers first.
+- **Why:** the schema is frozen in Phase 1, and there is no seconds column. Three chips are quick
+  between sets and line up with the spotter's thresholds (8 or less to raise, 10 to stop).
+- **Alternatives:** a 1–10 slider (slower between sets); a new `seconds` column (a schema change).
+- **Revisit when:** the next schema change: add a `seconds` (or `measure`) column, so reading history
+  never depends on working out a custom exercise's measure.
+
+## D26. What transitions.accepted means (2026-10-08)
+
+- **Decision:** a `transitions` row is written when a move block starts after a focus block, with
+  `proposal` = the circuit as planned (JSON) and `accepted` null.
+  - The first logged set sets `accepted = 1`.
+  - Skipping or ending the move block before any set sets `accepted = 0`, deletes the empty workout
+    and sets the row's `workout_session_id` to null (what the server's ON DELETE SET NULL would do).
+  - After a set, ending the workout early still counts as accepted. Swapping an exercise doesn't
+    change it.
+  - "Just train" writes no transition.
+- **Why:** with a zero-tap handoff the move block always opens, so "opened" means nothing. The first
+  set is the clearest sign the user took the proposal, and it gives Phase 3 a clean measure of how
+  often a handoff turns into training.
+- **Alternatives:** accepted when the block opens (always 1); acceptance per exercise (needs a schema
+  change).
+- **Revisit when:** Phase 3, when Tracy's proposals and swaps need finer logging
+  (`tracy_events.accepted` is separate).
+
+## D27. The exercise import: pinned, safe to run again, curators' work kept (2026-10-08)
+
+- **Decision:** [`build-import-sql.mjs`](../scripts/exercise-import/build-import-sql.mjs) writes one
+  SQL statement that loads free-exercise-db into `public.exercises`. A manual GitHub workflow
+  (**Exercise import SQL**) builds it, proves it on a throwaway database, and uploads it for pasting
+  into the Supabase SQL Editor.
+  - Pinned twice: upstream commit `f00c92c7dcf1216a928a52c3706c7ce8e2f71ed5` and sha256
+    `5bb747e3fc658f095a60dcbf6d53c96627acdcc6ffb6fffde86f7e26995d40bf`. Any other file is refused
+    unless `--allow-unpinned` is given.
+  - Values the rules don't know (a new muscle, equipment or category) are refused and listed, not
+    guessed.
+  - Rows match on `dataset_id` only. New rows get `origin = 'dataset'`, `reviewed = false`, no owner,
+    empty images and instructions, and curated fields from the research §A6 rules.
+  - On a later run: the dataset facts (name, muscles, level, force, mechanic, dataset category) are
+    refreshed; curated fields are kept (written on insert only); images and instructions are set to
+    empty (D9); `reviewed` stays true only if no fact changed.
+  - A row with nothing to change isn't touched, so its `updated_at` stays and phones don't download
+    the library again.
+  - Rows the file no longer has are kept (a logged set may point at them) and only counted.
+  - The statement ends with one summary row: rows in the file, inserted, updated, review reset,
+    unchanged, not in the file.
+- **Why:** the import must be safe to run again after every upstream update, without undoing
+  curators' work or making every phone re-download. A changed fact needs a person to look again.
+- **Alternatives:** delete and re-insert (loses reviews, breaks links from logged sets); match by name
+  (names change); import only once.
+- **Watch out:** proven on Postgres 16 with every migration applied, but the roughly 200 KB statement
+  has not yet been pasted into the real SQL Editor (hosted Supabase runs Postgres 15 or 17).
+- **Revisit when:** moving to a newer copy of the dataset
+  ([the import README](../scripts/exercise-import/README.md#moving-to-a-newer-copy-of-the-dataset)),
+  or when D9 is settled.
+
+## D28. Phase 1 timer alerts: a scheduled notification until measured (2026-10-08)
+
+- **Decision:** built as D8 proposed. The timer keeps its end time and the screen shows end − now.
+  When a focus block starts, a local notification is scheduled for its end (a DATE trigger) on the
+  channel `timers-v1`: high importance, the default sound, vibration, shown on the lock screen.
+  - Its id is `block-end-<block id>`, so scheduling it again replaces it. Pause, **End block early**,
+    **Finish** and the handoff cancel it and clear it from the shade.
+  - Tapping it opens the cycle screen. Only paths inside the app are ever opened from a notification.
+  - While the cycle screen is open, the alert stays silent (the screen hands off with a haptic). On
+    any other screen it shows, so a block never ends unnoticed.
+  - No foreground service and no exact alarms yet.
+  - The **Timer check** screen measures the real delay with the phone locked: it schedules a test
+    alert in 1 or 25 minutes and compares when Android posted it with when it was due.
+- **Why:** see D8. The channel id carries a version because users own a channel's settings once it
+  exists, so a different sound later needs a new id.
+- **Alternatives:** see D8; a custom alert sound (needs a sound file and a new channel).
+- **Revisit when:** the 25-minute Timer check has run on the founder's phone. If the alert comes
+  within about a minute, D8 becomes final and exact alarms stay out. If it is regularly later, add the
+  optional exact-alarm setting ([ANDROID.md 1.3](ANDROID.md#13-exact-alarms-optional)).
+
+## D29. The notification permission is asked in context (2026-10-08)
+
+- **Decision:** the app asks for `POST_NOTIFICATIONS` only when the user taps **Start focus block**
+  and Android still allows asking, after a one-line reason. That "still allowed to ask" state is how
+  the app knows it is the first start; nothing extra is stored. **Just train** never asks. If the
+  answer is no, the block starts anyway and a quiet "Alerts are off" note shows. Settings shows the
+  state, with **Turn on alerts** (asks again) or **Open system settings** (when Android won't ask
+  again).
+- **Why:** on Android 13 and later an app gets few chances to ask. Asking at the moment the alert
+  matters gets more yeses, and the timer works without it
+  ([ANDROID.md 1.2](ANDROID.md#12-notification-permission-and-channels)).
+- **Alternatives:** ask at first launch (no context, more refusals); never ask (no alerts).
+- **Revisit when:** Phase 2 adds review reminders (a second reason to ask).

@@ -1,16 +1,19 @@
 # Data model
 
 What is in the database, who writes each table, how each table reaches the phone, and how it is
-protected. It describes the first migration as built:
-[`supabase/migrations/20261008000000_initial_schema.sql`](../supabase/migrations/20261008000000_initial_schema.sql).
-When this page and the migration disagree, the migration wins.
+protected. It describes the migrations as built: the schema,
+[`supabase/migrations/20261008000000_initial_schema.sql`](../supabase/migrations/20261008000000_initial_schema.sql),
+and the Phase 1 starter-library seed,
+[`20261008120000_starter_library.sql`](../supabase/migrations/20261008120000_starter_library.sql)
+(rows only, no schema change). When this page and a migration disagree, the migration wins.
 
 Related files:
 
 | File | What it is |
 |---|---|
-| [`supabase/migrations/`](../supabase/migrations/) | The schema, RLS policies, grants, triggers, system presets and the `powersync` publication |
-| [`supabase/tests/`](../supabase/tests/) | pgTAP tests for every table and policy: 13 files, 523 tests (`npm run db:test`, or `supabase test db`) |
+| [`supabase/migrations/`](../supabase/migrations/) | The schema, RLS policies, grants, triggers, system presets and the `powersync` publication (first migration); the 90 starter exercises (second) |
+| [`supabase/tests/`](../supabase/tests/) | pgTAP tests for every table and policy, and for the starter library: 14 files, 542 tests (`npm run db:test`, or `supabase test db`) |
+| [`scripts/library/starter-library-sql.mjs`](../scripts/library/starter-library-sql.mjs) | Writes the starter-library migration from the app's own list; `npm run check:library` checks it is up to date |
 | [`supabase/schema.snapshot.json`](../supabase/schema.snapshot.json) | Column list per table, written by `npm run db:test`, read by `npm run validate:sync` |
 | [`powersync/sync-config.yaml`](../powersync/sync-config.yaml) | The Sync Streams: which rows each phone receives |
 | [`src/db/tables.ts`](../src/db/tables.ts) | The app's registry of synced tables: columns, local indexes and what the device may write |
@@ -194,6 +197,27 @@ automatically; the app never subscribes by hand.
 `source_chunks` is never synced and is not in the `powersync` publication. Each stream mirrors an RLS
 SELECT policy, so a phone never receives a row its user could not read through the API.
 
+### Tables that live only on the phone
+
+Two tables exist only in the phone's SQLite database ([`src/db/schema.ts`](../src/db/schema.ts)). They
+are PowerSync "local-only" tables: never synced, never uploaded, not in Postgres, and no migration
+creates them. Signing out clears them with everything else.
+
+| Table | Since | What it holds |
+|---|---|---|
+| `upload_failures` | Phase 0 | Uploads the server refused for good, with the error code; the Sync Check screen shows them ([when an upload fails](#how-a-phone-write-reaches-postgres)) |
+| `local_state` | Phase 1 | A small key-value store: `id` is the key, `value` is JSON text, plus `updated_at` |
+
+Keys in `local_state`:
+
+| Key | What | Written |
+|---|---|---|
+| `cycle` | The running study → move → study cycle: the phase, the timers' end times, the circuit, where you are in it, the sets logged so far, the ids of the rows it will write, and the writes not done yet. It holds the user's id, so another account's cycle is never resumed. | Before every write or alert the loop decides on, so an app restart picks up exactly where it was ([DECISIONS.md](DECISIONS.md) D23) |
+| `alert-test` | The Timer check's test alert: when it was scheduled, when it was due, and when Android showed it | When a test is scheduled, and when its result is read |
+
+Changing either table is an app change (`schema.ts`), not a migration. A new key needs no change at
+all.
+
 ---
 
 ## 2. Tables at a glance
@@ -302,8 +326,31 @@ exercises, as for sources and study plans).
 
   Together they mean no phone can claim a free-exercise-db id or pass its own row off as reviewed
   library content.
-- **Written by:** library rows (`dataset`, `interverse`) by the service role only (the Phase 1 import
-  script and curation); `user` rows by their owner.
+- **Written by:** library rows (`dataset`, `interverse`) by migrations and the service role only
+  (the starter-library migration, the dataset import SQL from
+  [`build-import-sql.mjs`](../scripts/exercise-import/README.md), run in the SQL Editor, and
+  curation); `user` rows by their owner.
+- **The starter library** (Phase 1, [DECISIONS.md](DECISIONS.md) D21): 90 exercises written by
+  Interverse, seeded by `20261008120000_starter_library.sql`.
+  - `origin = 'interverse'`, `reviewed = true`; `owner_id`, `group_id` and `dataset_id` null;
+    `images = []`; 2–4 short instruction steps in our own words.
+  - Fixed ids: `00000000-0000-4000-8000-0000000e0001` to `…0000000e005a` today. The whole range
+    `00000000-0000-4000-8000-0000000eXXXX` is reserved for them, and an id is never reused.
+  - The app bundles the same list
+    ([`starterLibraryData.ts`](../src/features/training/starterLibraryData.ts)), so circuits work
+    before the first sync. When the synced row arrives it wins over the bundled copy.
+  - The migration is an upsert that sets every column, so running it again restores each row
+    exactly. A later change to the list needs a new migration file (see
+    [changing the schema](#6-changing-the-schema)).
+  - They reach phones through the `library` stream like any reviewed library row: no sync-config
+    change.
+- **Measure** (counted in reps or in seconds) is not a column. The app keeps it with the bundled
+  starter list, and works it out for other exercises from the movement pattern and the name (holds,
+  planks, carries, conditioning and mobility are timed).
+- **The user's own exercises** (the library screen's add form): `origin = 'user'`, `reviewed = false`,
+  `owner_id` = you; no `dataset_id`, `group_id`, `level`, `force` or `mechanic`. No gear is stored as
+  `["bodyweight"]`; any gym-only item makes it `gym`. The form requires a movement pattern and body
+  region, and `micro_ok` starts on, so the exercise can join default circuits at once.
 - **RLS:** read reviewed library rows, own rows, and rows shared with your groups. Insert, update and
   delete own `user` rows. A `group_id` naming a group you are not a member of is stored as null
   (`clear_group_unless_member`): the exercise is kept, unshared. Leaving or being removed from a
@@ -314,6 +361,8 @@ exercises, as for sources and study plans).
 **`workout_sessions`**: `user_id`, `logged_at` timestamptz (default now), `kind` text (`micro`, `full`,
 `walk`), `preset_id` uuid? → presets (set null), `setup_id` uuid? → equipment_setups (set null),
 `duration_minutes` integer? (≥ 0).
+- Phase 1 writes `micro` (a 5–15 minute circuit) and `full` (a 30–60 minute session) from the loop
+  ([what the loop writes](#what-the-core-loop-writes-and-when)). `walk` is not used yet.
 - **RLS:** own rows only.
 - `preset_id` must be a system preset or your own, and `setup_id` your own setup. Any other value, or
   a deleted row, is stored as null (`clear_preset_and_setup_references`).
@@ -329,6 +378,17 @@ copied by the phone when the set is logged), `set_index` integer (≥ 0), `reps`
   otherwise no longer visible.
 - **RLS:** own rows, and on write the parent workout session must also be yours (a set in someone
   else's session is refused, 42501).
+- **How Phase 1 fills it** ([DECISIONS.md](DECISIONS.md) D25):
+  - `set_index` counts from 0 across the whole workout. `exercise_name` is always filled.
+  - A **timed** set (an exercise measured in seconds) stores its seconds of work in `reps` and
+    `target_reps`. There is no seconds column; the exercise's measure says how to read them.
+  - `rpe` comes from the effort chips: Easy = 6, Solid = 8, All out = 10; null when none was tapped.
+  - `rest_seconds` is the rest taken **before** the set (the time since the previous set, minus this
+    set's work at 3 s per rep). Null for the workout's first set.
+  - `weight_lbs` and `target_weight_lbs` are pounds even when the app shows kg, stored exactly as
+    converted (not rounded). Null means no weight (bodyweight).
+  - `set_type`: `drop` for sets after the spotter lowered the weight, `rest_pause` for the spotter's
+    rest-pause mini-set, otherwise `normal`.
 - `exercise_id` is judged when a write sets or changes it: an exercise you can't read, or one that no
   longer exists, is stored as null (`clear_exercise_reference`). A stored `exercise_id` is kept after
   the exercise becomes unreadable (for example its owner left the group); the phone then no longer
@@ -353,10 +413,48 @@ copied by the phone when the set is logged), `set_index` integer (≥ 0), `reps`
 **`transitions`**: `user_id` (copy), `interval_block_id` → interval_blocks (cascade),
 `workout_session_id` uuid? → workout_sessions (set null), `proposal` jsonb (default `{}`), `accepted`
 boolean?.
+- In Phase 1, `proposal` is the circuit as planned at the handoff (`version`, `source: 'default'`,
+  `kind`, `minutes`, `rounds`, `items` with each exercise's id, name and targets, `estimatedSeconds`,
+  `location`, `split`). `accepted` is null at first, true after the first logged set, false when the
+  move block was skipped with no set ([DECISIONS.md](DECISIONS.md) D26).
 - **RLS:** own rows, and on write the parent interval block must also be yours (refused otherwise,
   42501).
 - `workout_session_id` must be your own workout session; any other value, or a deleted one, is stored
   as null (`clear_workout_session_reference`).
+
+### What the core loop writes, and when
+
+Phase 1's study → move → study loop ([`cycleRepo.ts`](../src/features/cycle/cycleRepo.ts)) writes
+only to the phone's database; PowerSync uploads the rows later. Each step is one local transaction.
+Every row id is made before the write, and an insert is skipped when the row already exists, so a
+step that runs again after a crash writes nothing twice. Timestamps are ISO strings with
+milliseconds.
+
+| When | Table | What is written |
+|---|---|---|
+| First focus block of a cycle starts | `study_sessions` | INSERT: `focus_subject` (what you typed, or `''`), `plan_id` null |
+| Every focus block starts | `interval_blocks` | INSERT: `study_session_id`, `planned_minutes` (10–50), `started_at`, `interrupted = false`, `mode = 'seated'` |
+| A focus block ends | `interval_blocks` | UPDATE `ended_at` (the timer's real end, even if the app only noticed later) and `interrupted` (true for **End block early**, or **Finish** before the time was up) |
+| You rate the block (1–5) | `interval_blocks` | UPDATE `effort_rating` (again on each change) |
+| The move block starts (the handoff) | `workout_sessions` | INSERT: `kind` (`micro` or `full`), `logged_at`, `preset_id`, `setup_id` |
+| … after a focus block | `transitions` | INSERT: `interval_block_id`, `workout_session_id`, `proposal` (the circuit), `accepted` null |
+| Each **Done** | `exercise_sets` | INSERT one set ([how sets are filled](#training)) |
+| … the workout's first set | `transitions` | UPDATE `accepted = true` |
+| The workout ends with sets logged | `workout_sessions` | UPDATE `duration_minutes` (rounded) |
+| The workout is skipped or ended with no set | `transitions`, `workout_sessions` | UPDATE `accepted = false` and `workout_session_id = null`; DELETE the empty workout |
+
+- **Just train** (a workout without a focus block) writes no `study_sessions`, `interval_blocks` or
+  `transitions` rows.
+- **Nothing in the loop writes `exercises` or `profiles`.** The loop never creates a profile.
+- **Profiles** are written only by Settings (block length, units), Presets (default preset) and
+  Setups (default setup; also the one-tap setup on the start screen), and only as an UPDATE of the
+  row the server created. Before that row has synced, the app uses the defaults (25-minute blocks,
+  lb, Full body) and those controls are off.
+- **Deleting** a preset or setup that is your default also clears `profiles.default_preset_id` or
+  `default_setup_id` on the phone, in the same transaction (what the server's ON DELETE SET NULL
+  does), so the phone never points at a deleted row while offline.
+- The running cycle itself (timers, position, pending writes) is in the local-only `local_state`
+  table ([tables that live only on the phone](#tables-that-live-only-on-the-phone)).
 
 ### Groups
 
@@ -602,5 +700,10 @@ differences and why.
 4. Add pgTAP tests in `supabase/tests/`.
 5. Run `npm run db:test` (this regenerates `supabase/schema.snapshot.json`), then `npm run check`.
    The registry-drift test fails if `tables.ts`, the snapshot and the publication disagree.
-6. Apply it to the hosted project with `npx supabase db push`, and redeploy the sync config if it
-   changed (see [SETUP.md](SETUP.md)).
+6. Apply it to the hosted project with `npx supabase db push` (or paste it into the SQL Editor, as
+   for the first two), and redeploy the sync config if it changed (see [SETUP.md](SETUP.md)).
+
+**Seed data changes too.** The starter library is a migration. To change it, edit
+[`starterLibraryData.ts`](../src/features/training/starterLibraryData.ts), point `MIGRATION` in
+[`starter-library-sql.mjs`](../scripts/library/starter-library-sql.mjs) at a **new** timestamped
+file, and run the script. Keep the old file as it is: it has already run on the hosted project.

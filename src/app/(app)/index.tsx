@@ -1,62 +1,115 @@
-import { router } from 'expo-router';
-import { useState } from 'react';
-import { Alert, View } from 'react-native';
+import { router, type Href } from 'expo-router';
+import { useMemo } from 'react';
+import { View } from 'react-native';
 
 import { useAuth } from '@/auth/AuthProvider';
-import { Button, Screen, Text } from '@/components';
-import { getUploadQueueCount } from '@/db/syncCheck';
-import { SyncStatusCard } from '@/features/sync/SyncStatusCard';
+import { Button, ListGroup, ListRow, Screen, StatCard, Text } from '@/components';
+import { CYCLE_STATE_KEY, parseCycleState, type CyclePhase } from '@/features/cycle/cycleMachine';
+import { useLocalState } from '@/features/cycle/localState';
+import { useTodaySummary } from '@/features/history/useHistory';
+import { formatMinutes } from '@/features/settings/profile';
+import { useTrainingDefaults } from '@/features/settings/useTrainingDefaults';
 import { useTheme } from '@/theme';
 
-/** Phase 0 home: who is signed in, how sync is doing, and the one thing to do next — the sync check. */
+/** What the primary button says while a cycle is running, by phase. */
+const CONTINUE_LABEL: Record<Exclude<CyclePhase, 'idle'>, string> = {
+  focus: 'Back to your focus block',
+  move: 'Back to your workout',
+  return: 'Back to your cycle',
+};
+
+/** The other screens, in the order they are listed under "More". */
+const LINKS: readonly { title: string; subtitle: string; href: Href }[] = [
+  { title: 'Setups', subtitle: 'Where you train and the gear you have', href: '/setups' },
+  { title: 'Presets', subtitle: 'How each workout is split across the body', href: '/presets' },
+  { title: 'Exercise library', subtitle: 'Browse exercises or add your own', href: '/library' },
+  { title: 'History', subtitle: 'Your focus blocks and workouts', href: '/history' },
+  { title: 'Settings', subtitle: 'Block length, units, notifications, sign out', href: '/settings' },
+  { title: 'Sync check', subtitle: 'Prove offline changes reach the server', href: '/sync-check' },
+  { title: 'Timer check', subtitle: 'Measure how late the end-of-block alert rings', href: '/timer-check' },
+];
+
+/**
+ * Home ("Today"): the one thing to do next — start a study block — with "Just train" beside it, the
+ * defaults the next cycle will use (each opens the screen that changes it), today's numbers, and the
+ * other screens. Everything is read from the phone, so it works offline and before the first sync.
+ */
 export default function HomeScreen() {
-  const { user, signOut } = useAuth();
+  const { user } = useAuth();
   const { space } = useTheme();
-  const [signingOut, setSigningOut] = useState(false);
+  const defaults = useTrainingDefaults();
+  const today = useTodaySummary();
+  const { value: savedCycle } = useLocalState<unknown>(CYCLE_STATE_KEY);
+  const phase = useMemo(() => parseCycleState(savedCycle, user?.id ?? null).phase, [savedCycle, user?.id]);
+  const running = phase !== 'idle';
+  const dateLabel = useMemo(
+    () => new Date(today.since).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }),
+    [today.since],
+  );
 
-  const doSignOut = async () => {
-    setSigningOut(true);
-    try {
-      await signOut();
-    } finally {
-      setSigningOut(false);
-    }
-  };
+  const footer = running ? (
+    <Button label={CONTINUE_LABEL[phase]} size="comfortable" onPress={() => router.push('/cycle')} />
+  ) : (
+    <>
+      <Button label="Start a study block" size="comfortable" onPress={() => router.push('/cycle')} />
+      <Button
+        label="Just train"
+        variant="secondary"
+        accent="body"
+        accessibilityHint="Starts a workout without a focus block"
+        onPress={() => router.push({ pathname: '/cycle', params: { mode: 'move' } })}
+      />
+    </>
+  );
 
-  const confirmSignOut = async () => {
-    // Signing out deletes this phone's copy of the data, including writes not uploaded yet.
-    const pending = await getUploadQueueCount().catch(() => 0);
-    const message =
-      pending > 0
-        ? `${pending} change${pending === 1 ? ' has' : 's have'} not been uploaded yet and will be lost. Connect to the internet first to keep ${pending === 1 ? 'it' : 'them'}.`
-        : 'Your data stays safe on the server. This phone’s copy is removed.';
-    Alert.alert('Sign out?', message, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: pending > 0 ? 'Sign out and lose changes' : 'Sign out', style: 'destructive', onPress: () => void doSignOut() },
-    ]);
-  };
+  const summaryText = `${today.blocks} focus ${today.blocks === 1 ? 'block' : 'blocks'}, ${today.focusMinutes} focus minutes, ${today.sets} ${today.sets === 1 ? 'set' : 'sets'} today`;
 
   return (
-    <Screen footer={<Button label="Run the sync check" size="comfortable" onPress={() => router.push('/sync-check')} />}>
+    <Screen footer={footer}>
       <View style={{ gap: space[1], marginTop: space[4] }}>
         <Text variant="caption" tone="mind" style={{ fontWeight: '600' }}>
-          Phase 0 · Foundation
+          DualRep
         </Text>
-        <Text variant="headline">DualRep</Text>
-        <Text tone="secondary" numberOfLines={1}>
-          Signed in as {user?.email ?? 'unknown'}
-        </Text>
+        <Text variant="headline">Today</Text>
+        <Text tone="secondary">{dateLabel}</Text>
       </View>
 
-      <SyncStatusCard />
+      <StatCard
+        accessibilityLabel={summaryText}
+        stats={[
+          { value: today.blocks, label: today.blocks === 1 ? 'focus block' : 'focus blocks' },
+          { value: today.focusMinutes, label: 'focus minutes' },
+          { value: today.sets, label: today.sets === 1 ? 'set' : 'sets' },
+        ]}
+      />
 
-      <Text tone="secondary">
-        Next step: run the sync check. It proves that something you create with no signal reaches the server once
-        you are back online.
-      </Text>
+      <ListGroup title="Next cycle" description="Tap one to change it.">
+        <ListRow
+          title="Block length"
+          value={formatMinutes(defaults.blockMinutes)}
+          accessibilityHint="Opens settings"
+          onPress={() => router.push('/settings')}
+        />
+        <ListRow
+          title="Preset"
+          value={defaults.preset.name}
+          accessibilityHint="Opens presets"
+          onPress={() => router.push('/presets')}
+        />
+        <ListRow
+          title="Setup"
+          value={defaults.setup ? defaults.setup.name : 'None yet'}
+          subtitle={defaults.setup ? undefined : 'Add where you train and what gear you have'}
+          accessibilityHint="Opens setups"
+          onPress={() => router.push('/setups')}
+        />
+      </ListGroup>
 
-      <View style={{ flexGrow: 1 }} />
-      <Button variant="ghost" label="Sign out" loading={signingOut} onPress={confirmSignOut} />
+      <ListGroup title="More">
+        {LINKS.map((link) => (
+          <ListRow key={link.title} title={link.title} subtitle={link.subtitle} onPress={() => router.push(link.href)} />
+        ))}
+      </ListGroup>
     </Screen>
   );
 }

@@ -32,6 +32,27 @@ const IDENTITY: Record<Variant, { name: string; scheme: string; idSuffix: string
 const CANVAS_LIGHT = '#F5F4F0';
 const CANVAS_DARK = '#14171B';
 
+// Launcher badge permissions that ShortcutBadger (inside expo-notifications) declares; DualRep never
+// sets a badge count. The list is the one the CI preview build printed on 2026-10-08.
+const LAUNCHER_BADGE_PERMISSIONS = [
+  'android.permission.READ_APP_BADGE',
+  'com.sec.android.provider.badge.permission.READ',
+  'com.sec.android.provider.badge.permission.WRITE',
+  'com.htc.launcher.permission.READ_SETTINGS',
+  'com.htc.launcher.permission.UPDATE_SHORTCUT',
+  'com.sonyericsson.home.permission.BROADCAST_BADGE',
+  'com.sonymobile.home.permission.PROVIDER_INSERT_BADGE',
+  'com.anddoes.launcher.permission.UPDATE_COUNT',
+  'com.majeur.launcher.permission.UPDATE_BADGE',
+  'com.huawei.android.launcher.permission.CHANGE_BADGE',
+  'com.huawei.android.launcher.permission.READ_SETTINGS',
+  'com.huawei.android.launcher.permission.WRITE_SETTINGS',
+  'com.oppo.launcher.permission.READ_SETTINGS',
+  'com.oppo.launcher.permission.WRITE_SETTINGS',
+  'me.everything.badger.permission.BADGE_COUNT_READ',
+  'me.everything.badger.permission.BADGE_COUNT_WRITE',
+];
+
 const { name, scheme, idSuffix } = IDENTITY[variant];
 const projectId = process.env.EAS_PROJECT_ID;
 const owner = process.env.EXPO_OWNER;
@@ -74,6 +95,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'android.permission.USE_FINGERPRINT',
       // The development client's debug overlay draws over other apps, so only dev builds keep it.
       ...(variant === 'development' ? [] : ['android.permission.SYSTEM_ALERT_WINDOW']),
+      // expo-notifications bundles Firebase push, Google's install referrer (through expo-application)
+      // and ShortcutBadger. Phase 1 uses local notifications only: no push until Phase 4 (unblock
+      // c2dm.RECEIVE then), no install-referrer lookups, and no launcher badge counts.
+      'com.google.android.c2dm.permission.RECEIVE',
+      'com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE',
+      ...LAUNCHER_BADGE_PERMISSIONS,
     ],
   },
   ios: {

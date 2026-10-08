@@ -200,8 +200,10 @@ values ('c0000000-0000-4000-8000-000000000001', '22222222-2222-4222-8222-2222222
 set local role authenticated;
 set local request.jwt.claims to '{"sub": "11111111-1111-4111-8111-111111111111", "role": "authenticated"}';
 
+-- Only this file's fixture rows (b0000000-…): the starter library migration seeds reviewed interverse
+-- exercises too, and 13_starter_library checks those.
 select results_eq(
-  $$select id::text from public.exercises order by id$$,
+  $$select id::text from public.exercises where id::text like 'b0000000-%' order by id$$,
   $$values ('b0000000-0000-4000-8000-000000000001'), ('b0000000-0000-4000-8000-000000000003')$$,
   'reviewed library exercises are visible and unreviewed ones are hidden'
 );

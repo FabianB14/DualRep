@@ -18,22 +18,28 @@ How to use this page:
 
 *Updated 2026-10-08.*
 
-- **Phase 0 is built in this repo:** the Expo SDK 57 app, the full database (23 tables with row level
-  security, 523 pgTAP tests), PowerSync sync streams, email-code sign-in, design tokens, and the Sync
-  Check screen that proves the gate. The code is on the branch `claude/bold-fermi-oglgch` until you
-  merge it into `main` (a manual step below, before you clone).
-- **The Phase 0 gate passed on 2026-10-08** on Fabian's Android phone: a preview APK built by GitHub
-  Actions, against the hosted Supabase project and PowerSync Cloud instance (Resend for sign-in
-  email). A row created in airplane mode reached Postgres after reconnecting, and the Sync Check showed
-  PASS.
-- **Before Phase 1:** merge the branch into `main`, and tick off the few Phase 0 leftovers below
-  (PowerSync free-tier check, Play Console decision, the edge-to-edge look on the phone).
-- **Next:** Phase 1 (the core loop).
+- **Phase 0 passed its gate on 2026-10-08** on Fabian's Android phone (a preview APK from GitHub
+  Actions, the hosted Supabase project and PowerSync Cloud), and its code is on `main` (pull request
+  #2).
+- **Phase 1 is built in the repo**, on the branch `claude/bold-fermi-oglgch` until its pull request
+  is merged. The whole study → move → study loop runs on the phone: a focus timer with an
+  end-of-block alert, a zero-tap handoff into a circuit, a one-tap set logger with the spotter, and a
+  countdown back into the next focus block. Around it: 90 Interverse starter exercises, setups,
+  presets, the exercise library, history, settings and a Timer check screen. Every read and write in
+  the loop goes to the phone's own database, so it works in airplane mode.
+- **Tests:** 2,052 unit tests (one plays the whole loop offline, once with a home setup and once with
+  a gym setup), 46 script tests, and 542 database tests in 14 files.
+- **The Phase 1 gate is yours to run:** apply one migration, install the new preview APK, run the
+  loop in airplane mode twice, and measure the alert delay
+  ([your manual steps](#your-manual-steps-for-the-gate-in-order)).
+- **Next:** the Phase 1 gate and the Timer check on the phone. Then Phase 2 (the study engine).
+  Phase 0 leftovers still open below: the PowerSync free-tier check, the Play Console decision, and
+  the edge-to-edge look on the phone.
 
 | Phase | Est. weeks | Status |
 |---|---|---|
 | 0. Foundation | 1–2 | **Gate passed** (2026-10-08) |
-| 1. Core loop | 4–5 | Not started |
+| 1. Core loop | 4–5 | **Built**; gate not yet run (manual steps below) |
 | 2. Study engine | 4–6 | Not started |
 | 3. Tracy coaching | 2–3 | Not started |
 | 4. Friends | 2–3 | Not started |
@@ -80,13 +86,12 @@ tokens.
       only when you start using EAS builds
 - [ ] Set up the Windows PC ([SETUP §2](SETUP.md#2-set-up-your-windows-pc)): not needed for the gate (it
       used the GitHub-built APK), needed before Phase 1 coding
-- [ ] Merge the Phase 0 branch (`claude/bold-fermi-oglgch`) into `main` on GitHub with a pull request
-      ([SETUP §4](SETUP.md#first-put-the-phase-0-code-on-main)). Until then `main` has none of the code,
-      and the Android APK workflow has no "Run workflow" button
+- [x] Merge the Phase 0 branch (`claude/bold-fermi-oglgch`) into `main` on GitHub with a pull request
+      ([SETUP §4](SETUP.md#first-put-the-phase-0-code-on-main)): done 2026-10-08 (pull request #2)
 - [ ] Clone the repo and run `npm ci` and `npm run check` ([SETUP §4](SETUP.md#4-get-the-code)). The first
       time you use the Supabase CLI on the project, run
       `npx supabase migration repair 20261008000000 --status applied` (the migration went in through the
-      SQL Editor)
+      SQL Editor). Once Phase 1's migration is in too, name both (Phase 1, step 11)
 - [x] Create the Supabase project and apply the migration ([SETUP §5](SETUP.md#5-create-the-supabase-project-and-push-the-database)), through the SQL Editor
 - [x] Set up the sign-in emails ([SETUP §6](SETUP.md#6-set-up-sign-in-emails-and-check-the-signing-keys)): custom SMTP with Resend (test
       mode), code templates, OTP length 6
@@ -112,9 +117,10 @@ tokens.
 - [x] [0.2 Leave the SDK levels alone](ANDROID.md#02-leave-the-sdk-levels-alone)
 - [ ] [0.3 Edge-to-edge and insets](ANDROID.md#03-edge-to-edge-and-insets-in-the-design-tokens): check
       on the phone with gesture and 3-button navigation
-- [x] [0.4 Keep the manifest lean](ANDROID.md#04-keep-the-manifest-lean): the CI-built preview APK
-      requests only `INTERNET` and `VIBRATE` (plus the app's own internal receiver permission); re-read
-      the list in each build's summary when a dependency changes
+- [x] [0.4 Keep the manifest lean](ANDROID.md#04-keep-the-manifest-lean): the Phase 0 preview APK
+      requested only `INTERNET` and `VIBRATE` (plus the app's own internal receiver permission). The
+      Phase 1 packages added more (notifications, and extras that come with them): see the
+      [permission ledger](ANDROID.md#permission-ledger) and the Phase 1 decision below
 - [ ] [0.5 Play Console account: decide now](ANDROID.md#05-play-console-account-decide-now)
 - [x] [0.7 16 KB page size check](ANDROID.md#07-16-kb-page-size-check) runs in CI (zip and ELF
       alignment; the APK build fails if either is off). EAS builds: check by hand (0.7)
@@ -140,52 +146,120 @@ home setups, rules-based spotter, default micro circuits, zero-tap handoff.
 
 **Gate:** a full study, lift, study cycle works in airplane mode, with a home setup and a gym setup.
 
-### Build
-- [ ] Focus timer screen: block length 10–50 minutes (`profiles.default_block_minutes`), writes
-      `study_sessions` and `interval_blocks`, effort rating 1–5 at the end
-- [ ] Exercise import script: free-exercise-db structured fields only, mapped with the rules in
-      [research/exercise-data-and-fsrs.md §A6](research/exercise-data-and-fsrs.md), loaded with the
-      service role as `origin = 'dataset'`, `reviewed = false`, pinned by the file's sha256 (start
-      from the research scripts in [`scripts/exercise-import/`](../scripts/exercise-import/README.md)).
-      It can rely on no user row ever holding a `dataset_id` (a CHECK enforces it); its
-      `ON CONFLICT (dataset_id) DO UPDATE` should set `reviewed`, `images` and `instructions`
-      explicitly
-- [ ] Curation pass: review the imported rows (start with `movement_pattern = 'other'` and `gym`) and
-      set `reviewed = true`; add Interverse originals (desk-side and small-space moves)
-- [ ] Equipment setups: check off gym and home equipment; more than one setup allowed
-- [ ] Focus presets: pick one of the six system presets or make a custom split (per plan, day or block)
-- [ ] Default micro circuits for every preset × location × 5/10/15 minutes, available offline
-- [ ] Set logger: one tap per set; writes `workout_sessions` and `exercise_sets` (targets, actuals,
-      rest), and copies the exercise's name into `exercise_sets.exercise_name`. History shows that
-      name whenever `exercise_id` is null or its exercise isn't on the phone: the exercise was deleted
-      or unshared, or it was already unreadable or deleted when the set uploaded (the server then
-      stores `exercise_id` as null; see
+### Built in the repo
+- [x] Focus timer screen: block length 10–50 minutes (default from `profiles.default_block_minutes`),
+      Pause, Resume, **End block early**, a ring that shows the time left. Writes `study_sessions`
+      and `interval_blocks`. The 1–5 effort rating of the block is offered during the move block and
+      the countdown after it
+- [x] End-of-block alert: a scheduled notification, so the phone rings with the screen off or the app
+      closed ([DECISIONS.md](DECISIONS.md) D28). A **Timer check** screen measures how late it rings
+- [x] Exercise import tooling: free-exercise-db structured fields only, mapped with the rules in
+      [research/exercise-data-and-fsrs.md §A6](research/exercise-data-and-fsrs.md), loaded as
+      `origin = 'dataset'`, `reviewed = false`, pinned by upstream commit and sha256. A manual GitHub
+      workflow (**Exercise import SQL**) builds and checks the SQL for the SQL Editor
+      ([`scripts/exercise-import/`](../scripts/exercise-import/README.md), D27). It relies on no user
+      row holding a `dataset_id` (D18), and sets `reviewed`, `images` and `instructions` explicitly
+- [x] Interverse originals: a starter library of 90 exercises written by us (desk-side, small-space,
+      home equipment and gym), seeded by the migration `20261008120000_starter_library.sql` and
+      bundled in the app, so it works before the first sync (D21)
+- [ ] Curation pass of the imported dataset rows (start with `movement_pattern = 'other'` and `gym`),
+      setting `reviewed = true`. Not needed for the gate: the starter library covers every setup
+- [x] Equipment setups: gym and home, a gear checklist, templates, more than one setup, a default
+- [x] Focus presets: the six system presets or a custom split (steps of 5, must total 100). Chosen
+      per cycle on the start screen, with a default in the profile. "Per study plan" waits for study
+      plans (Phase 2)
+- [x] Default circuits for every preset × location × 5/10/15 minutes (and full sessions of 30/45/60),
+      built on the phone and available offline (D22)
+- [x] Set logger: one tap per set; writes `workout_sessions` and `exercise_sets` (targets, actuals,
+      rest, effort), and copies the exercise's name into `exercise_sets.exercise_name`. History shows
+      that name whenever `exercise_id` is null or its exercise isn't on the phone (see
       [normalized writes](DATA_MODEL.md#writes-the-server-normalizes-instead-of-refusing))
-- [ ] Spotter rules engine in TypeScript with unit tests (for example: miss the target by 2+ reps →
-      next set drops 10–20%)
-- [ ] Location swap: replace each exercise with one of the same movement pattern that fits the setup
-- [ ] Zero-tap handoff: the timer ring morphs into the first exercise card (Reanimated); a
-      `transitions` row links the block to the workout
-- [ ] Airplane-mode test of the full cycle, once with a home setup and once with a gym setup
+- [x] Spotter rules engine in TypeScript with unit tests: drop sets, rest-pause, cut a set, longer
+      rest, and raise, hold or lower next session, with the 5% cap (D24)
+- [x] Location swap: `swapForSetup` replaces each exercise with one of the same movement pattern that
+      fits a setup, and the **Swap** button offers up to 5 alternatives. (Each circuit is built for the
+      chosen setup, so there is no "change setup mid-workout" button yet)
+- [x] Zero-tap handoff: the timer ring morphs into the first exercise card (Reanimated; a cross-fade
+      when Reduce motion is on), with a haptic. A `transitions` row links the block to the workout
+      (D26)
+- [x] The other screens: Home ("Today"), Setups, Presets, Exercise library (browse, search, add your
+      own exercise), History, Settings (block length, units, alerts, sync, sign out), Timer check
+- [ ] Airplane-mode test of the full cycle, once with a home setup and once with a gym setup: yours,
+      below. (A unit test already plays both runs offline:
+      `src/features/cycle/__tests__/airplaneLoop.test.ts`)
+
+### Good to know
+- The loop moves on by itself only while the cycle screen is open. During a focus block that doesn't
+  matter: the alert rings, and tapping it opens the cycle. If you leave for Home during the 30-second
+  countdown after a workout, the next block starts when you come back, or the cycle finishes if you
+  come back more than 5 minutes later (D23).
+- **Close** on the cycle screen goes to Home and leaves the cycle running; Home then shows
+  "Back to your …". **Finish** ends the cycle and shows a summary.
+- No new tables or columns in Phase 1. The only new migration is the starter library.
+
+### Your manual steps for the gate (in order)
+Details for each step are in [SETUP §16](SETUP.md#16-phase-1-the-core-loop-on-your-phone).
+
+1. [ ] **Apply the new migration** `20261008120000_starter_library.sql`: Supabase dashboard → **SQL
+       Editor** → **New query** → paste the file → **Run** ([SETUP §16 step 1](SETUP.md#step-1-add-the-starter-library-to-the-database)).
+       Do this **before** the gate, so the sets you log can link to their exercises on the server
+2. [ ] **PowerSync: nothing to do.** The sync config already sends reviewed library exercises to every
+       phone, so the 90 new rows arrive by themselves. No redeploy
+3. [ ] **Build the preview APK** with GitHub Actions: **Actions → Android APK → Run workflow**, pick
+       the branch `claude/bold-fermi-oglgch` (or `main` once the Phase 1 pull request is merged) and
+       `preview` ([SETUP §16 step 2](SETUP.md#step-2-build-and-install-the-phase-1-app))
+4. [ ] **Install** it over the old app (you stay signed in). Open it once online: Settings → **Sync**
+       should say **Connected: Yes**
+5. [ ] **Gate run 1, home:** airplane mode on; Start a study block with a home setup; let the timer
+       end; do the circuit; let the next block start by itself; then Finish
+       ([SETUP §16 step 3](SETUP.md#step-3-the-gate-run-1-with-a-home-setup))
+6. [ ] **Gate run 2, gym:** add a gym setup, then the same run with it in airplane mode
+       ([SETUP §16 step 4](SETUP.md#step-4-the-gate-run-2-with-a-gym-setup))
+7. [ ] **Back online:** wait for **Waiting to upload: 0**, then check the rows in the SQL Editor
+       ([SETUP §16 step 5](SETUP.md#step-5-check-the-rows-reached-postgres)). Both runs pass → tick
+       the airplane-mode item above
+8. [ ] **Timer check:** 25 minutes, phone unplugged, locked and left alone. Write the delay here
+       ([SETUP §16 step 6](SETUP.md#step-6-measure-the-alert-delay-the-timer-check)).
+       Result: _not measured yet_ (date, phone, delay)
+9. [ ] Optional: build the exercise-import SQL and run it in the SQL Editor (after the Phase 1 pull
+       request is merged; [SETUP §16 step 7](SETUP.md#step-7-optional-load-the-exercise-dataset)).
+       Nothing changes in the app until rows are reviewed
+10. [ ] Merge the Phase 1 pull request into `main` when you are happy with it
+11. [ ] The first time you use the Supabase CLI on the hosted project, mark both migrations as applied:
+        `npx supabase migration repair 20261008000000 20261008120000 --status applied`
 
 ### Android
-- [ ] [1.1 Focus timer: scheduled notification, not a foreground service](ANDROID.md#11-the-focus-timer-scheduled-notification-not-a-foreground-service)
-- [ ] [1.2 Notification permission and channels](ANDROID.md#12-notification-permission-and-channels)
-- [ ] [1.3 Exact alarms (optional)](ANDROID.md#13-exact-alarms-optional)
-- [ ] [1.4 Screen on during sets](ANDROID.md#14-screen-on-during-sets)
-- [ ] [1.5 Live countdown in the notification shade (optional)](ANDROID.md#15-live-countdown-in-the-notification-shade-optional)
-- [ ] [1.6 Test through Play's internal testing track](ANDROID.md#16-test-through-plays-internal-testing-track)
+- [x] [1.1 Focus timer: scheduled notification, not a foreground service](ANDROID.md#11-the-focus-timer-scheduled-notification-not-a-foreground-service):
+      built; the delay measurement is manual step 8
+- [x] [1.2 Notification permission and channels](ANDROID.md#12-notification-permission-and-channels):
+      asked when the first study block starts; channel `timers-v1`
+- [ ] [1.3 Exact alarms (optional)](ANDROID.md#13-exact-alarms-optional): deferred; only if the Timer
+      check shows the alert comes too late
+- [x] [1.4 Screen on during sets](ANDROID.md#14-screen-on-during-sets): only during the move block
+- [ ] [1.5 Live countdown in the notification shade (optional)](ANDROID.md#15-live-countdown-in-the-notification-shade-optional):
+      deferred (polish)
+- [ ] [1.6 Test through Play's internal testing track](ANDROID.md#16-test-through-plays-internal-testing-track):
+      needs the Play Console app first (0.5)
 
 ### Tracy
 - None. The transition planner comes in Phase 3; Phase 1 uses the default circuits.
 
 ### Decisions to make
-- [ ] Final timer approach after measuring alert delay with the screen off ([DECISIONS.md](DECISIONS.md) D8)
-- [ ] Ask for exact alarms or not
+- [ ] Final timer approach after measuring the alert delay with the screen off
+      ([DECISIONS.md](DECISIONS.md) D8, D28)
+- [ ] Ask for exact alarms or not (follows from the measurement; [ANDROID.md 1.3](ANDROID.md#13-exact-alarms-optional))
 - [ ] Exercise dataset license: keep the structured-fields-only import, or clear the text and images
       ([DECISIONS.md](DECISIONS.md) D9)
-- [ ] New packages for this phase (`expo-notifications`, `expo-keep-awake`, maybe `ts-fsrs` early):
-      add with `npx expo install`
+- [x] New packages for this phase: `expo-notifications` 57.0.22, `expo-keep-awake` 57.0.2 and
+      `react-native-svg` 15.15.4 (added 2026-10-08). `ts-fsrs` waits for Phase 2
+- [ ] The extra permissions that come with `expo-notifications` (launcher badges, Firebase push):
+      block them now or leave them until push arrives in Phase 4
+      ([ANDROID.md permission ledger](ANDROID.md#permission-ledger))
+- [ ] Confirm or tune our own circuit rules: at most 2 heavy lifts per full session, and no warm-up
+      sets in the time estimate (D22)
+- [ ] Timed sets keep their seconds in `exercise_sets.reps`: add a proper column at the next schema
+      change? (D25)
+- [ ] When the imported dataset gets curated, and by whom (not needed for the gate)
 
 ---
 
@@ -279,7 +353,7 @@ reviews runs correctly.
 ### Decisions to make
 - [ ] Fast model: Haiku 4.5 or Haiku 5.5
 - [ ] Health Connect now or later
-- [ ] Load-increase cap per session (plan starts at 5%)
+- [ ] Load-increase cap per session (plan starts at 5%; Phase 1 uses 5%, [DECISIONS.md](DECISIONS.md) D24)
 
 ---
 
