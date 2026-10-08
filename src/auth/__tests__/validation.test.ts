@@ -8,7 +8,8 @@ import {
   isValidEmail,
   normalizeCode,
   normalizeEmail,
-  OTP_LENGTH,
+  OTP_MAX_LENGTH,
+  OTP_MIN_LENGTH,
 } from '../validation';
 
 describe('email', () => {
@@ -43,27 +44,29 @@ describe('email', () => {
 });
 
 describe('one-time code', () => {
-  it('is 6 digits, matching supabase/config.toml', () => {
-    expect(OTP_LENGTH).toBe(6);
+  it('accepts every length Supabase can send (6 to 10 digits; supabase/config.toml uses 6)', () => {
+    expect([OTP_MIN_LENGTH, OTP_MAX_LENGTH]).toEqual([6, 10]);
   });
 
-  it.each(['123456', '000000', ' 987654 '])('accepts %p', (code) => {
+  it.each(['123456', '000000', ' 987654 ', '12345678', '1234567890'])('accepts %p', (code) => {
     expect(isValidCode(code)).toBe(true);
   });
 
-  it.each(['', '12345', '1234567', '12345a', '12 3456'])('rejects %p', (code) => {
+  it.each(['', '12345', '12345678901', '12345a', '12 3456'])('rejects %p', (code) => {
     expect(isValidCode(code)).toBe(false);
   });
 
   it('strips separators from pasted codes and caps the length', () => {
     expect(normalizeCode('123 456')).toBe('123456');
     expect(normalizeCode('123-456')).toBe('123456');
-    expect(normalizeCode('Your code: 1234567')).toBe('123456');
+    expect(normalizeCode('Your code: 12345678')).toBe('12345678');
+    expect(normalizeCode('123456789012')).toBe('1234567890');
   });
 
   it('explains what is wrong', () => {
-    expect(codeError('')).toMatch(/6-digit code/);
-    expect(codeError('123')).toMatch(/6 digits/);
+    expect(codeError('')).toMatch(/code from the email/);
+    expect(codeError('123')).toMatch(/at least 6 digits/);
+    expect(codeError('12345678')).toBeNull();
     expect(codeError('123 456')).toBeNull();
   });
 });

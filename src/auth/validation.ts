@@ -3,8 +3,13 @@
  * Supabase Auth is the real validator.
  */
 
-/** Length of the email one-time code (supabase/config.toml: auth.email.otp_length). */
-export const OTP_LENGTH = 6;
+/**
+ * Supabase lets a project send email codes of 6 to 10 digits (Authentication → Email → "Email OTP
+ * length"; supabase/config.toml uses 6). Accept the whole range, so a project whose dashboard is set
+ * to a different length (8 has been seen) can still sign in.
+ */
+export const OTP_MIN_LENGTH = 6;
+export const OTP_MAX_LENGTH = 10;
 
 /** Trims and lower-cases, the form Supabase stores, so "Me@X.com " and "me@x.com" are one account. */
 export function normalizeEmail(input: string): string {
@@ -31,16 +36,16 @@ export function emailError(input: string): string | null {
  * Keeps only digits, so a pasted "123 456" or "123-456" still works, and caps the length.
  */
 export function normalizeCode(input: string): string {
-  return input.replace(/\D/g, '').slice(0, OTP_LENGTH);
+  return input.replace(/\D/g, '').slice(0, OTP_MAX_LENGTH);
 }
 
 export function isValidCode(input: string): boolean {
-  return new RegExp(`^\\d{${OTP_LENGTH}}$`).test(input.trim());
+  return new RegExp(`^\\d{${OTP_MIN_LENGTH},${OTP_MAX_LENGTH}}$`).test(input.trim());
 }
 
 export function codeError(input: string): string | null {
   const digits = normalizeCode(input);
-  if (digits === '') return `Enter the ${OTP_LENGTH}-digit code from the email.`;
-  if (digits.length < OTP_LENGTH) return `The code has ${OTP_LENGTH} digits.`;
+  if (digits === '') return 'Enter the code from the email.';
+  if (digits.length < OTP_MIN_LENGTH) return `The code has at least ${OTP_MIN_LENGTH} digits. Check the email.`;
   return null;
 }

@@ -386,14 +386,16 @@ copy a file is to open its "raw" link and press Ctrl+A, Ctrl+C:
    - Body: paste the whole of [`supabase/templates/confirmation.html`](../supabase/templates/confirmation.html)
 3. Save each one.
 
-The important part of each template is `{{ .Token }}`, the 6-digit code. If an email ever arrives with
+The important part of each template is `{{ .Token }}`, the sign-in code. If an email ever arrives with
 a link but no code, that template wasn't saved.
 
 ### Email sign-in settings
 **Authentication → Sign In / Providers → Email** (**verify** the menu names):
 
 - **Email provider:** enabled.
-- **Email OTP length:** **6**. The app only accepts 6 digits.
+- **Email OTP length:** **6** (easiest to type). The app accepts any length Supabase allows (6 to 10),
+  but older builds of the app only took 6 digits: if the email has 8 digits and the app won't take
+  them, set this to 6 and send a new code.
 - **Email OTP expiration:** `3600` seconds (1 hour), matching `supabase/config.toml` and the email
   text.
 - **Confirm email:** leave it **on** (Supabase's default, and what `supabase/config.toml` uses
@@ -685,7 +687,8 @@ A **preview** build needs none of this; just open it.
 1. If you see **Setup needed**, a value in `.env` (or in EAS, or the GitHub variables) is missing or
    wrong; the screen says which. Fix it, then restart Metro with `npm start -- --clear`.
 2. **Sign in** screen: type your email address (the one from section 1) and tap **Send code**.
-3. The email "Your DualRep sign-in code" arrives with a 6-digit code. It can take a few minutes:
+3. The email "Your DualRep sign-in code" arrives with a 6-digit code (or longer, if the project's
+   OTP length is set higher). It can take a few minutes:
    check spam before you tap **Send a new code**. Supabase's built-in sender only sends a few emails
    per hour for the whole project, and every resend uses one up.
 4. **Check your email** screen: type the code and tap **Sign in**.

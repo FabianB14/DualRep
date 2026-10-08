@@ -1,9 +1,9 @@
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 
 import { useAuth } from '@/auth/AuthProvider';
-import { codeError, normalizeCode, OTP_LENGTH } from '@/auth/validation';
+import { codeError, normalizeCode } from '@/auth/validation';
 import { Button, Screen, Text, TextField } from '@/components';
 import { haptic, useTheme } from '@/theme';
 
@@ -34,8 +34,6 @@ export default function VerifyScreen() {
   const [verifying, setVerifying] = useState(false);
   const [resending, setResending] = useState(false);
   const [cooldown, restartCooldown] = useCooldown(RESEND_COOLDOWN_S);
-  // The code auto-submits once complete; remember which one so a failed code is not retried in a loop.
-  const lastSubmitted = useRef<string | null>(null);
 
   if (!email) return <Redirect href="/sign-in" />;
 
@@ -47,7 +45,6 @@ export default function VerifyScreen() {
       haptic('error');
       return;
     }
-    lastSubmitted.current = candidate;
     setVerifying(true);
     setError(null);
     setNotice(null);
@@ -70,7 +67,6 @@ export default function VerifyScreen() {
     if (result.ok) {
       restartCooldown();
       setCode('');
-      lastSubmitted.current = null;
       setNotice('New code sent. Use the newest email.');
       haptic('success');
     } else {
@@ -106,18 +102,19 @@ export default function VerifyScreen() {
       <View style={{ gap: space[2], marginTop: space[8] }}>
         <Text variant="headline">Check your email</Text>
         <Text tone="secondary">
-          We sent a {OTP_LENGTH}-digit code to <Text style={{ fontWeight: '600' }}>{email}</Text>. It can take a minute
+          We sent a sign-in code to <Text style={{ fontWeight: '600' }}>{email}</Text>. It can take a minute
           to arrive; check spam too.
         </Text>
       </View>
       <TextField
-        label={`${OTP_LENGTH}-digit code`}
+        label="Code from the email"
         value={code}
         onChangeText={(text) => {
           const digits = normalizeCode(text);
           setCode(digits);
           if (error) setError(null);
-          if (digits.length === OTP_LENGTH && digits !== lastSubmitted.current) void verify(digits);
+          // No auto-submit: the code can be 6 to 10 digits long (see OTP_MIN_LENGTH), so the app can't
+          // tell when it is complete. "Sign in" or the keyboard's done key submits it.
         }}
         error={error}
         hint={notice ?? undefined}

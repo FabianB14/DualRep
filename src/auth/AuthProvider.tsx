@@ -22,7 +22,7 @@ export type AuthContextValue = {
    * expired token (offline). The app works locally; syncing resumes once the token refreshes online.
    */
   offlineSession: boolean;
-  /** Emails a 6-digit sign-in code; creates the account on first use. */
+  /** Emails a one-time sign-in code (6 to 10 digits, per the project); creates the account on first use. */
   signInWithEmailCode(email: string): Promise<AuthResult>;
   verifyEmailCode(email: string, token: string): Promise<AuthResult>;
   /** Stops sync, deletes this device's local data (including unsent writes), then signs out. */
