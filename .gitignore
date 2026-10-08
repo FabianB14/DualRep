@@ -27,6 +27,9 @@ expo-env.d.ts
 google-services.json
 GoogleService-Info.plist
 play-service-account*.json
+/secrets/
+# Written by `powersync link`; holds the instance link for one developer's machine.
+powersync/cli.yaml
 
 # Supabase local
 supabase/.branches

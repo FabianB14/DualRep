@@ -1,9 +1,9 @@
 -- =================================================================================================
 -- DualRep — initial schema (Phase 0)
 --
--- Every table the app needs through Phase 4, with row level security, explicit grants, the system
--- presets and the `powersync` publication. Tests: supabase/tests/*.test.sql (`npm run db:test`
--- locally, `supabase test db` in CI).
+-- The whole data model from the execution plan (all 23 tables), with row level security, explicit
+-- grants, the system presets and the `powersync` publication. Tests: supabase/tests/*.test.sql
+-- (`npm run db:test` locally, `supabase test db` in CI).
 --
 -- Conventions
 --   * Tables live in `public`, are lowercase plurals, and have `id uuid primary key default
@@ -29,9 +29,9 @@
 --                 or INSERT ... ON CONFLICT (id) DO NOTHING for insert-only tables (reviews, groups)
 --       PATCH  -> UPDATE ... SET <changed columns> WHERE id = $1
 --       DELETE -> DELETE ... WHERE id = $1
---     An upsert needs SELECT + INSERT + UPDATE privileges and policies, and Postgres also checks the
---     SELECT policy against the new row. Every SELECT policy below therefore admits any row its
---     INSERT policy admits.
+--     An upsert needs SELECT + INSERT + UPDATE privileges and policies. Any ON CONFLICT (id), even
+--     DO NOTHING, needs SELECT on `id`, and Postgres then checks the SELECT policy against the new
+--     row. Every SELECT policy below therefore admits any row its INSERT policy admits.
 --   * Columns copied from a parent (source_files/source_chunks.owner_id + group_id, cards.plan_id,
 --     card_links.plan_id) are set by BEFORE triggers, so whatever a device sends is overwritten and
 --     cannot be forged. They exist so PowerSync can bucket rows per user / per plan.
@@ -1523,7 +1523,8 @@ revoke all on public.card_states from anon, authenticated;
 grant select, insert, update, delete on public.card_states to authenticated;
 grant all on public.card_states to service_role;
 
--- Append-only: ON CONFLICT (id) DO NOTHING needs INSERT only, so retried uploads are harmless.
+-- Append-only: no UPDATE, so the device uploads with ON CONFLICT (id) DO NOTHING and a retried upload
+-- is harmless. (That still needs SELECT: the conflict target reads `id`.)
 revoke all on public.reviews from anon, authenticated;
 grant select, insert on public.reviews to authenticated;
 grant all on public.reviews to service_role;

@@ -13,8 +13,7 @@ function mockCreateDb() {
   };
 }
 jest.mock('../database', () => ({ db: mockCreateDb() }));
-// `virtual` keeps this independent of whether src/lib/ids.ts (expo-crypto) is loadable here.
-jest.mock('../../lib/ids', () => ({ newId: () => '55555555-5555-4555-8555-555555555555' }), { virtual: true });
+jest.mock('expo-crypto', () => ({ randomUUID: () => '55555555-5555-4555-8555-555555555555' }));
 
 const mockDb = (jest.requireMock('../database') as { db: ReturnType<typeof mockCreateDb> }).db;
 

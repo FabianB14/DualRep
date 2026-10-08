@@ -5,8 +5,10 @@
  * row exists, which is what proves the round trip.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
+// The same generator src/lib/ids.ts wraps as newId(); imported directly so that src/db stays
+// independent of the app layer (it already receives the Supabase client as a parameter).
+import { randomUUID } from 'expo-crypto';
 
-import { newId } from '../lib/ids';
 import { SYNC_CHECK_SUBJECT_PREFIX, SYNC_CHECK_TABLE, UPLOAD_FAILURES_TABLE } from './constants';
 import { db } from './database';
 import type { UploadFailure } from './schema';
@@ -20,7 +22,7 @@ export type ServerCheckResult = 'found' | 'missing' | 'offline' | 'error';
  * PowerSync queues it and uploads it whenever a connection is available.
  */
 export async function createProbeRow(userId: string): Promise<{ id: string; createdAt: string }> {
-  const id = newId();
+  const id = randomUUID();
   const createdAt = new Date().toISOString();
   await db.execute(
     `INSERT INTO ${SYNC_CHECK_TABLE} (id, user_id, focus_subject, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,

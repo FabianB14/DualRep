@@ -41,27 +41,35 @@ has_server_binaries() {
   [[ -x "$1/initdb" && -x "$1/pg_ctl" && -x "$1/postgres" && -x "$1/psql" ]]
 }
 
+# True when the install next to these binaries has pgvector and pgTAP (or when that cannot be told,
+# in which case the check after startup reports it).
+has_extensions() {
+  local share_dir
+  [[ -x "$1/pg_config" ]] || return 0
+  share_dir="$("$1/pg_config" --sharedir 2>/dev/null)" || return 0
+  [[ -f "$share_dir/extension/vector.control" && -f "$share_dir/extension/pgtap.control" ]]
+}
+
 find_pg_bin() {
   if [[ -n "${PG_BIN:-}" ]]; then
     has_server_binaries "$PG_BIN" || die "PG_BIN=$PG_BIN does not contain initdb, pg_ctl, postgres and psql"
     echo "$PG_BIN"
     return
   fi
-  local candidate
+  local candidate candidates=()
+  # pg_config may belong to a client-only install (libpq-dev) or to another major version without
+  # the extensions, so each candidate must have both the server and the extensions.
   if command -v pg_config >/dev/null 2>&1; then
-    # pg_config may belong to a client-only install (libpq-dev); only use it if the server is there.
-    candidate="$(pg_config --bindir 2>/dev/null || true)"
-    if [[ -n "$candidate" ]] && has_server_binaries "$candidate"; then
+    candidates+=("$(pg_config --bindir 2>/dev/null || true)")
+  fi
+  candidates+=(/usr/lib/postgresql/16/bin)
+  for candidate in "${candidates[@]}"; do
+    if [[ -n "$candidate" ]] && has_server_binaries "$candidate" && has_extensions "$candidate"; then
       echo "$candidate"
       return
     fi
-  fi
-  candidate=/usr/lib/postgresql/16/bin
-  if has_server_binaries "$candidate"; then
-    echo "$candidate"
-    return
-  fi
-  die "Postgres server binaries not found. Install postgresql-16, postgresql-16-pgvector and postgresql-16-pgtap, or set PG_BIN."
+  done
+  die "Postgres 16 with pgvector and pgTAP not found. Install postgresql-16, postgresql-16-pgvector and postgresql-16-pgtap, or set PG_BIN."
 }
 
 PG_BIN="$(find_pg_bin)"
