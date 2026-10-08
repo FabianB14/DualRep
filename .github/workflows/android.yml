@@ -82,9 +82,8 @@ jobs:
           APK=$(find android/app/build/outputs/apk -name '*.apk' | head -n 1)
           echo "path=$APK" >> "$GITHUB_OUTPUT"
           ls -la "$APK"
-      - name: Check 16 KB page alignment (Play requirement for updates from Feb 1, 2027)
-        run: |
-          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "${{ steps.apk.outputs.path }}" | tail -n 3
+      - name: Check 16 KB page size support (Play requirement for updates from Feb 1, 2027)
+        run: bash scripts/check-16kb.sh "${{ steps.apk.outputs.path }}"
       - name: List the permissions the APK requests
         run: |
           "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump permissions "${{ steps.apk.outputs.path }}" | tee permissions.txt

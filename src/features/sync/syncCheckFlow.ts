@@ -16,7 +16,17 @@ export const STEPS: readonly { id: StepId; title: string }[] = [
   { id: 'check-server', title: 'Check Postgres' },
 ];
 
+/**
+ * The test row. Only ever created after the screen confirmed the server was unreachable, so a PASS
+ * really means "written offline, uploaded later" (Android can keep Wi-Fi on in airplane mode).
+ */
 export type Probe = { id: string; createdAt: string };
+
+/**
+ * Result of a server check. 'found-no-stream' means the row reached Postgres (uploads work) but
+ * PowerSync's download stream is not connected, so sync is only half working and the gate is not met.
+ */
+export type CheckOutcome = ServerCheckResult | 'found-no-stream';
 
 export type SyncCheckState = {
   /** The current step, or 'passed' once the row was found in Postgres. */
@@ -24,7 +34,7 @@ export type SyncCheckState = {
   probe: Probe | null;
   busy: boolean;
   /** Result of the latest server check (shown until the next one). */
-  result: ServerCheckResult | null;
+  result: CheckOutcome | null;
   /** Plain-words problem with the latest action, if any. */
   error: string | null;
 };
@@ -37,7 +47,7 @@ export type SyncCheckAction =
   | { type: 'airplane-off-confirmed' }
   | { type: 'queue-count'; count: number | null }
   | { type: 'check-started' }
-  | { type: 'check-finished'; result: ServerCheckResult }
+  | { type: 'check-finished'; result: ServerCheckResult; streamConnected: boolean }
   | { type: 'restart' };
 
 export const initialSyncCheckState: SyncCheckState = {
@@ -65,13 +75,18 @@ export function syncCheckReducer(state: SyncCheckState, action: SyncCheckAction)
       return state.step === 'wait-upload' && action.count === 0 ? { ...state, step: 'check-server' } : state;
     case 'check-started':
       return state.step === 'check-server' ? { ...state, busy: true, error: null, result: null } : state;
-    case 'check-finished':
+    case 'check-finished': {
+      // PASS needs both directions: the upload reached Postgres and the PowerSync stream (downloads)
+      // is connected. Uploads go through the Supabase API and work even when PowerSync itself is
+      // misconfigured, so a found row alone does not prove sync works.
+      const result: CheckOutcome = action.result === 'found' && !action.streamConnected ? 'found-no-stream' : action.result;
       return {
         ...state,
         busy: false,
-        result: action.result,
-        step: action.result === 'found' ? 'passed' : state.step,
+        result,
+        step: result === 'found' ? 'passed' : state.step,
       };
+    }
     case 'restart':
       return initialSyncCheckState;
   }
@@ -81,11 +96,20 @@ export function stepIndex(step: SyncCheckState['step']): number {
   return step === 'passed' ? STEPS.length : STEPS.findIndex((s) => s.id === step);
 }
 
+/** Message shown when the phone can still reach the server at the moment the row would be created. */
+export const STILL_ONLINE_MESSAGE =
+  'The phone can still reach the server, so this would not test offline saving. Turn on airplane mode and make sure Wi-Fi is off, then tap again.';
+
 /** What the latest server check means, in plain words. */
-export function describeCheckResult(result: ServerCheckResult): { tone: 'success' | 'warning' | 'danger'; text: string } {
+export function describeCheckResult(result: CheckOutcome): { tone: 'success' | 'warning' | 'danger'; text: string } {
   switch (result) {
     case 'found':
       return { tone: 'success', text: 'PASS — the row made offline is in Postgres.' };
+    case 'found-no-stream':
+      return {
+        tone: 'warning',
+        text: 'The row reached Postgres, but the PowerSync stream is not connected, so downloads are not working yet. Check EXPO_PUBLIC_POWERSYNC_URL and PowerSync’s Supabase Auth setting, then check again.',
+      };
     case 'missing':
       return {
         tone: 'warning',

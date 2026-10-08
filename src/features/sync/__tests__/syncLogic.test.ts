@@ -26,7 +26,7 @@ describe('sync check flow', () => {
       { type: 'queue-count', count: 2 },
       { type: 'queue-count', count: 0 },
       { type: 'check-started' },
-      { type: 'check-finished', result: 'found' },
+      { type: 'check-finished', result: 'found', streamConnected: true },
     ]);
     expect(state).toEqual({ step: 'passed', probe, busy: false, result: 'found', error: null });
     expect(stepIndex(state.step)).toBe(STEPS.length);
@@ -52,9 +52,16 @@ describe('sync check flow', () => {
   it('stays on the check step with the result when the row is not found', () => {
     const atCheck: SyncCheckState = { ...initialSyncCheckState, step: 'check-server', probe };
     for (const result of ['missing', 'offline', 'error'] as const) {
-      const state = run([{ type: 'check-started' }, { type: 'check-finished', result }], atCheck);
+      const state = run([{ type: 'check-started' }, { type: 'check-finished', result, streamConnected: true }], atCheck);
       expect(state).toMatchObject({ step: 'check-server', result, busy: false });
     }
+  });
+
+  it('does not pass when the row is in Postgres but the PowerSync stream is down', () => {
+    const atCheck: SyncCheckState = { ...initialSyncCheckState, step: 'check-server', probe };
+    const state = run([{ type: 'check-started' }, { type: 'check-finished', result: 'found', streamConnected: false }], atCheck);
+    expect(state).toMatchObject({ step: 'check-server', result: 'found-no-stream', busy: false });
+    expect(describeCheckResult('found-no-stream')).toMatchObject({ tone: 'warning', text: expect.stringContaining('PowerSync') });
   });
 
   it('keeps the step and reports the problem when creating the row fails', () => {

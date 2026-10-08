@@ -5,6 +5,7 @@ import { View } from 'react-native';
 import { useAuth } from '@/auth/AuthProvider';
 import { Button, Card, Screen, StatusPill, Text } from '@/components';
 import { SYNC_CHECK_SUBJECT_PREFIX, SYNC_CHECK_TABLE } from '@/db/constants';
+import { db } from '@/db/database';
 import { useUploadFailures, useUploadQueueCount } from '@/db/hooks';
 import type { StudySessionRow } from '@/db/schema';
 import { createProbeRow, verifyOnServer } from '@/db/syncCheck';
@@ -14,6 +15,7 @@ import {
   initialSyncCheckState,
   stepIndex,
   STEPS,
+  STILL_ONLINE_MESSAGE,
   syncCheckReducer,
   type StepId,
 } from '@/features/sync/syncCheckFlow';
@@ -21,6 +23,9 @@ import { SyncStatusCard } from '@/features/sync/SyncStatusCard';
 import { haptic, useTheme } from '@/theme';
 
 type ProbeRow = Pick<StudySessionRow, 'id' | 'focus_subject' | 'created_at'>;
+
+/** An id no row has: asking for it only tells us whether the server answers at all. */
+const PROBE_REACHABILITY_ID = '00000000-0000-0000-0000-000000000000';
 
 /** What each step asks the user to do, in plain words. */
 const INSTRUCTIONS: Record<StepId, string> = {
@@ -57,6 +62,15 @@ export default function SyncCheckScreen() {
   const createRow = async () => {
     if (!user) return;
     dispatch({ type: 'create-started' });
+    // Gate precondition: the server must be unreachable right before the local write. PowerSync's
+    // "connected" flag is not enough (it is also false when PowerSync is misconfigured), and Android
+    // can keep Wi-Fi on in airplane mode. Any HTTP answer, even an error, means the phone is online.
+    const reach = await verifyOnServer(supabase, PROBE_REACHABILITY_ID);
+    if (reach !== 'offline') {
+      dispatch({ type: 'create-failed', message: STILL_ONLINE_MESSAGE });
+      haptic('warning');
+      return;
+    }
     try {
       const probe = await createProbeRow(user.id);
       dispatch({ type: 'create-succeeded', probe });
@@ -71,8 +85,9 @@ export default function SyncCheckScreen() {
     if (!state.probe) return;
     dispatch({ type: 'check-started' });
     const result = await verifyOnServer(supabase, state.probe.id);
-    dispatch({ type: 'check-finished', result });
-    haptic(result === 'found' ? 'success' : 'warning');
+    const streamConnected = db.currentStatus.connected;
+    dispatch({ type: 'check-finished', result, streamConnected });
+    haptic(result === 'found' && streamConnected ? 'success' : 'warning');
   };
 
   const primary = (() => {
@@ -187,17 +202,18 @@ export default function SyncCheckScreen() {
 /** A live hint that tells the user whether the phone agrees with what the step expects. */
 function StepHint({ step, connected, queueCount }: { step: StepId; connected: boolean; queueCount: number | null }) {
   if (step === 'airplane-on') {
+    // PowerSync's stream state, not proof the phone is offline: the Create step checks that itself.
     return connected ? (
-      <StatusPill tone="warning" label="Still connected — wait a few seconds after switching" />
+      <StatusPill tone="warning" label="Sync server still connected — wait a few seconds after switching" />
     ) : (
-      <StatusPill tone="success" label="Offline" />
+      <StatusPill tone="neutral" label="Sync server not connected" />
     );
   }
   if (step === 'airplane-off' || step === 'wait-upload') {
     return connected ? (
-      <StatusPill tone="success" label="Connected" />
+      <StatusPill tone="success" label="Sync server connected" />
     ) : (
-      <StatusPill tone="neutral" label="Waiting for the connection…" />
+      <StatusPill tone="neutral" label="Waiting for the sync server…" />
     );
   }
   if (step === 'create-row' && queueCount !== null && queueCount > 0) {

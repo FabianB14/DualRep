@@ -69,6 +69,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'android.permission.READ_EXTERNAL_STORAGE',
       'android.permission.WRITE_EXTERNAL_STORAGE',
       'android.permission.RECORD_AUDIO',
+      // expo-secure-store declares these for biometric-protected items; DualRep never uses them.
+      'android.permission.USE_BIOMETRIC',
+      'android.permission.USE_FINGERPRINT',
       // The development client's debug overlay draws over other apps, so only dev builds keep it.
       ...(variant === 'development' ? [] : ['android.permission.SYSTEM_ALERT_WINDOW']),
     ],
