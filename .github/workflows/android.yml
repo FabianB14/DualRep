@@ -23,6 +23,14 @@ on:
       - app.config.ts
       - eas.json
       - .github/workflows/android.yml
+  push:
+    branches: ['claude/**']
+    paths:
+      - package.json
+      - package-lock.json
+      - app.config.ts
+      - eas.json
+      - .github/workflows/android.yml
 
 concurrency:
   group: android-${{ github.ref }}
