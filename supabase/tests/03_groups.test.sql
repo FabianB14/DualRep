@@ -157,7 +157,7 @@ select is(
 
 select throws_ok(
   $$select public.join_group('ZZZZZZZZ')$$,
-  'P0002', 'invalid_invite_code',
+  'P0001', 'invalid_invite_code',
   'an unknown code raises invalid_invite_code'
 );
 
@@ -302,16 +302,23 @@ select throws_ok(
   'P0001', 'cannot_remove_owner',
   'the owner cannot remove themselves'
 );
-select throws_ok(
-  $$select public.remove_group_member('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000003')$$,
-  'P0002', 'not_a_member',
-  'removing someone who is not a member raises not_a_member'
+-- Removing someone who already left (or never joined) is not an error: the code still rotates, so a
+-- member who left seconds before the owner tapped Remove cannot re-join with the code they know.
+select matches(
+  public.remove_group_member('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000003'),
+  '^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$',
+  'removing someone who is not (or no longer) a member succeeds and returns a new code'
 );
-select is(
+select isnt(
   (select invite_code from public.groups where id = '30000000-0000-4000-8000-000000000001'),
   'ABCD2345',
-  '... and a refused removal rotates nothing'
+  '... and the old code is replaced even though nobody was removed'
 );
+reset role;
+-- Back to the known code for the rest of the file.
+update public.groups set invite_code = 'ABCD2345' where id = '30000000-0000-4000-8000-000000000001';
+set local role authenticated;
+set local request.jwt.claims to '{"sub": "10000000-0000-4000-8000-000000000001", "role": "authenticated"}';
 
 -- Mia2 can read the current code while she is a member.
 set local request.jwt.claims to '{"sub": "20000000-0000-4000-8000-000000000002", "role": "authenticated"}';
@@ -340,7 +347,7 @@ select results_eq(
 set local request.jwt.claims to '{"sub": "20000000-0000-4000-8000-000000000002", "role": "authenticated"}';
 select throws_ok(
   $$select public.join_group('ABCD2345')$$,
-  'P0002', 'invalid_invite_code',
+  'P0001', 'invalid_invite_code',
   'the removed member cannot rejoin with the code they knew'
 );
 select is(

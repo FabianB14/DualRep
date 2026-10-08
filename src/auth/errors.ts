@@ -28,7 +28,12 @@ export function authErrorMessage(error: AuthErrorLike | null | undefined): strin
   if (code === 'otp_expired') {
     return 'That code is wrong or has expired. Check the latest email, or send a new code.';
   }
-  if (code === 'over_email_send_rate_limit' || code === 'over_request_rate_limit' || status === 429) {
+  if (code === 'over_email_send_rate_limit') {
+    // Either the per-address limit (about a minute) or the project's hourly email cap, which is low
+    // on Supabase's built-in sender (docs/SETUP.md explains custom SMTP).
+    return 'Too many emails sent. Wait a minute and try again; if it keeps happening, the server has hit its hourly email limit, so try again later.';
+  }
+  if (code === 'over_request_rate_limit' || status === 429) {
     return 'Too many tries. Wait a minute, then try again.';
   }
   if (code === 'email_address_not_authorized') {

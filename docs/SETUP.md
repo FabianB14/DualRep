@@ -826,11 +826,12 @@ select pg_drop_replication_slot('<slot_name>');
 - **"This server can’t send email to that address yet":** the built-in sender only sends to members of
   your Supabase team. Use your own address, or invite the other address to your team, or set up a
   custom email sender (SMTP) under Authentication settings (needed before beta testers join).
-- **"Too many tries. Wait a minute, then try again.":** the app shows this for two different limits.
+- **"Too many emails sent…":** the app shows this for two different email limits.
   One allows one email per address per minute: waiting a minute fixes it. The other is for the whole
   project: Supabase's built-in sender sends only a few emails **per hour** (2–3 according to search
   results; **verify** under Authentication → Rate Limits). If waiting a minute doesn't help, wait up
   to an hour, or set up a custom email sender (SMTP), which lets you raise the limit.
+  (**"Too many tries. Wait a minute, then try again."** is the general request limit: just wait.)
 - The email has a **link but no code:** the template wasn't saved (section 6).
 
 ### "Setup needed" on the phone

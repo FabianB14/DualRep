@@ -3,7 +3,7 @@
 -- error) and reviews (append-only answer log; a retried upload is a no-op).
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(34);
+select plan(39);
 
 -- The card_states id rule (CARD_STATE_ID_NAMESPACE in src/db/constants.ts):
 -- id = UUIDv5(namespace, '<user_id>:<card_id>').
@@ -137,15 +137,14 @@ select is(
   1::bigint,
   'a retried PATCH with the same last_review applies'
 );
-select throws_ok(
+select lives_ok(
   $$insert into public.card_states (id, user_id, card_id, due)
     values (pg_temp.card_state_id('11111111-1111-4111-8111-111111111111', '70000000-0000-4000-8000-000000000002'),
             '11111111-1111-4111-8111-111111111111', '70000000-0000-4000-8000-000000000002',
             '2026-10-05T10:00:00.000Z')
     on conflict (id) do update set id = excluded.id, user_id = excluded.user_id, card_id = excluded.card_id,
       due = excluded.due$$,
-  '42501', null,
-  'a user cannot keep state for a card they cannot read'
+  'a card state for a card the user cannot read (but that exists) is stored: private study history from an offline session is never dropped'
 );
 select throws_ok(
   $$insert into public.card_states (id, user_id, card_id, due)
@@ -291,15 +290,36 @@ select throws_ok(
   '42501', null,
   'a DO UPDATE upsert of a review is refused (append-only, hence insert-ignore)'
 );
-select throws_ok(
+select lives_ok(
   $$insert into public.reviews (id, user_id, card_id, rating, answer_mode, reviewed_at, prev_state, state,
                                 due_at, stability, difficulty)
     values ('d0000000-0000-4000-8000-000000000002', '11111111-1111-4111-8111-111111111111',
             '70000000-0000-4000-8000-000000000002', 3, 'typed', now(), 0, 1, now(), 1, 5)
     on conflict (id) do nothing$$,
-  '42501', null,
-  'a user cannot log a review of a card they cannot read'
+  'a review of a card that exists is stored even when the user cannot read it (an answer given offline, uploaded after losing access)'
 );
+select is((select count(*) from public.reviews where id = 'd0000000-0000-4000-8000-000000000002'),
+  1::bigint, '... and stays private to the user who made it');
+select lives_ok(
+  $$insert into public.reviews (id, user_id, card_id, rating, answer_mode, reviewed_at, prev_state, state,
+                                due_at, stability, difficulty)
+    values ('d0000000-0000-4000-8000-000000000005', '11111111-1111-4111-8111-111111111111',
+            '7fffffff-0000-4000-8000-000000000099', 3, 'typed', now(), 0, 1, now(), 1, 5)
+    on conflict (id) do nothing$$,
+  'a review of a card that was deleted meanwhile is accepted without an error (nothing for the device to drop)'
+);
+select is((select count(*) from public.reviews where id = 'd0000000-0000-4000-8000-000000000005'),
+  0::bigint, '... and skipped: nothing is stored for a card that no longer exists');
+select lives_ok(
+  $$insert into public.card_states (id, user_id, card_id, due)
+    values (pg_temp.card_state_id('11111111-1111-4111-8111-111111111111', '7fffffff-0000-4000-8000-000000000099'),
+            '11111111-1111-4111-8111-111111111111', '7fffffff-0000-4000-8000-000000000099', now())
+    on conflict (id) do update set id = excluded.id, user_id = excluded.user_id, card_id = excluded.card_id,
+      due = excluded.due$$,
+  'a card state for a deleted card is accepted without an error'
+);
+select is((select count(*) from public.card_states where card_id = '7fffffff-0000-4000-8000-000000000099'),
+  0::bigint, '... and skipped');
 select throws_ok(
   $$insert into public.reviews (id, user_id, card_id, rating, answer_mode, reviewed_at, prev_state, state,
                                 due_at, stability, difficulty)

@@ -8,9 +8,10 @@
 -- Conventions
 --   * Tables live in `public`, are lowercase plurals, and have `id uuid primary key default
 --     gen_random_uuid()` (devices send their own UUIDs; the default serves server-created rows),
---     `created_at` and `updated_at timestamptz not null default now()`. `updated_at` is maintained by
---     public.set_updated_at() on every UPDATE, so the server, not the device, owns it. The one id
---     without a default is card_states.id, which must be derived from (user_id, card_id).
+--     `created_at` and `updated_at timestamptz not null default now()`. On INSERT the device's values
+--     are kept (a row made offline keeps its real creation time); on every UPDATE
+--     public.set_updated_at() overwrites updated_at with the server's clock. The one id without a
+--     default is card_states.id, which must be derived from (user_id, card_id).
 --   * Enumerations are text + CHECK (adding a value is a one-line migration; no enum types).
 --     JSON is jsonb; lists are jsonb arrays. No `numeric` columns: PowerSync would sync them as TEXT,
 --     so fractional values use double precision.
@@ -27,7 +28,9 @@
 --         exists, is stored as null (a set keeps exercise_name as its label);
 --       - a row shared into a group the caller is not a member of is stored unshared.
 --     Required (NOT NULL) parent references are still refused by RLS (42501): a child of a parent
---     you cannot use is meaningless.
+--     you cannot use is meaningless. The exception is a user's private study history (reviews,
+--     card_states): it is stored as long as the card still exists, even if the user can no longer
+--     read it, and skipped silently if the card was deleted (the cascade would have removed it).
 --   * Every foreign key and every column used by RLS or by a sync stream filter is indexed.
 --   * RLS is enabled on every table. Policies are `to authenticated` and call `(select auth.uid())`
 --     so Postgres evaluates it once per statement instead of once per row. Checks that read other
@@ -1338,6 +1341,33 @@ create trigger clear_interval_block_reference
   before insert or update of interval_block_id on public.reviews
   for each row execute function public.clear_foreign_interval_block();
 
+-- reviews / card_states.card_id: a user's private study history. An answer given offline must not be
+-- lost because the card's plan was unshared, its owner left, or the user was removed meanwhile, so
+-- RLS only checks that the row is the caller's own (it is never visible to anyone else). If the card
+-- was deleted while the device was offline, the row is skipped (no error, nothing stored): the
+-- cascade would have removed it anyway, and refusing it would make the device drop it as a failure.
+-- Security definer because the card may no longer be visible to the caller under RLS.
+create function public.skip_study_row_without_card()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not exists (select 1 from public.cards c where c.id = new.card_id) then
+    return null;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger skip_without_card
+  before insert on public.reviews
+  for each row execute function public.skip_study_row_without_card();
+create trigger skip_without_card
+  before insert on public.card_states
+  for each row execute function public.skip_study_row_without_card();
+
 -- exercises / sources / study_plans.group_id: a row can only be shared into a group its owner is a
 -- member of. A client row naming any other group is stored unshared instead of being refused: e.g.
 -- content created offline as shared and uploaded after its owner left or was removed, or a retried
@@ -1622,29 +1652,33 @@ create policy "card_links: delete own" on public.card_links
   for delete to authenticated
   using (created_by = (select auth.uid()));
 
--- card_states: private per user; only for cards the user can read.
+-- card_states: private per user. Only ownership is checked (not can_read_card): a state reviewed
+-- offline must still upload after the card became unreadable (skip_study_row_without_card, section 4,
+-- handles a deleted card). The derived-id CHECK still stops anyone from taking another user's id.
 create policy "card_states: read own" on public.card_states
   for select to authenticated
   using (user_id = (select auth.uid()));
 create policy "card_states: insert own" on public.card_states
   for insert to authenticated
-  with check (user_id = (select auth.uid()) and public.can_read_card(card_id));
+  with check (user_id = (select auth.uid()));
 create policy "card_states: update own" on public.card_states
   for update to authenticated
   using (user_id = (select auth.uid()))
-  with check (user_id = (select auth.uid()) and public.can_read_card(card_id));
+  with check (user_id = (select auth.uid()));
 create policy "card_states: delete own" on public.card_states
   for delete to authenticated
   using (user_id = (select auth.uid()));
 
--- reviews: append-only (no update or delete policies, and no such grants). An interval block that is
--- not one of the caller's own is stored as null (clear_interval_block_reference, section 4).
+-- reviews: append-only (no update or delete policies, and no such grants). Private per user; like
+-- card_states only ownership is checked, so an offline answer uploads even after the card became
+-- unreadable. An interval block that is not one of the caller's own is stored as null
+-- (clear_interval_block_reference, section 4).
 create policy "reviews: read own" on public.reviews
   for select to authenticated
   using (user_id = (select auth.uid()));
 create policy "reviews: insert own" on public.reviews
   for insert to authenticated
-  with check (user_id = (select auth.uid()) and public.can_read_card(card_id));
+  with check (user_id = (select auth.uid()));
 
 -- study_sessions: own rows. A session may point at any plan the user can read, but that is judged
 -- only when plan_id is set (clear_plan_reference, section 4, stores an unreadable one as null), not
@@ -1783,7 +1817,8 @@ create policy "tracy_events: update own" on public.tracy_events
 --    (the only way to delete someone else's membership) and rotate the code
 -- =================================================================================================
 
--- Returns the group id. Errors: invalid_invite_code (P0002) when no group has the code,
+-- Returns the group id. Errors (P0001, which PostgREST returns as HTTP 400; P0002 would be a 500):
+-- invalid_invite_code (P0001) when no group has the code,
 -- group_full (P0001, from the member-limit trigger) at 8 members. Joining a group you are already in
 -- returns its id without changes, so a retried call is harmless.
 -- The group row is locked while joining. remove_group_member() and regenerate_invite_code() update
@@ -1810,7 +1845,7 @@ begin
   where g.invite_code = upper(btrim(coalesce(p_invite_code, '')))
   for update;
   if target_group is null then
-    raise exception 'invalid_invite_code' using errcode = 'P0002';
+    raise exception 'invalid_invite_code' using errcode = 'P0001';
   end if;
 
   if exists (
@@ -1867,7 +1902,9 @@ $$;
 -- still have it.
 -- Errors: not_authenticated (42501) without a user; not_group_owner (42501) when the caller does not
 -- own the group (also when it does not exist); cannot_remove_owner (P0001) when the owner names
--- themselves (they delete the group instead); not_a_member (P0002) when the user is not in the group.
+-- themselves (they delete the group instead). Removing someone who is not (or no longer) a member is
+-- not an error: the code is rotated anyway, so a member who left seconds before the owner tapped
+-- Remove cannot re-join with the code they still know.
 create function public.remove_group_member(p_group_id uuid, p_user_id uuid)
 returns text
 language plpgsql
@@ -1895,9 +1932,6 @@ begin
 
   delete from public.group_members m
    where m.group_id = p_group_id and m.user_id = p_user_id;
-  if not found then
-    raise exception 'not_a_member' using errcode = 'P0002';
-  end if;
 
   update public.groups g
      set invite_code = public.generate_invite_code()
@@ -2082,6 +2116,7 @@ revoke all on function public.clear_foreign_profile_defaults() from public, anon
 revoke all on function public.clear_foreign_workout_session() from public, anon, authenticated, service_role;
 revoke all on function public.clear_foreign_interval_block() from public, anon, authenticated, service_role;
 revoke all on function public.clear_group_unless_member() from public, anon, authenticated, service_role;
+revoke all on function public.skip_study_row_without_card() from public, anon, authenticated, service_role;
 
 
 -- =================================================================================================

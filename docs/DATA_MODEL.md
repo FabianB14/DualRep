@@ -161,8 +161,13 @@ BEFORE triggers rewrite what the server may not store, before RLS and the foreig
   run as `postgres`, security definer functions and foreign-key actions are left alone.
 - **Required (NOT NULL) parent references are still refused** with 42501, because a child of a
   parent you can't use means nothing: a set in someone else's workout session, a transition whose
-  `interval_block_id` isn't yours, a card in a topic you can't edit, `card_states` or `reviews` for
-  a card you can't read, a `plan_sources` row for a plan you don't own or a source you can't read.
+  `interval_block_id` isn't yours, a card in a topic you can't edit, a `plan_sources` row for a plan
+  you don't own or a source you can't read, a `card_links` row on a plan you can't read.
+- **Private study history is the exception:** `reviews` and `card_states` only need to be your own
+  rows. An answer given offline uploads even if the card became unreadable meanwhile (its plan was
+  unshared, its owner left, you were removed); it stays private to you. If the card was **deleted**,
+  the row is skipped without an error (`skip_study_row_without_card`), the same result the cascade
+  would have had, so the device has nothing to drop.
 - **What the app must handle:** a normalized write leaves no `upload_failures` entry; the row just
   comes back from the server changed. The app must show a set with `exercise_id = null` (or with an
   `exercise_id` whose exercise is no longer on the phone) by its `exercise_name`, and cope with
@@ -373,7 +378,7 @@ from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, made by `generate_invite_code()`).
 **`group_members`**: `group_id` → groups (cascade), `user_id` → auth.users, `role` text (`owner`,
 `member`); unique `(group_id, user_id)`.
 - **Joining** goes only through the RPC **`join_group(p_invite_code)`**: case-insensitive code lookup,
-  returns the group id; error `invalid_invite_code` (P0002) for an unknown code, `group_full` (P0001)
+  returns the group id; error `invalid_invite_code` (P0001) for an unknown code, `group_full` (P0001)
   at 8 members, `not_authenticated` (42501) without a user; joining twice is harmless. Only
   `authenticated` may call it. It locks the group row while it looks up the code, so a join that
   races with a removal or a code change waits for it and then reads the new code: a removed member
@@ -387,8 +392,11 @@ from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, made by `generate_invite_code()`).
   code. In one transaction it locks the group row, deletes the member's row and rotates the invite
   code (the removed member knew the old one). Errors: `not_authenticated` (42501) without a user;
   `not_group_owner` (42501) when you don't own the group or it doesn't exist; `cannot_remove_owner`
-  (P0001) when the owner names themselves (they delete the group instead); `not_a_member` (P0002)
-  when that user isn't in the group. Only `authenticated` may call it.
+  (P0001) when the owner names themselves (they delete the group instead). Removing someone who
+  already left (or never joined) is not an error: the code is rotated anyway, so a member who left
+  seconds before the owner tapped Remove can't re-join with the code they know. Only
+  `authenticated` may call it. (The RPC errors use P0001 because PostgREST returns it as HTTP 400;
+  P0002 would come back as a 500.)
   - The app calls it **online** and shares the returned code with the people who should keep access.
   - It never queues a local DELETE of someone else's membership: the server's DELETE policy matches
     no row (HTTP 204, no error), and the row comes back with the next sync.
@@ -480,14 +488,17 @@ names match ts-fsrs's `Card`, so a row can be passed to ts-fsrs directly.
 - **Stale-write guard:** a BEFORE UPDATE trigger skips an update whose `last_review` is older than (or
   missing compared with) the stored one. The statement still succeeds, so the upload queue keeps
   moving; the `reviews` log keeps both answers.
-- **RLS:** own rows; on write, the card must be readable.
+- **RLS:** own rows. Writes only check ownership, not that the card is still readable (see "Private
+  study history" above); a state for a deleted card is skipped. The derived-id CHECK still stops
+  anyone from taking another user's id.
 
 **`reviews`** (append-only): `user_id`, `card_id` → cards (cascade), `interval_block_id` uuid? →
 interval_blocks (set null), `rating` smallint (1–4), `answer_mode` text (`typed`, `spoken`,
 `handwritten`, `self_graded`), `reviewed_at` timestamptz, `duration_ms` integer?, `prev_state`
 smallint (state before), `elapsed_days` integer, then the state **after** the review: `state`,
 `due_at`, `stability`, `difficulty`, `scheduled_days`.
-- **RLS:** read own; insert own for readable cards (`can_read_card`); no update or delete policies.
+- **RLS:** read own; insert own (ownership only, so an offline answer survives losing access to the
+  card; a review of a deleted card is skipped); no update or delete policies.
   **Grants:** select, insert. The device uploads with `ON CONFLICT DO NOTHING`, so a retried upload
   is harmless.
 - `interval_block_id` must be your own interval block; any other value, or a deleted one, is stored
