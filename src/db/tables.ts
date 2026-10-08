@@ -37,7 +37,8 @@ export type WritePolicy = {
   delete: boolean;
   /**
    * Columns the server always fills in itself and the client has no privilege to write (e.g.
-   * groups.invite_code, made by the column default and changed only by regenerate_invite_code()).
+   * groups.invite_code, made by the column default and changed only by regenerate_invite_code() and
+   * remove_group_member()).
    * They sync down like any other column but are never uploaded: `planOperation` strips them from
    * every PUT (a locally created row may hold null or a placeholder there), and refuses a PATCH that
    * changes one (DUALREP_WRITE_NOT_ALLOWED), because no device code should ever do that.
@@ -136,7 +137,9 @@ export const TABLES = {
       ...TIMESTAMPS,
     },
     // Library rows (dataset/interverse) are service-role only; RLS allows writes to own 'user' rows,
-    // and CHECKs keep a user row from ever holding a dataset_id or reviewed = true.
+    // and CHECKs keep a user row from ever holding a dataset_id or reviewed = true. A group_id naming a
+    // group the owner is not (or no longer) a member of is stored as null: the row is kept, unshared
+    // (same for sources and study_plans).
     writes: OWNER_WRITES,
     indexes: { by_pattern: ['movement_pattern', 'location'], by_owner: ['owner_id'], by_group: ['group_id'] },
   },
@@ -187,7 +190,9 @@ export const TABLES = {
       user_id: 'uuid',
       workout_session_id: 'uuid',
       // null once the exercise is deleted (ON DELETE SET NULL): another person's exercise must never
-      // block their account deletion. The server checks the exercise is readable when this is set.
+      // block their account deletion. When the device sets it to an exercise the user cannot read
+      // (e.g. unshared, or its owner left the group, before the upload) or one that no longer exists,
+      // the server stores the set with exercise_id null instead of refusing it.
       exercise_id: 'uuid',
       // The exercise's name, copied by the device when the set is logged, so the history stays
       // readable after the exercise is deleted, unshared or otherwise no longer visible.
@@ -243,7 +248,11 @@ export const TABLES = {
       role: 'text',
       ...TIMESTAMPS,
     },
-    // Joins go through the join_group() RPC; the client may only leave or remove members.
+    // Joins go through the join_group() RPC. The only client DELETE is leaving: the server's DELETE
+    // policy admits the caller's own (non-owner) membership only. The owner removes someone else with
+    // the remove_group_member() RPC, called online (it deletes the membership and rotates the invite
+    // code in one transaction); a queued local DELETE of another member's row would change nothing on
+    // the server, and the row would come back with the next sync.
     writes: { put: false, patch: false, delete: true },
     indexes: { by_group: ['group_id'], by_user: ['user_id'] },
   },

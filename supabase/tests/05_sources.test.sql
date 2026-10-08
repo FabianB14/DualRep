@@ -3,7 +3,7 @@
 -- deleted; source_chunks are read-only to clients and readable only by the owner and group members.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(31);
+select plan(32);
 
 -- Runs one write and returns how many rows it changed. RLS hides other people's rows from UPDATE
 -- and DELETE (0 rows, no error), so that is how "cannot modify" is asserted.
@@ -138,14 +138,18 @@ select results_eq(
   $$values (0::bigint, 0::bigint, 0::bigint)$$,
   'a non-member sees none of the group source, its files or its chunks'
 );
-select throws_ok(
+select lives_ok(
   $$insert into public.sources (id, owner_id, group_id, kind)
     values ('40000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000003',
             '30000000-0000-4000-8000-000000000001', 'notes')
     on conflict (id) do update set id = excluded.id, owner_id = excluded.owner_id, group_id = excluded.group_id,
       kind = excluded.kind$$,
-  '42501', null,
-  'a non-member cannot share a source with the group'
+  'a non-member''s source naming the group is accepted ...'
+);
+select results_eq(
+  $$select owner_id::text, group_id from public.sources where id = '40000000-0000-4000-8000-000000000003'$$,
+  $$values ('10000000-0000-4000-8000-000000000003', null::uuid)$$,
+  '... but stored unshared (a non-member cannot share a source with the group)'
 );
 select is(
   pg_temp.affected($$update public.sources set title = 'mine' where id = '40000000-0000-4000-8000-000000000001'$$),

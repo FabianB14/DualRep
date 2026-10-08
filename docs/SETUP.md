@@ -50,9 +50,10 @@ git or into the app.**
 
 ## 2. Set up your Windows PC
 
-You need Node.js and Git for everything, and the Android tools only for **local** builds
-([path B](#path-b-build-on-your-pc)). If you will only use EAS cloud builds or the GitHub APK, you can
-skip steps 3–6 for now.
+Every path needs Node.js, Git and **adb** (the tool that talks to your phone over USB; sections 3,
+10 and 11 use it). Java and Android Studio (steps 3 and 4) are only for **local** builds
+([path B](#path-b-build-on-your-pc)). If you will only use EAS cloud builds or the GitHub APK, skip
+steps 3 and 4, and in step 5 follow **"Paths A and C: adb on its own"** instead.
 
 ### Step 1: Node.js 22 LTS
 1. Download the **Node.js 22** Windows installer (`.msi`) from https://nodejs.org/en/download. CI uses
@@ -112,7 +113,7 @@ These are the versions Expo SDK 57 / React Native 0.86 build with (the same list
 installs).
 
 ### Step 5: ANDROID_HOME and PATH
-Run in a normal PowerShell window:
+**Path B (you installed Android Studio in step 4).** Run in a normal PowerShell window:
 ```powershell
 [Environment]::SetEnvironmentVariable('ANDROID_HOME', "$env:LOCALAPPDATA\Android\Sdk", 'User')
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -124,6 +125,21 @@ echo $env:ANDROID_HOME   # C:\Users\<you>\AppData\Local\Android\Sdk
 adb version              # Android Debug Bridge version 1.0.41 (or similar)
 ```
 (Prefer clicking? Start → "Edit environment variables for your account" does the same.)
+
+**Paths A and C: adb on its own** (no Android Studio):
+1. Open https://developer.android.com/tools/releases/platform-tools, click **Download SDK
+   Platform-Tools for Windows** and accept the terms. It saves `platform-tools-latest-windows.zip` in
+   your Downloads folder.
+2. In a normal PowerShell window, unzip it to `C:\platform-tools` and add that folder to your PATH:
+   ```powershell
+   Expand-Archive "$env:USERPROFILE\Downloads\platform-tools-latest-windows.zip" -DestinationPath C:\ -Force
+   $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+   [Environment]::SetEnvironmentVariable('Path', "$userPath;C:\platform-tools", 'User')
+   ```
+3. Close PowerShell, open a new one, and check:
+   ```powershell
+   adb version              # Android Debug Bridge version 1.0.41 (or similar)
+   ```
 
 ### Step 6: A short folder for code
 Keep the repo at a **short path outside OneDrive**, for example `C:\dev\dualrep`. OneDrive syncing
@@ -148,8 +164,8 @@ scoop install supabase
 ```
 Then type `supabase` wherever this guide says `npx supabase`.
 
-**Success for section 2:** `node -v`, `git --version`, `java -version` (17), `adb version` and
-`eas --version` all print versions in a new PowerShell window.
+**Success for section 2:** `node -v`, `git --version`, `adb version` and `eas --version` all print
+versions in a new PowerShell window, and on path B `java -version` prints 17.
 
 ---
 
@@ -171,6 +187,24 @@ Then type `supabase` wherever this guide says `npx supabase`.
 
 ## 4. Get the code
 
+### First: put the Phase 0 code on `main`
+Phase 0 was built on the branch `claude/bold-fermi-oglgch`. Until that branch is merged, `main` (the
+branch a plain `git clone` gives you) has only the plan and none of the code, and the APK workflow in
+[section 10](#10-optional-the-github-actions-apk) has no **Run workflow** button. Merge it with a pull
+request on GitHub:
+
+1. Open https://github.com/FabianB14/DualRep → **Pull requests** → **New pull request**.
+2. Set **base** to `main` and **compare** to `claude/bold-fermi-oglgch`, then click **Create pull
+   request**, give it a title, and click **Create pull request** again.
+3. The checks run on the pull request (CI takes a few minutes; the Android APK build takes about 15).
+   When they are green, click **Merge pull request** → **Confirm merge**.
+
+Want to start before it is merged? Clone the branch itself: in the commands below, use
+`git clone -b claude/bold-fermi-oglgch https://github.com/FabianB14/DualRep.git dualrep` instead of
+the plain `git clone` line. Once the pull request is merged, switch that copy to `main` with
+`git checkout main` and then `git pull`.
+
+### Clone and check
 ```powershell
 mkdir C:\dev
 cd C:\dev
@@ -185,9 +219,31 @@ npm run check
 
 **Success:** `npm run check` ends without errors.
 
+### Optional: the database tests on your PC
 `npm run db:test` (the database tests) needs Linux with Postgres 16, pgvector and pgTAP, so it runs in
-GitHub Actions rather than on Windows. If you want it locally, run it inside WSL (Ubuntu): install
-`postgresql-16 postgresql-16-pgvector postgresql-16-pgtap` and Node 22 there.
+GitHub Actions rather than on Windows. If you want it locally, use WSL with **Ubuntu 24.04** (the
+same system CI uses), and clone the repo **again inside WSL's own filesystem**. Don't run it from the
+Windows copy under `/mnt/c/dev/dualrep`. In the Ubuntu terminal, after installing Node 22 there (the
+Linux instructions at https://nodejs.org/en/download):
+```bash
+sudo apt-get update
+sudo apt-get install -y postgresql-16 postgresql-16-pgvector postgresql-16-pgtap
+git clone https://github.com/FabianB14/DualRep.git ~/dualrep   # add -b claude/bold-fermi-oglgch until it is merged
+cd ~/dualrep
+npm run db:test
+```
+It ends with `db-test: all 13 test files passed (518 tests)`.
+
+**Line endings on Windows.** Git for Windows' default setting checks files out with Windows line
+endings, which breaks shell scripts in Linux. The repo's `.gitattributes` keeps `.sh`, `.sql`, `.mjs`,
+`.toml`, `.yml` and `.yaml` files on Unix line endings, but a Windows copy cloned before that file
+existed keeps the old endings until the files are checked out again. To fix such a copy, commit or
+save any changes you want to keep, then in `C:\dev\dualrep` run:
+```powershell
+git rm --cached -r -q .
+git reset --hard
+```
+(Or delete the folder and clone again.)
 
 ---
 
@@ -459,7 +515,9 @@ cloud builds don't**, so path A stores the values in EAS as well.
    ```
    `eas env:list --environment preview` shows what is stored. (A development build loads its
    JavaScript from your PC, so it uses your local `.env`; a preview build carries its JavaScript
-   inside and uses these stored values.)
+   inside and uses these stored values.) The `production` environment gets its own values in Phase
+   5 ([ANDROID.md 5.2](ANDROID.md#52-signing-and-eas-submit)), so a production build never points at
+   this development backend.
 4. Start the build:
    ```powershell
    eas build -p android --profile development
@@ -494,10 +552,12 @@ npm run android
 ## 10. Optional: the GitHub Actions APK
 
 The workflow [`.github/workflows/android.yml`](../.github/workflows/android.yml) builds an installable
-**arm64** APK on GitHub's machines, with no EAS account and no Android Studio. It also checks 16 KB
-page alignment and lists the APK's permissions on the run's summary page. (It runs by itself on pull
-requests that change `package.json`, `package-lock.json`, `app.config.ts`, `eas.json` or the
-workflow, to prove the native code still compiles.)
+**arm64** APK on GitHub's machines, with no EAS account and no Android Studio. It also runs the 16 KB
+page-size check ([`scripts/check-16kb.sh`](../scripts/check-16kb.sh): zip and ELF alignment of every
+native library; the run fails if either is off, see [ANDROID.md 0.7](ANDROID.md#07-16-kb-page-size-check))
+and lists the APK's permissions on the run's summary page. (It runs by itself on pull requests, and
+on pushes to `claude/` branches, that change `package.json`, `package-lock.json`, `app.config.ts`,
+`eas.json` or the workflow, to prove the native code still compiles.)
 
 1. **Give it the app settings.** On GitHub: the repo → **Settings → Secrets and variables → Actions →
    Variables** tab → **New repository variable**, three times:
@@ -510,7 +570,9 @@ workflow, to prove the native code still compiles.)
 
    These are **variables**, not secrets: the values ship inside the app anyway. No secrets are
    needed. Without them the APK opens on "Setup needed".
-2. **Run it:** **Actions → Android APK → Run workflow**, pick the variant:
+2. **Run it:** **Actions → Android APK → Run workflow**, pick the variant. (GitHub shows the **Run
+   workflow** button only once `android.yml` is on the default branch, `main`: merge the Phase 0 pull
+   request first, [section 4](#first-put-the-phase-0-code-on-main).)
    - `preview`: the JavaScript is inside the APK, so it runs on its own. Use this for the final gate
      check.
    - `development`: a dev client that needs Metro (`npm start`) on your PC.
@@ -544,7 +606,8 @@ opened the app; skip to "Sign in".)
    ```powershell
    adb reverse tcp:8081 tcp:8081
    ```
-   (On the same **Wi-Fi** instead, skip this; the phone finds the PC on the network.)
+   (On the same **Wi-Fi** instead, skip this; the phone finds the PC on the network. The "hard case"
+   in section 12 needs USB, though.)
 3. Open **DualRep (dev)** on the phone. Its launcher lists the development server running on your PC:
    tap it. If the list is empty, enter the address by hand: `http://localhost:8081` over USB (after
    `adb reverse`), or `http://<your PC's IP>:8081` over Wi-Fi.
@@ -555,7 +618,9 @@ A **preview** build needs none of this; just open it.
 1. If you see **Setup needed**, a value in `.env` (or in EAS, or the GitHub variables) is missing or
    wrong; the screen says which. Fix it, then restart Metro with `npm start -- --clear`.
 2. **Sign in** screen: type your email address (the one from section 1) and tap **Send code**.
-3. The email "Your DualRep sign-in code" arrives with a 6-digit code.
+3. The email "Your DualRep sign-in code" arrives with a 6-digit code. It can take a few minutes:
+   check spam before you tap **Send a new code**. Supabase's built-in sender only sends a few emails
+   per hour for the whole project, and every resend uses one up.
 4. **Check your email** screen: type the code and tap **Sign in**.
 5. The home screen says "Signed in as <your email>". On the **Sync** card, wait until **Connected**
    says **Yes** and the status says **Up to date**. The first sync downloads the system presets.
@@ -569,17 +634,27 @@ online, see [PowerSync won't connect](#powersync-wont-connect-the-sync-card-stay
 
 The Sync Check screen walks you through the gate one step at a time. It writes a test row into
 `study_sessions` (its subject starts with `Sync check `) while the phone is offline, and at the end
-asks Supabase directly, not through PowerSync, whether the row is in Postgres.
+asks Supabase directly, not through PowerSync, whether the row is in Postgres. It is strict, so a
+PASS really means "saved offline, synced later":
+
+- it creates the test row only after checking that the phone **can't reach the server** at that
+  moment (Android can keep Wi-Fi on in airplane mode), and
+- PASS also needs the **PowerSync sync stream to be connected** at the end. The upload goes through
+  Supabase, so a row in Postgres alone doesn't prove that sync works.
 
 On the home screen, tap **Run the sync check**. Then:
 
 1. **Turn on airplane mode.** Open quick settings and turn on airplane mode; turn Wi-Fi off too if it
-   stays on. Wait until the pill says **Offline**, then tap **Airplane mode is on**.
-2. **Create a test row.** Tap **Create test row**. The **Test row** card shows the row's id and
+   stays on. The pill under the instructions shows PowerSync's connection: right after switching it
+   says **Sync server still connected — wait a few seconds after switching**. When it says **Sync
+   server not connected**, tap **Airplane mode is on**.
+2. **Create a test row.** Tap **Create test row**. The app first checks that it can't reach the
+   server, then saves the row on the phone only. The **Test row** card shows the row's id and
    **Stored on this phone**. Note the first few characters of the id (or take a screenshot).
 3. **Turn airplane mode off** (and Wi-Fi back on). Stay on this screen. Tap **Airplane mode is off**.
+   The pill says **Waiting for the sync server…**, then **Sync server connected**.
 4. **Wait for the upload.** The button shows **Waiting to upload: 1** and moves on by itself when it
-   reaches 0, usually within seconds (the app retries every few seconds until the server answers).
+   reaches 0, usually within seconds of the sync server connecting.
 5. **Check Postgres.** Tap **Check Postgres**.
 
 **Success:** a green **PASS** card: "The row made offline is in Postgres." Take a screenshot for your
@@ -589,18 +664,25 @@ If it doesn't pass:
 
 | The screen says | What to do |
 |---|---|
+| "The phone can still reach the server, so this would not test offline saving…" (step 2) | The phone is still online, usually because Wi-Fi stayed on. Turn on airplane mode, turn Wi-Fi off, then tap **Create test row** again. |
 | "Not in Postgres yet" | Look for an **Upload problems** card on the same screen and read its code in [Troubleshooting](#the-row-never-reaches-postgres). If there is none and "Waiting to upload" isn't 0, the phone isn't connected yet. |
+| "The row reached Postgres, but the PowerSync stream is not connected…" | Uploads work, but the phone isn't receiving from PowerSync, so the gate isn't met yet. Check `EXPO_PUBLIC_POWERSYNC_URL` and PowerSync's **Use Supabase Auth** setting (section 8), and see [PowerSync won't connect](#powersync-wont-connect-the-sync-card-stays-connecting-or-offline-while-online). When the Sync card says **Connected: Yes**, tap **Check Postgres again**. |
 | "No connection" | Airplane mode or Wi-Fi is still off. |
 | "The server could not be asked" | The Supabase URL or key in the build is wrong. |
-| "Waiting to upload" stays above 0 | The phone can't reach PowerSync: [PowerSync won't connect](#powersync-wont-connect-the-sync-card-stays-connecting-or-offline-while-online). |
+| "Waiting to upload" stays above 0 | The phone isn't sending yet. If the Sync card's **Connected** says **No**, see [PowerSync won't connect](#powersync-wont-connect-the-sync-card-stays-connecting-or-offline-while-online): the queued row is sent once the sync server connects. Also read **Last error** on the Sync card ([Troubleshooting](#the-row-never-reaches-postgres), step 3). |
 
 ### The hard case (recommended once)
-This proves a queued write survives the app being closed:
+This proves a queued write survives the app being closed. Run it on the **preview** build (its
+JavaScript is inside the APK), or on the development build only with the phone on **USB** after
+`adb reverse tcp:8081 tcp:8081` ([section 11](#11-start-the-app-and-sign-in)); USB keeps working in
+airplane mode. A development build that reaches Metro over Wi-Fi can't load its JavaScript when you
+reopen it offline.
 1. Turn airplane mode on and create a test row (steps 1–2).
 2. **Swipe DualRep away** from the recent-apps screen. Don't use "Force stop" in Settings.
-3. Still in airplane mode, open DualRep again and tap **Run the sync check**. The steps start over,
-   which is fine: the **Test rows on this phone** list still shows your row, and the Sync card shows
-   **Waiting to upload: 1**.
+3. Still in airplane mode, open DualRep again and tap **Run the sync check**. (On a development build
+   the launcher may open first: tap the development server, or enter `http://localhost:8081`.) The
+   steps start over, which is fine: the **Test rows on this phone** list still shows your row, and
+   the Sync card shows **Waiting to upload: 1**.
 4. Turn airplane mode off. Watch **Waiting to upload** drop to 0, then confirm the row in Postgres
    ([section 13](#13-confirm-the-row-in-postgres)) using the id from the list.
 
@@ -625,7 +707,9 @@ If you are curious what the phone logs while this happens: `adb logcat -s ReactN
 **Success:** the row is there. **The Phase 0 gate has passed.** Tick it in [ROADMAP.md](ROADMAP.md).
 
 Then do it once more with a **preview** (release) build, which proves that release networking (HTTPS
-only, no Metro) works too.
+only, no Metro) works too. Signing in on the preview build needs another sign-in email: if you've
+already asked for two or three codes this hour, wait an hour first (see
+[the sign-in email doesn't arrive](#the-sign-in-email-doesnt-arrive)).
 
 Clean up probe rows whenever you like (the deletes sync back to the phone):
 ```sql
@@ -680,14 +764,26 @@ where user_id = (select id from auth.users where email = 'you@example.com');
 
    | Code | Meaning | Fix |
    |---|---|---|
-   | **42501** | Permission denied: a missing **grant** or a missing/failed **RLS policy** | Check the migration is on the hosted project (`npx supabase migration list --linked`), and that you are signed in as the row's owner. A table created by hand without grants does this too. |
-   | 23503 | A referenced row doesn't exist (foreign key) | The parent row (for example the study session) never reached the server. Fix that one first. |
+   | **42501** | Permission denied for a signed-in user (the server answered HTTP 403): a missing **grant** or a missing/failed **RLS policy** | Check the migration is on the hosted project (`npx supabase migration list --linked`), and that you are signed in as the row's owner. A table created by hand without grants does this too. |
+   | 23503 | A required parent row doesn't exist (foreign key) | The parent row (for example the study session of a focus block) never reached the server. Fix that one first. |
    | 23505 | Duplicate (unique constraint) | Usually harmless: the same row was uploaded twice. |
    | 22P02 or another 22xxx | Bad data (a value Postgres can't read) | A bug in the app's write code: send the error message to whoever maintains the code. |
    | `DUALREP_…` | The app refused to send a write the server would reject anyway (for example to a read-only table) | A bug in the app's write code. |
 
-3. **"Waiting to upload" never reaches 0, no upload problem:** the phone isn't connected to
-   PowerSync. Look at **Connected** on the Sync card and the PowerSync errors below.
+   What never shows up here: a request the server answered with **HTTP 401** (not signed in, or an
+   expired sign-in). Those are retried, never dropped. Optional links that the server can't keep (a
+   set's exercise or a session's plan that someone else unshared or deleted) don't fail either: the
+   server stores them as empty and the write goes through
+   ([DATA_MODEL.md](DATA_MODEL.md#writes-the-server-normalizes-instead-of-refusing)).
+
+3. **"Waiting to upload" never reaches 0, no upload problem:** the phone isn't sending yet. Look at
+   **Connected** and **Last error** on the Sync card:
+   - **Connected: No** — the phone isn't connected to PowerSync; see the PowerSync errors below. A
+     queued write is sent once it connects.
+   - **Last error: "No signed-in Supabase session; the upload waits until the user signs in
+     again"** — the sign-in was lost (for example it was revoked). Nothing is sent and nothing is
+     lost: sign in again with the **same** email and the queue uploads. (Signing in with a different
+     email clears the phone's data first, unsent writes included.)
 4. Watch the phone's logs while it happens:
    ```powershell
    adb logcat -s ReactNativeJS
@@ -726,11 +822,15 @@ select pg_drop_replication_slot('<slot_name>');
 ```
 
 ### The sign-in email doesn't arrive
-- Check spam. Wait a minute: Supabase's built-in sender is slow and rate-limited.
-- **"This server can't send email to that address yet":** the built-in sender only sends to members of
+- Check spam. Wait a few minutes: Supabase's built-in sender is slow and rate-limited.
+- **"This server can’t send email to that address yet":** the built-in sender only sends to members of
   your Supabase team. Use your own address, or invite the other address to your team, or set up a
   custom email sender (SMTP) under Authentication settings (needed before beta testers join).
-- **"Too many tries":** wait a minute, then send a new code.
+- **"Too many tries. Wait a minute, then try again.":** the app shows this for two different limits.
+  One allows one email per address per minute: waiting a minute fixes it. The other is for the whole
+  project: Supabase's built-in sender sends only a few emails **per hour** (2–3 according to search
+  results; **verify** under Authentication → Rate Limits). If waiting a minute doesn't help, wait up
+  to an hour, or set up a custom email sender (SMTP), which lets you raise the limit.
 - The email has a **link but no code:** the template wasn't saved (section 6).
 
 ### "Setup needed" on the phone

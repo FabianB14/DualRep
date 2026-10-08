@@ -52,6 +52,10 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
   file on every write); WatermelonDB (the plan already replaced it).
 - **Revisit when:** PowerSync ships a new adapter, or the app needs SQLCipher encryption (op-sqlite
   supports it through a `package.json` option).
+- **Confirmed (2026-10-08):** the GitHub Actions Android APK build compiles PowerSync's and
+  op-sqlite's native modules cleanly under Expo SDK 57 (the release APK). That answers the plan's
+  "the PowerSync native module builds cleanly" check; running it on the phone is still the Phase 0
+  gate.
 
 ## D5. Sign in with an emailed one-time code (2026-10-08)
 
@@ -66,6 +70,9 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
 - **Revisit when:** Phase 5, if testers ask for Google Sign-In. Supabase's built-in email sender is
   rate-limited and meant for development: set up a custom SMTP sender before the closed beta
   (**verify** the current limits in the Supabase dashboard).
+- **Planned exception:** Google Play's reviewers need a login that works without a one-time code, so
+  Phase 5 adds one password account and a hidden "Sign in with password" path for it
+  ([ANDROID.md 5.8](ANDROID.md#58-reviewer-login-app-access)).
 
 ## D6. Session stored in SecureStore, in chunks (2026-10-08)
 
@@ -137,7 +144,8 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
   grants out makes old and new projects behave the same and documents the client's exact rights. Some
   rights are column-level: `groups` allows updating only `name`; `tracy_events` only `accepted`.
 - **Watch out:** a missing grant fails with 42501, the same code as an RLS denial. The connector drops
-  such writes into the local `upload_failures` table, which the Sync Check screen shows.
+  such writes (42501 with HTTP 403) into the local `upload_failures` table, which the Sync Check
+  screen shows. A 42501 with HTTP 401 means "not signed in" and is retried instead (D19).
 - **Alternatives:** relying on default grants.
 - **Revisit when:** every new table (copy the pattern).
 
@@ -160,3 +168,114 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
   (models, task list, per-caller secret, logging). The proposed changes are written down in
   [TRACY_INTEGRATION.md](TRACY_INTEGRATION.md#10-tracy-ai-changes-for-phase-2-proposed-not-made).
 - **Revisit when:** Phase 2 starts.
+
+## D13. Deleting never depends on anyone else's data (2026-10-08)
+
+- **Decision:** no foreign key restricts a delete. Every foreign key is CASCADE or SET NULL, and a
+  reference that can point at another person's row is SET NULL. Sets keep a copy of the exercise's
+  name (`exercise_sets.exercise_name`), and `exercise_sets.exercise_id` became nullable. Deleting a
+  group unshares the exercises, sources and plans members shared into it instead of deleting them
+  (`exercises.group_id` is SET NULL, like sources and study plans).
+- **Why:** with `exercise_id ... on delete restrict`, any set someone else logged against your
+  exercise (even an outsider who only knew its id) made your account deletion fail, and a group
+  owner could not delete their group. Google Play requires working account deletion. Deleting a
+  group also silently deleted members' own exercises.
+- **Alternatives:** keep RESTRICT and block cross-user references (deletion would still depend on
+  others' rows); soft deletes.
+- **Revisit when:** a new table links to rows other people own. `00_schema.test.sql` fails if a
+  foreign key restricts deletes.
+
+## D14. Optional references and shares are normalized, not refused (2026-10-08)
+
+- **Decision:** a write made offline is never dropped because of something someone else did before
+  it uploaded. BEFORE triggers rewrite what the server may not store, for client requests only:
+  - an optional reference to a row the writer may not use, or that no longer exists, is stored as
+    null. References to rows someone else may own (a session's plan, a set's exercise, a card's
+    source chunk) are judged only when a write sets or changes them, so a stored value survives the
+    row becoming unreadable. References to your own rows (presets, setups, sessions, blocks) are
+    judged on every write that sets them.
+  - a row shared into a group its owner is not a member of is stored unshared. This trigger fires on
+    every client insert and update, not only ones that send `group_id`, so a row left shared by a
+    race with leaving is unshared by its owner's next edit.
+  - required (NOT NULL) parent references are still refused (42501).
+
+  Details: [DATA_MODEL.md](DATA_MODEL.md#writes-the-server-normalizes-instead-of-refusing).
+- **Why:** PowerSync uploads in order and the phone drops a write the server refuses for good
+  (42501, 23503). Someone leaving a group, unsharing or deleting a row while you were offline would
+  otherwise get your queued sets, sessions or cards dropped before they reached the server. Refusing would also tell a writer whether someone
+  else's row exists; storing null for both a missing and an unreadable id doesn't.
+- **Alternatives:** refuse with 42501 (the first version of these checks did; a review showed that a
+  set logged offline was then dropped when the exercise's owner left the group before the upload);
+  check references on every write (old rows would become uneditable after someone left a group).
+- **Revisit when:** a new optional reference a client can write is added: it needs a normalizing
+  trigger (`00_schema.test.sql` checks this).
+
+## D15. Leaving or being removed from a group unshares your content (2026-10-08)
+
+- **Decision:** when a membership is deleted, the leaver's own exercises, sources (with their files
+  and chunks) and study plans in that group get `group_id = null`. Other members keep their own rows
+  that point at that content, but no longer see it.
+- **Why:** otherwise the content stayed visible to people the owner no longer shares a group with,
+  and every later edit of it failed the "share only into your own groups" rule.
+- **Alternatives:** delete the content (loses the owner's data); leave it shared (a privacy leak).
+- **Revisit when:** Phase 4 adds per-member sharing settings.
+
+## D16. The server picks invite codes; removing a member is one atomic RPC (2026-10-08)
+
+- **Decision:** the phone has no privilege on `groups.invite_code`, so the server always picks it.
+  Only the owner changes it: `regenerate_invite_code()` rotates it, and `remove_group_member()`
+  deletes a membership and rotates the code in one transaction, returning the new code. The
+  `group_members` DELETE policy admits only leaving (your own non-owner membership). `join_group()`
+  locks the group row while it looks up the code. There is no ban list.
+- **Why:** a code chosen by the phone could be guessable. Every member can read the code, so a
+  removal without a rotation lets the removed person re-join, and a rotation before the removal lets
+  them read the new code first; doing both in one locked transaction, with joins taking the same
+  lock, closes both gaps. A queued, offline "remove" of someone else could not be made safe, so the
+  app calls the RPC online.
+- **Alternatives:** a ban table (more state to sync and explain); removal as a plain DELETE followed
+  by a separate rotation (racy).
+- **Revisit when:** Phase 4, if invite links need longer-lived or per-person codes.
+
+## D17. card_states ids are derived and enforced (2026-10-08)
+
+- **Decision:** a `card_states` id must be UUIDv5(`CARD_STATE_ID_NAMESPACE`, `user_id:card_id`). A
+  CHECK enforces it (23514 otherwise), and there is no default.
+- **Why:** two offline devices of one user then write the same row instead of colliding. Without the
+  CHECK the id would be predictable but unprotected: a group mate could insert a row under your
+  future id, and every upload of your real state for that card would fail.
+- **Alternatives:** random ids plus a merge step; a composite primary key (PowerSync needs a single
+  `id`).
+- **Revisit when:** never for existing rows: the namespace must not change.
+
+## D18. Library integrity checks on exercises (2026-10-08)
+
+- **Decision:** two CHECKs on `exercises`: only `dataset` rows have a `dataset_id`, and a `user` row
+  is never `reviewed = true`. They apply to the service role too.
+- **Why:** `dataset_id` is the import's idempotency key and free-exercise-db ids are public; a user
+  row holding one would make the import fail, skip the exercise, or merge into the user's row. And
+  `reviewed` marks curated library content, which a user row must not claim.
+- **Alternatives:** trust the RLS insert rules alone.
+- **Revisit when:** Phase 1, when the import script is written.
+
+## D19. HTTP 401 is retried, and nothing uploads without a session (2026-10-08)
+
+- **Decision:** the connector treats any HTTP 401 as temporary (retried, never dropped), and it
+  checks for a signed-in session before sending anything. Without one it stops with
+  `NoSessionError` and the queue stays on the phone until the same user signs in again. A 42501
+  with HTTP 403 is still a real denial: dropped and logged in `upload_failures`.
+- **Why:** without a session supabase-js sends the publishable key, the request runs as `anon`, and
+  PostgREST answers 401 with code 42501. Treating that as a permission error dropped the whole
+  offline queue after a lost sign-in.
+- **Alternatives:** drop a 401 like a 403 (loses the offline queue); sign out and clear the phone on
+  a 401 (also loses it).
+- **Revisit when:** the app adds account switching.
+
+## D20. A strict Sync Check gate (2026-10-08)
+
+- **Decision:** the Sync Check creates its test row only after checking that the server is
+  unreachable at that moment, and PASS also requires PowerSync's sync stream to be connected.
+- **Why:** Android can keep Wi-Fi on in airplane mode, so "airplane mode is on" didn't prove the row
+  was written offline. And the upload goes through the Supabase API, which works even when PowerSync
+  is misconfigured, so a row in Postgres alone didn't prove that sync works.
+- **Alternatives:** trust the user's tap; check only that the row reached Postgres.
+- **Revisit when:** the gate has passed; the screen can stay as a diagnostic.

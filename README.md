@@ -16,7 +16,7 @@ friends. Android first, then iOS, then Meta glasses.
 ## Status
 
 **Phase 0 (Foundation) is built; the gate is pending on a real phone.** The app,
-the database (23 tables with row level security, tested), PowerSync sync,
+the database (23 tables with row level security, 518 pgTAP tests), PowerSync sync,
 email-code sign-in, design tokens and the Sync Check screen are in this repo. The
 gate, "a row created offline on a phone appears in Postgres after reconnecting",
 passes once the hosted services are set up and the Sync Check is run on a phone:
@@ -46,6 +46,10 @@ Full step-by-step setup for Windows, including the hosted services:
 
 Prerequisites: Node.js 22.13+, Git, and for local Android builds JDK 17 plus the
 Android SDK (Platform 36, Build-Tools 36.0.0, NDK 27.1.12297006, CMake 3.30.5).
+
+The Phase 0 code is on the branch `claude/bold-fermi-oglgch` until its pull
+request is merged into `main` ([docs/SETUP.md §4](docs/SETUP.md#first-put-the-phase-0-code-on-main)).
+Until then, add `-b claude/bold-fermi-oglgch` to the `git clone` line below.
 
 ```powershell
 git clone https://github.com/FabianB14/DualRep.git dualrep
@@ -93,7 +97,7 @@ Without them the app opens on a "Setup needed" screen instead of crashing.
 | `src/lib/` | Configuration, the Supabase client, secure session storage, ids |
 | `supabase/` | Migrations, pgTAP tests, email templates, local CLI config, schema snapshot |
 | `powersync/` | Sync Streams config and PowerSync instance config |
-| `scripts/` | The database test harness and the sync-config validator |
+| `scripts/` | The database test harness, the sync-config validator, and the 16 KB page-size check for APKs (`check-16kb.sh`) |
 | `.github/workflows/` | CI (`ci.yml`) and the installable APK build (`android.yml`) |
 | `docs/` | Plan, roadmap, setup and guides |
 

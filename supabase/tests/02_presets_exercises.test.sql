@@ -3,7 +3,7 @@
 -- as library rows: no dataset_id, never reviewed).
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(44);
+select plan(45);
 
 -- Runs one write and returns how many rows it changed. RLS hides other people's rows from UPDATE
 -- and DELETE (0 rows, no error), so that is how "cannot modify" is asserted.
@@ -284,20 +284,28 @@ select throws_ok(
   '23514', null,
   'PATCH: a user cannot mark their exercise reviewed'
 );
-select throws_ok(
+-- Sharing into a group you are not in is not refused (an offline write must not be dropped); the
+-- exercise is stored unshared.
+select lives_ok(
   $$insert into public.exercises (id, name, origin, owner_id, group_id)
     values ('b0000000-0000-4000-8000-000000000021', 'Shared', 'user', '11111111-1111-4111-8111-111111111111',
             'c0000000-0000-4000-8000-000000000001')
     on conflict (id) do update set id = excluded.id, name = excluded.name, origin = excluded.origin,
       owner_id = excluded.owner_id, group_id = excluded.group_id$$,
-  '42501', null,
-  'a user cannot share an exercise with a group they are not in'
+  'PUT: an exercise shared with a group the user is not in is accepted ...'
 );
-select throws_ok(
-  $$update public.exercises set group_id = 'c0000000-0000-4000-8000-000000000001'
-    where id = 'b0000000-0000-4000-8000-000000000020'$$,
-  '42501', null,
-  'a user cannot move their exercise into a group they are not in'
+select is(
+  pg_temp.affected($$update public.exercises set group_id = 'c0000000-0000-4000-8000-000000000001'
+    where id = 'b0000000-0000-4000-8000-000000000020'$$),
+  1::bigint,
+  'PATCH: ... and so is moving an exercise into such a group ...'
+);
+select results_eq(
+  $$select id::text, group_id from public.exercises
+    where id in ('b0000000-0000-4000-8000-000000000020', 'b0000000-0000-4000-8000-000000000021') order by id$$,
+  $$values ('b0000000-0000-4000-8000-000000000020', null::uuid),
+           ('b0000000-0000-4000-8000-000000000021', null::uuid)$$,
+  '... but both are stored unshared (never shared into a group the owner is not in)'
 );
 
 -- exercises as Bob ----------------------------------------------------------------------------------

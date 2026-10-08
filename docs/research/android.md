@@ -161,7 +161,7 @@ The field names below are checked against the `@expo/eas-json@24.9.0` schema [P]
 ### 0.8 Running the Phase 0 gate on an Android phone [I]
 1. Install the dev build and sign in. Let PowerSync finish its initial sync.
 2. Turn on airplane mode. Create a row and confirm it renders from local SQLite.
-3. **Test the hard case:** swipe the app away (don't use Force stop), reopen it while still offline, and confirm the row is still queued.
+3. **Test the hard case:** swipe the app away (don't use Force stop), reopen it while still offline, and confirm the row is still queued. (A development build can only reopen offline when it reaches Metro over USB; see [SETUP.md §12](../SETUP.md#the-hard-case-recommended-once).)
 4. Turn airplane mode off with the app in the foreground. Confirm the row appears in Postgres (Supabase table editor) and that RLS let it through. Confirm the upload queue is empty.
 5. Repeat once with a **preview (release) APK** against hosted Supabase. This proves release networking works: no cleartext, and the correct scheme/redirects.
 
@@ -184,7 +184,7 @@ Do **not** add a `dataSync` foreground service for sync. It is capped at 6 hours
 2. **Alert with a scheduled local notification** at `endsAt`, using `expo-notifications` with a `DATE` trigger on a high-importance `timers` channel with sound and vibration. Cancel or reschedule on pause or skip.
    - How exact is it? [P `ExpoSchedulingDelegate.kt`] expo-notifications calls `setExactAndAllowWhileIdle` **only if `canScheduleExactAlarms()`**. Otherwise it falls back to inexact `setAndAllowWhileIdle`, which Doze can defer. Measure the real delay on the founder's phone with the screen off for 25+ minutes [I].
 3. **Optional, for precise alerts: `SCHEDULE_EXACT_ALARM`.** This is user-granted special access and is denied by default on fresh installs that target 13+ (Android 14+) [V https://developer.android.com/about/versions/14/changes/schedule-exact-alarms].
-   - Show an in-app explainer, then open `IntentLauncher.ActivityAction.REQUEST_SCHEDULE_EXACT_ALARM` [P, expo-intent-launcher 57 includes the constant] with `data: 'package:com.interverse.dualrep'`.
+   - Show an in-app explainer, then open `IntentLauncher.ActivityAction.REQUEST_SCHEDULE_EXACT_ALARM` [P, expo-intent-launcher 57 includes the constant] with ``data: `package:${Application.applicationId}` ``, the running build's own package (expo-application). It differs per variant (`.dev`, `.preview`), so don't hard-code it.
    - Check `canScheduleExactAlarms()`. expo-notifications doesn't appear to expose it, so this needs a tiny native module [I].
    - When the user revokes the permission, the system cancels your exact alarms [V].
 4. **Don't declare `USE_EXACT_ALARM`.**

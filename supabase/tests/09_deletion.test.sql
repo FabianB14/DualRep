@@ -70,9 +70,9 @@ insert into public.exercise_sets (id, user_id, workout_session_id, exercise_id, 
   ('e3000000-0000-4000-8000-000000000033', '10000000-0000-4000-8000-000000000003',
    'e2000000-0000-4000-8000-000000000003', 'b0000000-0000-4000-8000-000000000002', 'Mia step-up', 2);
 
--- Xena holds a set that points at Olive's PRIVATE exercise. The API refuses that today
--- (10_references.test.sql); it is written directly here to prove that even such a reference cannot
--- block Olive's deletes.
+-- Xena holds a set that points at Olive's PRIVATE exercise. Through the API it would be stored as
+-- null (10_references.test.sql); it is written directly here to prove that even such a reference
+-- cannot block Olive's deletes.
 reset role;
 insert into public.workout_sessions (id, user_id, kind) values
   ('e2000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000004', 'walk');

@@ -19,8 +19,9 @@ How to use this page:
 *Updated 2026-10-08.*
 
 - **Phase 0 is built in this repo:** the Expo SDK 57 app, the full database (23 tables with row level
-  security, tested), PowerSync sync streams, email-code sign-in, design tokens, and the Sync Check
-  screen that proves the gate.
+  security, 518 pgTAP tests), PowerSync sync streams, email-code sign-in, design tokens, and the Sync
+  Check screen that proves the gate. The code is on the branch `claude/bold-fermi-oglgch` until you
+  merge it into `main` (a manual step below, before you clone).
 - **The gate is not passed yet.** It needs a real Android phone and the hosted services. Your remaining
   steps are the unticked boxes under "Your manual steps" in Phase 0, in the order of
   [SETUP.md](SETUP.md).
@@ -51,10 +52,14 @@ tokens.
       config in `app.config.ts` and `eas.json`
 - [x] CI: typecheck, lint, unit tests and the sync-config check (`.github/workflows/ci.yml`), the
       database tests on Postgres 16 and on the Supabase CLI, and an installable APK build with a
-      16 KB alignment check and permission list (`.github/workflows/android.yml`)
+      16 KB page-size check (`scripts/check-16kb.sh`: zip and ELF alignment; the build fails if either
+      is off) and permission list (`.github/workflows/android.yml`)
 - [x] First migration: all 23 tables, RLS on every table, explicit grants, triggers, the six system
-      presets, the `join_group` RPC and the `powersync` publication ([DATA_MODEL.md](DATA_MODEL.md))
-- [x] pgTAP tests for every table and policy (`npm run db:test`)
+      presets, the group RPCs (`join_group`, `regenerate_invite_code`, `remove_group_member`) and the
+      `powersync` publication ([DATA_MODEL.md](DATA_MODEL.md)). Deleting an account or a group never
+      depends on anyone else's data, and offline writes are never refused because of what someone
+      else did meanwhile ([normalized writes](DATA_MODEL.md#writes-the-server-normalizes-instead-of-refusing))
+- [x] pgTAP tests for every table and policy (`npm run db:test`: 13 files, 518 tests)
 - [x] Supabase local config and email templates that show the 6-digit code (`supabase/`)
 - [x] PowerSync Sync Streams config and instance config (`powersync/`), checked offline by
       `npm run validate:sync`
@@ -70,6 +75,9 @@ tokens.
 ### Your manual steps (in [SETUP.md](SETUP.md) order)
 - [ ] Create the accounts: GitHub, Expo, Supabase, PowerSync ([SETUP §1](SETUP.md#1-create-your-accounts))
 - [ ] Set up the Windows PC and the phone ([SETUP §2](SETUP.md#2-set-up-your-windows-pc), [§3](SETUP.md#3-set-up-your-android-phone))
+- [ ] Merge the Phase 0 branch (`claude/bold-fermi-oglgch`) into `main` on GitHub with a pull request
+      ([SETUP §4](SETUP.md#first-put-the-phase-0-code-on-main)). Until then `main` has none of the code,
+      and the Android APK workflow has no "Run workflow" button
 - [ ] Clone the repo and run `npm ci` and `npm run check` ([SETUP §4](SETUP.md#4-get-the-code))
 - [ ] Create the Supabase project, link it and push the migration ([SETUP §5](SETUP.md#5-create-the-supabase-project-and-push-the-database))
 - [ ] Set up the sign-in emails and check the JWT signing keys ([SETUP §6](SETUP.md#6-set-up-sign-in-emails-and-check-the-signing-keys))
@@ -81,8 +89,10 @@ tokens.
 - [ ] Repeat the Sync Check once on a **preview** (release) APK against the hosted project
 - [ ] Confirm the PowerSync free-tier limits on powersync.com/pricing (the plan asks for this before
       Phase 0 ends; see [SETUP §8](SETUP.md#8-create-the-powersync-instance))
-- [ ] Confirm the native modules build in the development build (the plan's second check): a working
-      install from EAS, a local build or the CI APK counts
+- [x] Confirm the native modules build (the plan's second check): **confirmed by CI.** The GitHub
+      Actions Android APK build compiled the release APK on 2026-10-08 with PowerSync's and op-sqlite's
+      native modules under Expo SDK 57. Installing and running a build on your phone is still yours:
+      that is the Sync Check above, the actual gate
 
 ### Android
 - [ ] [0.1 Development build, not Expo Go](ANDROID.md#01-development-build-not-expo-go)
@@ -92,8 +102,10 @@ tokens.
 - [ ] [0.4 Keep the manifest lean](ANDROID.md#04-keep-the-manifest-lean): read the permission list in
       the first CI APK build
 - [ ] [0.5 Play Console account: decide now](ANDROID.md#05-play-console-account-decide-now)
-- [x] [0.7 16 KB page size check](ANDROID.md#07-16-kb-page-size-check) runs in CI
+- [x] [0.7 16 KB page size check](ANDROID.md#07-16-kb-page-size-check) runs in CI (zip and ELF
+      alignment; the APK build fails if either is off). EAS builds: check by hand (0.7)
 - [x] [0.8 Schema ready for account deletion](ANDROID.md#08-schema-ready-for-account-deletion)
+      (tested in `supabase/tests/09_deletion.test.sql`)
 
 ### Tracy
 - [x] Review the `tracy-ai` repo and answer the plan's open question
@@ -120,14 +132,21 @@ home setups, rules-based spotter, default micro circuits, zero-tap handoff.
 - [ ] Exercise import script: free-exercise-db structured fields only, mapped with the rules in
       [research/exercise-data-and-fsrs.md §A6](research/exercise-data-and-fsrs.md), loaded with the
       service role as `origin = 'dataset'`, `reviewed = false`, pinned by the file's sha256 (start
-      from the research scripts in [`scripts/exercise-import/`](../scripts/exercise-import/README.md))
+      from the research scripts in [`scripts/exercise-import/`](../scripts/exercise-import/README.md)).
+      It can rely on no user row ever holding a `dataset_id` (a CHECK enforces it); its
+      `ON CONFLICT (dataset_id) DO UPDATE` should set `reviewed`, `images` and `instructions`
+      explicitly
 - [ ] Curation pass: review the imported rows (start with `movement_pattern = 'other'` and `gym`) and
       set `reviewed = true`; add Interverse originals (desk-side and small-space moves)
 - [ ] Equipment setups: check off gym and home equipment; more than one setup allowed
 - [ ] Focus presets: pick one of the six system presets or make a custom split (per plan, day or block)
 - [ ] Default micro circuits for every preset × location × 5/10/15 minutes, available offline
 - [ ] Set logger: one tap per set; writes `workout_sessions` and `exercise_sets` (targets, actuals,
-      rest)
+      rest), and copies the exercise's name into `exercise_sets.exercise_name`. History shows that
+      name whenever `exercise_id` is null or its exercise isn't on the phone: the exercise was deleted
+      or unshared, or it was already unreadable or deleted when the set uploaded (the server then
+      stores `exercise_id` as null; see
+      [normalized writes](DATA_MODEL.md#writes-the-server-normalizes-instead-of-refusing))
 - [ ] Spotter rules engine in TypeScript with unit tests (for example: miss the target by 2+ reps →
       next set drops 10–20%)
 - [ ] Location swap: replace each exercise with one of the same movement pattern that fits the setup
@@ -168,13 +187,17 @@ reviews runs correctly.
 ### Build
 - [ ] Supabase Storage bucket for sources, with paths prefixed by user id and Storage policies
 - [ ] Upload flow (file, gallery or camera photo, link) → `sources` and `source_files`
+      ([Android 2.7](ANDROID.md#27-camera-and-photo-access))
 - [ ] `tracy-worker` Edge Function and a `pg_cron` schedule that claims `tracy_events` jobs
 - [ ] Per-page text extraction, chunking and embedding (Gemini, 1536 dimensions) into `source_chunks`
 - [ ] Handwriting: transcription draft → user confirms (`source_files.confirmed`) → only then cards
 - [ ] Outline review screen (cut and reorder topics) → `topics`, then `cards` with page references
 - [ ] Single and cumulative plans; switch scope any time; "everything so far / newest source" filter
-- [ ] FSRS with `ts-fsrs` (pin 5.4.2): `card_states` (id = UUIDv5 of `user_id:card_id`) and `reviews`
-      written in one local transaction
+- [ ] FSRS with `ts-fsrs` (pin 5.4.2): `card_states` and `reviews` written in one local transaction.
+      A `card_states` id must be UUIDv5(`CARD_STATE_ID_NAMESPACE`, `` `${user_id}:${card_id}` ``)
+      (the namespace is in `src/db/constants.ts`); the server refuses any other id (23514)
+- [ ] Cards and sessions cope with links the server stored as null: `cards.source_chunk_id` (the
+      chunk became unreadable or was deleted) and `study_sessions.plan_id`
 - [ ] Quiz-first block: due cards → new material → closing self-test
 - [ ] Concept links and the map view (`card_links`)
 - [ ] On-the-go audio mode: spike first, then build
@@ -187,6 +210,7 @@ reviews runs correctly.
 - [ ] [2.4 Speech in the background: spike first](ANDROID.md#24-speech-in-the-background-spike-first)
 - [ ] [2.5 Review reminders and background sync](ANDROID.md#25-review-reminders-and-background-sync)
 - [ ] [2.6 Play declarations for audio mode](ANDROID.md#26-play-declarations-for-audio-mode)
+- [ ] [2.7 Camera and photo access](ANDROID.md#27-camera-and-photo-access)
 
 ### Tracy
 - [ ] `runTask` changes: per-task model tier and `max_tokens`, no `temperature`, `auto` + `strict`
@@ -253,8 +277,17 @@ reviews runs correctly.
 
 ### Build
 - [ ] Create a group (subscribers only), show and share the invite code
-- [ ] Join by code through `join_group`; roster, leave, remove a member
-- [ ] Share sources, study plans and exercises into a group
+- [ ] Join by code through `join_group`; show the roster
+- [ ] Leave a group: a plain DELETE of your own membership (it syncs like any other write). The owner
+      can't leave; they delete the group instead
+- [ ] Remove a member (owner): call the `remove_group_member()` RPC **online**; it removes the member
+      and rotates the invite code in one step and returns the new code, which the app shows so the
+      owner can share it with the people who stay. Never queue a local DELETE of someone else's
+      membership (the server ignores it and the row comes back). `regenerate_invite_code()` rotates
+      the code without removing anyone ([DATA_MODEL.md](DATA_MODEL.md#groups))
+- [ ] Share sources, study plans and exercises into a group. Leaving or being removed unshares that
+      member's content, and a share into a group you aren't in comes back unshared: show such rows as
+      private
 - [ ] Live session: synced timer and presence with Supabase Realtime; everyone breaks to the move block
       together
 - [ ] Group digest with totals each member chose to share (needs sharing settings: a new migration)
@@ -266,6 +299,8 @@ reviews runs correctly.
 - [ ] [4.1 User-generated content controls](ANDROID.md#41-user-generated-content-controls)
 - [ ] [4.2 Push notifications for friend activity](ANDROID.md#42-push-notifications-for-friend-activity)
 - [ ] [4.3 Data safety additions and the deletion flow](ANDROID.md#43-data-safety-additions-and-the-deletion-flow)
+- [ ] [4.4 Invite links](ANDROID.md#44-invite-links-only-if-verified-app-links-are-chosen) (only if
+      verified App Links are chosen)
 
 ### Tracy
 - [ ] Group digest text (optional; reuse the weekly-review pattern)
@@ -291,6 +326,16 @@ Feedback decides whether another round runs before release.
 - [ ] Account deletion: in the app and on a web page
 - [ ] Privacy policy and terms (users upload only material they have the right to use)
 - [ ] Custom SMTP for sign-in emails (Supabase's built-in sender is for development)
+- [ ] Production backend: a second Supabase project (for example `dualrep-prod`) with custom SMTP and
+      the sign-in email templates, the migrations pushed with `npx supabase db push`, and its own
+      PowerSync instance with the sync config deployed (set up like
+      [SETUP §5–8](SETUP.md#5-create-the-supabase-project-and-push-the-database); in
+      `powersync/service.yaml` use `name: dualrep-prod` and `allow_temporary_tokens: false`). Then
+      store its public values in the EAS `production` environment
+      ([Android 5.2](ANDROID.md#52-signing-and-eas-submit), step 4)
+- [ ] Reviewer login for Play's App access check: one password account and a small "Sign in with
+      password" path ([Android 5.8](ANDROID.md#58-reviewer-login-app-access))
+- [ ] Brand icon, splash and store listing assets ([Android 5.9](ANDROID.md#59-brand-art-and-store-listing-assets))
 - [ ] Crash reports and analytics (Sentry, PostHog in the plan)
 - [ ] Production build, EAS Submit to the internal track, then closed testing
 
@@ -302,6 +347,8 @@ Feedback decides whether another round runs before release.
 - [ ] [5.5 Data safety draft](ANDROID.md#55-data-safety-draft)
 - [ ] [5.6 Account deletion](ANDROID.md#56-account-deletion-required)
 - [ ] [5.7 Release checks](ANDROID.md#57-release-checks-every-production-build)
+- [ ] [5.8 Reviewer login (App access)](ANDROID.md#58-reviewer-login-app-access)
+- [ ] [5.9 Brand art and store listing assets](ANDROID.md#59-brand-art-and-store-listing-assets)
 
 ### Tracy
 - [ ] Rate limits for DualRep at the Edge Function (protects Tracy's other surfaces)

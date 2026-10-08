@@ -3,7 +3,7 @@
 -- the parent (and follow it when a topic moves); card_links are per creator.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(53);
+select plan(54);
 
 -- Runs one write and returns how many rows it changed. RLS hides other people's rows from UPDATE
 -- and DELETE (0 rows, no error), so that is how "cannot modify" is asserted.
@@ -238,13 +238,17 @@ select is(
   1::bigint, 'a member can update their own link'
 );
 
-select throws_ok(
+select lives_ok(
   $$insert into public.study_sessions (id, user_id, plan_id)
     values ('90000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000002',
             '50000000-0000-4000-8000-000000000002')
     on conflict (id) do update set id = excluded.id, user_id = excluded.user_id, plan_id = excluded.plan_id$$,
-  '42501', null,
-  'a study session cannot point at a plan the user cannot read'
+  'a study session naming a plan the user cannot read is accepted ...'
+);
+select is(
+  (select plan_id from public.study_sessions where id = '90000000-0000-4000-8000-000000000001'),
+  null::uuid,
+  '... but stored without the plan (a session cannot point at a plan the user cannot read)'
 );
 select lives_ok(
   $$insert into public.study_sessions (id, user_id, plan_id)

@@ -1,11 +1,12 @@
 -- groups and group_members: only subscribers create groups; the owner becomes the first member;
 -- the server always picks the invite code and only the owner can rotate it; join_group() by invite
--- code (case-insensitive, idempotent, max 8 members); leaving and removing (a removal sticks once the
--- code is rotated); who sees groups, rosters, profiles and group-shared exercises; deleting a group
--- unshares (never deletes) members' exercises.
+-- code (case-insensitive, idempotent, max 8 members); leaving (a plain DELETE of your own membership)
+-- and removing (only through remove_group_member(), which rotates the code in the same transaction);
+-- who sees groups, rosters, profiles and group-shared exercises; deleting a group unshares (never
+-- deletes) members' exercises.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(50);
+select plan(60);
 
 -- Runs one write and returns how many rows it changed. RLS hides other people's rows from UPDATE
 -- and DELETE (0 rows, no error), so that is how "cannot modify" is asserted.
@@ -293,11 +294,66 @@ select is(
 select is(
   pg_temp.affected($$delete from public.group_members
     where group_id = '30000000-0000-4000-8000-000000000001' and user_id = '20000000-0000-4000-8000-000000000002'$$),
-  1::bigint,
-  'the owner can remove a member'
+  0::bigint,
+  'the owner cannot remove a member with a plain DELETE (removal goes through remove_group_member)'
+);
+select throws_ok(
+  $$select public.remove_group_member('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001')$$,
+  'P0001', 'cannot_remove_owner',
+  'the owner cannot remove themselves'
+);
+select throws_ok(
+  $$select public.remove_group_member('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000003')$$,
+  'P0002', 'not_a_member',
+  'removing someone who is not a member raises not_a_member'
+);
+select is(
+  (select invite_code from public.groups where id = '30000000-0000-4000-8000-000000000001'),
+  'ABCD2345',
+  '... and a refused removal rotates nothing'
 );
 
--- The removed member still knows the code, so the owner rotates it (the Phase 4 remove flow).
+-- Mia2 can read the current code while she is a member.
+set local request.jwt.claims to '{"sub": "20000000-0000-4000-8000-000000000002", "role": "authenticated"}';
+select is(
+  (select invite_code from public.groups where id = '30000000-0000-4000-8000-000000000001'),
+  'ABCD2345',
+  'a member can read the invite code'
+);
+
+-- Removing for good: one call deletes the membership and rotates the code (the Phase 4 remove flow).
+set local request.jwt.claims to '{"sub": "10000000-0000-4000-8000-000000000001", "role": "authenticated"}';
+select matches(
+  public.remove_group_member('30000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000002'),
+  '^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$',
+  'the owner removes a member with remove_group_member(), which returns the new invite code'
+);
+select results_eq(
+  $$select (select count(*) from public.group_members
+            where group_id = '30000000-0000-4000-8000-000000000001'
+              and user_id = '20000000-0000-4000-8000-000000000002'),
+           (select invite_code <> 'ABCD2345' from public.groups where id = '30000000-0000-4000-8000-000000000001')$$,
+  $$values (0::bigint, true)$$,
+  '... in the same call the membership is gone and the code is replaced'
+);
+
+set local request.jwt.claims to '{"sub": "20000000-0000-4000-8000-000000000002", "role": "authenticated"}';
+select throws_ok(
+  $$select public.join_group('ABCD2345')$$,
+  'P0002', 'invalid_invite_code',
+  'the removed member cannot rejoin with the code they knew'
+);
+select is(
+  (select count(*) from public.groups where id = '30000000-0000-4000-8000-000000000001'),
+  0::bigint,
+  '... and cannot read the group, so never sees the new code (no window where they could)'
+);
+
+-- The owner can also rotate the code without removing anyone.
+reset role;
+update public.groups set invite_code = 'EFGH6789' where id = '30000000-0000-4000-8000-000000000001';
+set local role authenticated;
+set local request.jwt.claims to '{"sub": "10000000-0000-4000-8000-000000000001", "role": "authenticated"}';
 select matches(
   public.regenerate_invite_code('30000000-0000-4000-8000-000000000001'),
   '^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$',
@@ -305,20 +361,8 @@ select matches(
 );
 select isnt(
   (select invite_code from public.groups where id = '30000000-0000-4000-8000-000000000001'),
-  'ABCD2345',
+  'EFGH6789',
   '... which replaces the old code'
-);
-
-set local request.jwt.claims to '{"sub": "20000000-0000-4000-8000-000000000002", "role": "authenticated"}';
-select throws_ok(
-  $$select public.join_group('ABCD2345')$$,
-  'P0002', 'invalid_invite_code',
-  'after removal and rotation, the removed member cannot rejoin with the old code'
-);
-select is(
-  (select count(*) from public.groups where id = '30000000-0000-4000-8000-000000000001'),
-  0::bigint,
-  '... and stays out of the group'
 );
 
 reset role;
@@ -331,8 +375,27 @@ select is(
   pg_temp.affected($$delete from public.group_members
     where group_id = '30000000-0000-4000-8000-000000000001' and user_id = '20000000-0000-4000-8000-000000000004'$$),
   0::bigint,
-  'a member cannot remove another member'
+  'a member cannot delete another member''s membership'
 );
+select throws_ok(
+  $$select public.remove_group_member('30000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000004')$$,
+  '42501', 'not_group_owner',
+  '... nor remove them through remove_group_member'
+);
+set local request.jwt.claims to '{"sub": "10000000-0000-4000-8000-000000000003", "role": "authenticated"}';
+select throws_ok(
+  $$select public.remove_group_member('30000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000004')$$,
+  '42501', 'not_group_owner',
+  'a non-member cannot remove anyone either'
+);
+reset role;
+select is(
+  (select count(*) from public.group_members
+   where group_id = '30000000-0000-4000-8000-000000000001' and user_id = '20000000-0000-4000-8000-000000000004'),
+  1::bigint,
+  '... so that member is still in the group'
+);
+set local role authenticated;
 
 set local request.jwt.claims to '{"sub": "10000000-0000-4000-8000-000000000004", "role": "authenticated"}';
 select is(
@@ -377,6 +440,11 @@ select throws_ok(
   $$select public.regenerate_invite_code('30000000-0000-4000-8000-000000000001')$$,
   '42501', 'not_authenticated',
   'regenerate_invite_code refuses a request without a user'
+);
+select throws_ok(
+  $$select public.remove_group_member('30000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000004')$$,
+  '42501', 'not_authenticated',
+  'remove_group_member refuses a request without a user'
 );
 
 -- Deleting the group ------------------------------------------------------------------------------

@@ -1,10 +1,12 @@
--- Leaving a group, or being removed from it, unshares that person's own exercises, sources (with
--- their files) and study plans from the group. Afterwards the group no longer sees them, the owner
--- can keep editing them (PATCH and PUT), and re-sharing them into the group is refused. Their own
--- rows that point at the group's content (a study session on a group plan) stay editable.
+-- Leaving a group, or being removed from it (remove_group_member), unshares that person's own
+-- exercises, sources (with their files) and study plans from the group. Afterwards the group no
+-- longer sees them, the owner can keep editing them (PATCH and PUT, even a PUT that still carries
+-- the old group_id), and any attempt to share them into the group again stores them unshared
+-- instead of failing. Their own rows that point at the group's content (a study session on a group
+-- plan) stay editable.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(33);
+select plan(35);
 
 -- Runs one write and returns how many rows it changed.
 create function pg_temp.affected(statement text) returns bigint
@@ -164,34 +166,42 @@ select lives_ok(
   'Bob can keep adding cards to his plan'
 );
 
--- ... but cannot share any of it into G again.
-select throws_ok(
-  $$update public.exercises set group_id = '30000000-0000-4000-8000-000000000001'
-    where id = 'b0000000-0000-4000-8000-000000000021'$$,
-  '42501', null,
-  'Bob cannot re-share his exercise into the group he left'
+-- ... but nothing he writes can share it into G again: such writes are kept, unshared (an upload
+-- from a device that has not heard about the leave yet must not be dropped).
+select is(
+  pg_temp.affected($$update public.exercises set group_id = '30000000-0000-4000-8000-000000000001'
+    where id = 'b0000000-0000-4000-8000-000000000021'$$),
+  1::bigint,
+  'PATCH: Bob re-sharing his exercise into the group he left is accepted ...'
 );
-select throws_ok(
+select lives_ok(
   $$insert into public.sources (id, owner_id, group_id, kind, title)
     values ('40000000-0000-4000-8000-000000000021', '10000000-0000-4000-8000-000000000002',
             '30000000-0000-4000-8000-000000000001', 'notes', 'Bob notes')
     on conflict (id) do update set id = excluded.id, owner_id = excluded.owner_id, group_id = excluded.group_id,
       kind = excluded.kind, title = excluded.title$$,
-  '42501', null,
-  '... nor his source (PUT)'
+  'PUT: ... so is a PUT of his source that still carries the group (a retried upload)'
 );
-select throws_ok(
-  $$update public.study_plans set group_id = '30000000-0000-4000-8000-000000000001'
-    where id = '50000000-0000-4000-8000-000000000021'$$,
-  '42501', null,
-  '... nor his plan'
+select is(
+  pg_temp.affected($$update public.study_plans set group_id = '30000000-0000-4000-8000-000000000001'
+    where id = '50000000-0000-4000-8000-000000000021'$$),
+  1::bigint,
+  'PATCH: ... and re-sharing his plan'
 );
-select throws_ok(
+select lives_ok(
   $$insert into public.exercises (id, name, origin, owner_id, group_id)
     values ('b0000000-0000-4000-8000-000000000023', 'New', 'user', '10000000-0000-4000-8000-000000000002',
             '30000000-0000-4000-8000-000000000001')$$,
-  '42501', null,
-  '... nor share anything new with it'
+  '... and a new exercise shared with the group'
+);
+select results_eq(
+  $$select (select group_id from public.exercises where id = 'b0000000-0000-4000-8000-000000000021'),
+           (select group_id from public.sources where id = '40000000-0000-4000-8000-000000000021'),
+           (select group_id from public.source_files where id = '41000000-0000-4000-8000-000000000021'),
+           (select group_id from public.study_plans where id = '50000000-0000-4000-8000-000000000021'),
+           (select group_id from public.exercises where id = 'b0000000-0000-4000-8000-000000000023')$$,
+  $$values (null::uuid, null::uuid, null::uuid, null::uuid, null::uuid)$$,
+  '... but all of it is stored unshared: nothing is shared into a group he is not in'
 );
 
 -- His study session on Olive's group plan (which he can no longer read) stays editable.
@@ -229,11 +239,10 @@ select is(
 
 -- Olive removes Mia ---------------------------------------------------------------------------------------
 set local request.jwt.claims to '{"sub": "10000000-0000-4000-8000-000000000001", "role": "authenticated"}';
-select is(
-  pg_temp.affected($$delete from public.group_members
-    where group_id = '30000000-0000-4000-8000-000000000001' and user_id = '10000000-0000-4000-8000-000000000003'$$),
-  1::bigint,
-  'the owner removes Mia'
+select matches(
+  public.remove_group_member('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000003'),
+  '^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$',
+  'the owner removes Mia (remove_group_member)'
 );
 select is(
   (select count(*) from public.exercises where id = 'b0000000-0000-4000-8000-000000000031'),
@@ -257,11 +266,16 @@ select is(
   1::bigint,
   'PATCH: Mia can edit it after being removed'
 );
-select throws_ok(
-  $$update public.exercises set group_id = '30000000-0000-4000-8000-000000000001'
-    where id = 'b0000000-0000-4000-8000-000000000031'$$,
-  '42501', null,
-  '... but cannot share it back into the group'
+select is(
+  pg_temp.affected($$update public.exercises set group_id = '30000000-0000-4000-8000-000000000001'
+    where id = 'b0000000-0000-4000-8000-000000000031'$$),
+  1::bigint,
+  '... and an attempt to share it back into the group is accepted ...'
+);
+select is(
+  (select group_id from public.exercises where id = 'b0000000-0000-4000-8000-000000000031'),
+  null::uuid,
+  '... but leaves it unshared'
 );
 
 -- Group and account deletion still work with the trigger in place ---------------------------------------

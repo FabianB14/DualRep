@@ -13,8 +13,11 @@ import { getLocalDataOwner, setLocalDataOwner } from './localDataOwner';
  *   writes work at once and the SDK keeps retrying in the background).
  * - Explicit sign-out: AuthProvider.signOut() calls disconnectAndClearSync() before signing out.
  * - Session lost any other way (refresh token revoked): nothing is deleted here, so unsent writes
- *   survive if the same person signs back in; the connector returns no credentials meanwhile, so the
- *   SDK stays idle. If a different account signs in, the local database is cleared before connecting.
+ *   survive if the same person signs back in. Meanwhile the connector returns no credentials, so
+ *   nothing syncs down, but the SDK keeps retrying the upload queue every few seconds (its retry
+ *   delay); the connector defers each attempt (NoSessionError) without sending anything, until the
+ *   same user signs in again and the queue goes up. If a different account signs in, the local
+ *   database is cleared before connecting.
  * - Missing configuration: this component is not mounted (the root layout shows "Setup needed").
  *
  * Errors are logged, never thrown: a sync problem must not take the app down, and the Sync status card

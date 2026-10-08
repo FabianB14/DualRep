@@ -1,10 +1,11 @@
 -- Schema-wide guarantees: every table has RLS, policies, the updated_at trigger and indexed foreign
--- keys; no foreign key can make a delete depend on another row; the API roles hold exactly the
+-- keys; no foreign key can make a delete depend on another row; every optional reference a client
+-- writes is normalized by a trigger instead of being refused; the API roles hold exactly the
 -- privileges the spec lists (anon: none at all); the powersync publication lists every synced table
 -- and nothing else.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(72);
+select plan(76);
 
 -- Tables ------------------------------------------------------------------------------------------
 select set_eq(
@@ -170,7 +171,7 @@ select set_eq(
   array[
     'can_edit_plan', 'can_edit_source', 'can_read_card', 'can_read_exercise', 'can_read_plan',
     'can_read_source', 'generate_invite_code', 'has_paid_access', 'is_group_member', 'is_group_owner',
-    'is_valid_split', 'join_group', 'regenerate_invite_code', 'shares_group_with'
+    'is_valid_split', 'join_group', 'regenerate_invite_code', 'remove_group_member', 'shares_group_with'
   ],
   'authenticated can execute exactly the access helpers and the group RPCs (no trigger functions)'
 );
@@ -191,6 +192,60 @@ select is_empty(
     where p.pronamespace = 'public'::regnamespace and p.prosecdef
       and not coalesce(p.proconfig, '{}') @> array['search_path=""']$$,
   'every security definer function pins an empty search_path'
+);
+
+-- Optional references and sharing are normalized, never refused (section 4 of the migration) ------
+-- The functions must run as the caller: they tell client requests (current_user = 'authenticated')
+-- from trusted server-side writes, which a security definer function could not.
+select set_eq(
+  $$select p.proname::text from pg_proc p
+    where p.pronamespace = 'public'::regnamespace and p.proname like 'clear\_%' and not p.prosecdef$$,
+  array[
+    'clear_foreign_interval_block', 'clear_foreign_profile_defaults', 'clear_foreign_workout_refs',
+    'clear_foreign_workout_session', 'clear_group_unless_member', 'clear_unreadable_exercise',
+    'clear_unreadable_plan', 'clear_unreadable_source_chunk'
+  ],
+  'the normalizing trigger functions exist and are security invoker'
+);
+
+-- Every optional reference a client can write (other than to auth.users, which RLS pins to the
+-- caller): pinned here so the next test cannot pass vacuously.
+select set_eq(
+  $$select c.relname || '.' || a.attname from pg_constraint con
+    join pg_class c on c.oid = con.conrelid
+    join pg_attribute a on a.attrelid = con.conrelid and a.attnum = con.conkey[1]
+    where con.contype = 'f' and con.connamespace = 'public'::regnamespace
+      and con.confrelid <> 'auth.users'::regclass and not a.attnotnull
+      and (has_column_privilege('authenticated', c.oid, a.attnum, 'INSERT')
+           or has_column_privilege('authenticated', c.oid, a.attnum, 'UPDATE'))$$,
+  array[
+    'cards.source_chunk_id', 'exercise_sets.exercise_id', 'exercises.group_id', 'profiles.default_preset_id',
+    'profiles.default_setup_id', 'reviews.interval_block_id', 'source_files.group_id', 'sources.group_id',
+    'study_plans.group_id', 'study_sessions.plan_id', 'transitions.workout_session_id',
+    'workout_sessions.preset_id', 'workout_sessions.setup_id'
+  ],
+  'the optional references clients can write'
+);
+
+-- ... and each one is rewritten by a BEFORE INSERT and UPDATE row trigger that covers the column
+-- (a clear_* function, or the copy from the parent source for source_files.group_id), so a value
+-- the writer may not use is stored as null instead of failing RLS (42501) or the foreign key (23503).
+select is_empty(
+  $$select c.relname || '.' || a.attname from pg_constraint con
+    join pg_class c on c.oid = con.conrelid
+    join pg_attribute a on a.attrelid = con.conrelid and a.attnum = con.conkey[1]
+    where con.contype = 'f' and con.connamespace = 'public'::regnamespace
+      and con.confrelid <> 'auth.users'::regclass and not a.attnotnull
+      and (has_column_privilege('authenticated', c.oid, a.attnum, 'INSERT')
+           or has_column_privilege('authenticated', c.oid, a.attnum, 'UPDATE'))
+      and not exists (
+        select 1 from pg_trigger t join pg_proc p on p.oid = t.tgfoid
+        where t.tgrelid = c.oid and not t.tgisinternal
+          and t.tgtype & (1 | 2 | 4 | 16) = (1 | 2 | 4 | 16)  -- row, before, insert, update
+          and (p.proname like 'clear\_%' or p.proname = 'copy_source_ownership')
+          and (cardinality(t.tgattr::int2[]) = 0 or a.attnum = any (t.tgattr::int2[]))
+      )$$,
+  'every optional reference a client can write is normalized by a BEFORE trigger'
 );
 
 -- Publication -------------------------------------------------------------------------------------
@@ -242,6 +297,11 @@ select throws_ok(
 select throws_ok(
   $$select public.regenerate_invite_code('30000000-0000-4000-8000-000000000001')$$, '42501', null,
   'anon cannot call regenerate_invite_code'
+);
+select throws_ok(
+  $$select public.remove_group_member('30000000-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111')$$,
+  '42501', null,
+  'anon cannot call remove_group_member'
 );
 
 reset role;
