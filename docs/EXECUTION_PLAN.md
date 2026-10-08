@@ -3,6 +3,7 @@
 Oct 8, 2026 · Fabian Brooks
 
 > This is the source plan, transcribed from [DualRep_Execution_Plan.pdf](DualRep_Execution_Plan.pdf).
+> Progress is tracked in [ROADMAP.md](ROADMAP.md), and decisions made since the plan are in [DECISIONS.md](DECISIONS.md).
 
 ## Summary
 
@@ -452,8 +453,8 @@ Open questions:
 - [ ] Subscription price and free tier caps, set from beta usage
 - [x] Beta end: a date, set when the beta is ready to launch. More rounds may follow depending on feedback.
 - [ ] Who are the first 20 testers?
-- [ ] Does DualRep live in its own repo or inside the Tracy monorepo?
-- [ ] How do existing Tracy surfaces authenticate, and which endpoint does a new surface call?
+- [x] Does DualRep live in its own repo or inside the Tracy monorepo? Its own repo ([DECISIONS.md](DECISIONS.md) D1).
+- [x] How do existing Tracy surfaces authenticate, and which endpoint does a new surface call? Answered in [TRACY_INTEGRATION.md](TRACY_INTEGRATION.md#1-the-answer-to-the-plans-open-question).
 
 ## Sources
 
