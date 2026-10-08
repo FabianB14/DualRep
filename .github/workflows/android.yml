@@ -62,6 +62,22 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - name: Check the app settings (repository variables)
+        # The three EXPO_PUBLIC_ values are baked into the APK. Report whether they were found, so a
+        # build that will open on "Setup needed" is obvious before anyone installs it. The URLs are
+        # public anyway; the key is only reported as set or missing.
+        run: |
+          missing=0
+          report() { if [ -n "$2" ]; then echo "- $1: ${3:-set}"; else echo "- $1: **missing**"; missing=1; fi; }
+          {
+            echo "### App settings in this build"
+            report EXPO_PUBLIC_SUPABASE_URL "$EXPO_PUBLIC_SUPABASE_URL" "$EXPO_PUBLIC_SUPABASE_URL"
+            report EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY "$EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY"
+            report EXPO_PUBLIC_POWERSYNC_URL "$EXPO_PUBLIC_POWERSYNC_URL" "$EXPO_PUBLIC_POWERSYNC_URL"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$missing" = 1 ]; then
+            echo "::warning::Some app settings are missing, so this APK will open on its \"Setup needed\" screen. Add them under Settings -> Secrets and variables -> Actions -> Variables."
+          fi
       - name: Install the Android SDK parts React Native 0.86 expects
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
