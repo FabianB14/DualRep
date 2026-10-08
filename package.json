@@ -1,0 +1,68 @@
+{
+  "name": "dualrep",
+  "version": "0.1.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "expo start --dev-client",
+    "android": "expo run:android",
+    "prebuild:android": "expo prebuild --platform android --clean",
+    "typecheck": "tsc --noEmit",
+    "lint": "expo lint",
+    "test": "jest",
+    "validate:sync": "node scripts/validate-sync-config.mjs",
+    "db:test": "bash scripts/db-test.sh",
+    "check": "npm run typecheck && npm run lint && npm test && npm run validate:sync"
+  },
+  "dependencies": {
+    "@azure/core-asynciterator-polyfill": "1.0.2",
+    "@op-engineering/op-sqlite": "18.2.5",
+    "@powersync/react-native": "2.3.1",
+    "@supabase/supabase-js": "2.117.3",
+    "expo": "57.0.27",
+    "expo-build-properties": "57.0.22",
+    "expo-constants": "57.0.21",
+    "expo-crypto": "57.0.3",
+    "expo-dev-client": "57.0.19",
+    "expo-haptics": "57.0.3",
+    "expo-linking": "57.0.12",
+    "expo-router": "57.0.25",
+    "expo-secure-store": "57.0.4",
+    "expo-splash-screen": "57.0.9",
+    "expo-status-bar": "57.0.1",
+    "expo-system-ui": "57.0.4",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-gesture-handler": "2.32.0",
+    "react-native-reanimated": "4.5.1",
+    "react-native-safe-area-context": "5.7.0",
+    "react-native-screens": "4.26.2",
+    "react-native-worklets": "0.10.1"
+  },
+  "devDependencies": {
+    "@powersync/service-sync-rules": "0.43.0",
+    "@types/jest": "29.5.14",
+    "@types/react": "19.2.18",
+    "eslint": "9.39.5",
+    "eslint-config-expo": "57.0.2",
+    "jest-expo": "57.0.5",
+    "typescript": "6.0.3",
+    "yaml": "2.9.1"
+  },
+  "jest": {
+    "preset": "jest-expo",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/android/",
+      "/ios/"
+    ],
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(.pnpm|react-native|@react-native|@react-native-community|expo|@expo|@expo-google-fonts|react-navigation|@react-navigation|@sentry/react-native|native-base|standard-navigation|@powersync|@op-engineering|@supabase))",
+      "/node_modules/react-native-reanimated/plugin/",
+      "/node_modules/@react-native/babel-preset/"
+    ]
+  }
+}
