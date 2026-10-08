@@ -21,8 +21,9 @@ config:
   # Timestamps arrive as 2026-10-08T09:30:00.123Z, the same format as JS toISOString(), so values
   # written on the device and values synced from the server sort and compare the same way.
   timestamp_max_precision: milliseconds
-  # Booleans nested inside JSON stay true/false instead of becoming 1/0.
-  fixed_booleans_in_json: true
+  # Not set: `fixed_booleans_in_json` (booleans inside Postgres arrays/composites). It only exists in
+  # service-sync-rules 0.43+ and PowerSync Cloud rejected it on 2026-10-08 ("Unknown key"); DualRep has
+  # no boolean arrays or composite columns, so it changes nothing here. jsonb values pass through as-is.
 
 # Global CTE: ids of the groups the signed-in user belongs to (one column, so `IN my_groups` works).
 with:
