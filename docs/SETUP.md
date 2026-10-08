@@ -265,7 +265,35 @@ git reset --hard
    **17**, matching `supabase/config.toml` (`major_version = 17`). If it doesn't, tell whoever
    maintains the repo (the config is only used for local tooling, so this isn't a blocker).
 
-### Link the repo and push the migration
+### Push the migration: two ways
+The "migration" is one SQL file in the repo,
+[`supabase/migrations/20261008000000_initial_schema.sql`](../supabase/migrations/20261008000000_initial_schema.sql).
+It creates all of DualRep's tables, security rules and the six system presets in your project. Pick
+one way to send it:
+
+- **Option 1, in the browser (nothing to install).** Fine if you are testing with the GitHub APK
+  (section 10) and haven't set up your PC yet.
+- **Option 2, with the Supabase CLI** (below). Needs the code on your PC (section 4). This is how every
+  later migration goes out, so you will switch to it eventually.
+
+#### Option 1: paste it into the SQL Editor
+1. On GitHub, open the file
+   ([`supabase/migrations/20261008000000_initial_schema.sql`](../supabase/migrations/20261008000000_initial_schema.sql);
+   until the Phase 0 pull request is merged, switch the branch picker at the top left to
+   `claude/bold-fermi-oglgch`). Click the **Copy raw file** button (two overlapping squares, top right
+   of the file).
+2. In the Supabase dashboard: **SQL Editor** → **New query**. Paste (Ctrl+V) and click **Run**. It
+   takes a few seconds and should end with "Success. No rows returned".
+3. If it shows an error instead, don't run it again on top: take a screenshot of the message and get
+   help first (a second run fails on the tables the first one already made).
+
+Later, the first time you use the CLI on this project (Option 2), tell it this migration is already
+in, so `db push` doesn't try to run it a second time:
+```powershell
+npx supabase migration repair 20261008000000 --status applied
+```
+
+#### Option 2: link the repo and push with the CLI
 In `C:\dev\dualrep`:
 ```powershell
 npx supabase login
@@ -280,7 +308,7 @@ npx supabase db push
 ```
 It lists `20261008000000_initial_schema.sql` and asks to confirm. Type `Y`.
 
-**Success:** the command finishes without errors, and in the dashboard:
+**Success (either option):** no errors, and in the dashboard:
 - **Table Editor** lists 23 tables (`profiles`, `entitlements`, `presets`, … `tracy_events`).
 - **SQL Editor** → run these checks:
   ```sql
