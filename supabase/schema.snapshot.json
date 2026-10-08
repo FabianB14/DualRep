@@ -1,0 +1,1517 @@
+{
+  "tables": {
+    "card_links": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "from_card_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "to_card_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "plan_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "relation",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "note",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "card_states": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "card_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "state",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "due",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "stability",
+          "type": "real",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "difficulty",
+          "type": "real",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "scheduled_days",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "learning_steps",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "reps",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "lapses",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "last_review",
+          "type": "timestamp",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "suspended",
+          "type": "boolean",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "cards": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "topic_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "plan_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "source_chunk_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "page",
+          "type": "integer",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "question",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "answer",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "card_type",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "entitlements": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "tier",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "source",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "expires_at",
+          "type": "timestamp",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "equipment_setups": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "location",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "equipment",
+          "type": "json",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "exercise_sets": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "workout_session_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "exercise_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "set_index",
+          "type": "integer",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "reps",
+          "type": "integer",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "weight_lbs",
+          "type": "real",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "rpe",
+          "type": "real",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "target_reps",
+          "type": "integer",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "target_weight_lbs",
+          "type": "real",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "rest_seconds",
+          "type": "integer",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "set_type",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "exercises": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "muscle_group",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "secondary_muscles",
+          "type": "json",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "body_region",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "category",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "dataset_category",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "equipment",
+          "type": "json",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "location",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "movement_pattern",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "demand_level",
+          "type": "integer",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "level",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "force",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "mechanic",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "micro_ok",
+          "type": "boolean",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "instructions",
+          "type": "json",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "images",
+          "type": "json",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "origin",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "dataset_id",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "reviewed",
+          "type": "boolean",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "owner_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "group_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "group_members": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "group_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "role",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "groups": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "owner_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "invite_code",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "interval_blocks": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "study_session_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "planned_minutes",
+          "type": "integer",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "started_at",
+          "type": "timestamp",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "ended_at",
+          "type": "timestamp",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "interrupted",
+          "type": "boolean",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "effort_rating",
+          "type": "integer",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "mode",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "plan_sources": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "plan_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "source_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "added_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "presets": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "owner_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "kind",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "split",
+          "type": "json",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "profiles": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "display_name",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "unit_pref",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "default_block_minutes",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "default_preset_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "default_setup_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "fsrs_params",
+          "type": "json",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "reviews": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "card_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "interval_block_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "rating",
+          "type": "integer",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "answer_mode",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "reviewed_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "duration_ms",
+          "type": "integer",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "prev_state",
+          "type": "integer",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "elapsed_days",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "state",
+          "type": "integer",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "due_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "stability",
+          "type": "real",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "difficulty",
+          "type": "real",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "scheduled_days",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "source_chunks": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "source_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "owner_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "group_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "page",
+          "type": "integer",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "content",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "embedding",
+          "type": "vector",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "embed_model",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "source_files": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "source_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "owner_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "group_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "storage_path",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "page",
+          "type": "integer",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "transcript",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "confirmed",
+          "type": "boolean",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "sources": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "owner_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "group_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "kind",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "url",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "study_plans": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "owner_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "group_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "scope",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "goal",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "target_date",
+          "type": "date",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "study_sessions": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "plan_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "focus_subject",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "topics": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "plan_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "position",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "tracy_events": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "job",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "input",
+          "type": "json",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "output",
+          "type": "json",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "error",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "accepted",
+          "type": "boolean",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "attempts",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "locked_at",
+          "type": "timestamp",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "model",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "usage",
+          "type": "json",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "transitions": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "interval_block_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "workout_session_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "proposal",
+          "type": "json",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "accepted",
+          "type": "boolean",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    },
+    "workout_sessions": {
+      "rls": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "logged_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "kind",
+          "type": "text",
+          "nullable": false,
+          "has_default": false
+        },
+        {
+          "name": "preset_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "setup_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "duration_minutes",
+          "type": "integer",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        }
+      ]
+    }
+  },
+  "publication": [
+    "card_links",
+    "card_states",
+    "cards",
+    "entitlements",
+    "equipment_setups",
+    "exercise_sets",
+    "exercises",
+    "group_members",
+    "groups",
+    "interval_blocks",
+    "plan_sources",
+    "presets",
+    "profiles",
+    "reviews",
+    "source_files",
+    "sources",
+    "study_plans",
+    "study_sessions",
+    "topics",
+    "tracy_events",
+    "transitions",
+    "workout_sessions"
+  ]
+}

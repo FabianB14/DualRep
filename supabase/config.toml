@@ -1,0 +1,58 @@
+# Supabase CLI (v2) configuration for local development: `supabase start`, `supabase db reset`,
+# `supabase test db`. Reference: https://supabase.com/docs/guides/local-development/cli/config
+# Only the settings DualRep depends on are listed; everything else keeps the CLI default.
+# Hosted projects are configured in the dashboard (see docs/SETUP.md); keep the auth values there in
+# step with this file.
+
+project_id = "dualrep"
+
+[api]
+enabled = true
+port = 54321
+# Schemas served by the Data API. Tables in them still need explicit grants (see the first migration).
+schemas = ["public", "graphql_public"]
+# pgvector and other extensions live in the `extensions` schema.
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+# Must match the hosted project's Postgres major version (`show server_version;`).
+major_version = 17
+
+[db.seed]
+# `supabase db reset` runs this after the migrations. It is intentionally empty: data production
+# needs (the system presets) lives in the migrations.
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[auth]
+enabled = true
+# The app signs in with a 6-digit email code typed into the app, so redirects are not part of the
+# flow. The site URL and allow-list name the app's own schemes (production, development and preview
+# builds) so any future deep-link flow can only ever land in the app.
+site_url = "dualrep://"
+additional_redirect_urls = ["dualrep://**", "dualrep-development://**", "dualrep-preview://**"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enable_signup = true
+# Typing the code proves the address, so there is no separate confirmation step.
+enable_confirmations = false
+otp_length = 6
+otp_expiry = 3600
+
+# Both emails a sign-in can send (new account / existing account) show the code, not a link.
+# Paths are relative to the repository root.
+[auth.email.template.magic_link]
+subject = "Your DualRep sign-in code"
+content_path = "./supabase/templates/magic_link.html"
+
+[auth.email.template.confirmation]
+subject = "Your DualRep sign-in code"
+content_path = "./supabase/templates/confirmation.html"

@@ -1,0 +1,53 @@
+# PowerSync Cloud instance config (config as code for the `powersync` CLI).
+#
+# Layout of this folder (scaffolded like `powersync init cloud`):
+#   service.yaml      this file: instance name/region, the Postgres connection, client auth
+#   sync-config.yaml  the Sync Streams (what each device receives)
+#   cli.yaml          written by `powersync link cloud` / `powersync pull instance`; it only links this
+#                     folder to an instance and is NOT committed (each developer/CI links their own)
+#
+# Workflow (see docs/SETUP.md for the Supabase side, e.g. creating the replication role):
+#   npx powersync login                                   # or set PS_ADMIN_TOKEN (CI)
+#   npx powersync link cloud --create --project-id=<id>   # first time: creates the instance, writes cli.yaml
+#   npm run validate:sync                                 # offline compile against the schema snapshot
+#   npx powersync validate && npx powersync deploy        # validates against the live database, then deploys
+#
+# No secrets in this file: `!env NAME` is resolved from the environment when the CLI runs. The
+# values below are read from:
+#   POWERSYNC_DATABASE_URI       postgresql://powersync_role@db.<project-ref>.supabase.co:5432/postgres
+#   POWERSYNC_DATABASE_PASSWORD  the powersync_role password
+# After the first deploy the password can be referenced instead of re-supplied:
+#   password: { secret_ref: default_password }
+
+_type: cloud
+
+# Shown in the PowerSync dashboard. Use one instance per environment (e.g. dualrep-dev, dualrep-prod).
+name: dualrep-dev
+
+# Cannot be changed after the first deploy: pick the region closest to the Supabase project.
+region: us
+
+replication:
+  # Only a single connection is supported.
+  connections:
+    - type: postgresql
+      # Must be the *direct* connection host db.<project-ref>.supabase.co:5432. Logical replication
+      # does not work through the Supavisor pooler, and PowerSync derives the Supabase JWKS URL for
+      # client auth from this hostname (any other host disables that auto-detection).
+      uri: !env POWERSYNC_DATABASE_URI
+      password:
+        secret: !env POWERSYNC_DATABASE_PASSWORD
+      # Supabase's CA is bundled with PowerSync, so full verification works without a cacert.
+      sslmode: verify-full
+
+client_auth:
+  # Accept Supabase Auth JWTs: PowerSync fetches the project's public signing keys (JWKS) and
+  # requires aud = authenticated. The app passes the user's Supabase access token as-is
+  # (SupabaseConnector.fetchCredentials), and auth.user_id() in the sync config is its `sub`.
+  supabase: true
+  # Only for projects still signing with the legacy HS256 secret (new projects use asymmetric keys):
+  # supabase_jwt_secret:
+  #   secret: !env POWERSYNC_SUPABASE_JWT_SECRET
+  # Development tokens (`npx powersync generate token --subject=<auth.users id>`) for testing what a
+  # given user receives. Keep false on production instances.
+  allow_temporary_tokens: true
