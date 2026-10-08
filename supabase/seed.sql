@@ -1,0 +1,5 @@
+-- Local development seed, run by `supabase db reset` after the migrations (and by npm run db:test).
+--
+-- Intentionally empty. Data that production needs, such as the six system presets, lives in the
+-- migrations so every environment gets it. Test fixtures live inside each supabase/tests/*.test.sql
+-- file and are rolled back when the file finishes.

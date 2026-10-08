@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- First sign-in email for a new account (Supabase "confirm signup" template).
+     DualRep signs in with the one-time code typed into the app, so the 6-digit code (Token) is
+     the whole message and there is deliberately no link. -->
+<html lang="en">
+  <body style="margin:0;padding:24px;background:#f4f4f6;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#16161d;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:12px;">
+      <tr>
+        <td style="padding:32px 28px;">
+          <p style="margin:0 0 8px;font-size:14px;color:#5b5b66;">DualRep</p>
+          <h1 style="margin:0 0 16px;font-size:22px;line-height:1.3;">Welcome to DualRep</h1>
+          <p style="margin:0 0 20px;font-size:16px;line-height:1.5;">Enter this code in the DualRep app to finish creating your account:</p>
+          <p style="margin:0 0 20px;padding:16px;text-align:center;background:#f4f4f6;border-radius:8px;font-family:'SFMono-Regular',Menlo,Consolas,monospace;font-size:36px;font-weight:700;letter-spacing:8px;">{{ .Token }}</p>
+          <p style="margin:0 0 8px;font-size:14px;line-height:1.5;color:#5b5b66;">The code expires in 1 hour and works once.</p>
+          <p style="margin:0;font-size:14px;line-height:1.5;color:#5b5b66;">If you didn't sign up for DualRep, you can ignore this email.</p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

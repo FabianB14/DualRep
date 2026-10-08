@@ -1,0 +1,100 @@
+# Builds an installable Android APK on GitHub's runners (they ship the Android SDK).
+# - On pull requests that touch native dependencies or app config, it proves the
+#   native modules (PowerSync + op-sqlite, Reanimated, ...) still compile.
+# - Run it by hand (Actions → Android APK → Run workflow) to get an APK you can
+#   install on your phone without EAS. "preview" bundles the JavaScript into the APK,
+#   so it runs on its own; "development" is a dev client that needs `npm start`.
+# The APK is signed with the debug key from the Expo template: fine for testing on
+# your own devices, never for the Play Store (use EAS for store builds).
+name: Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Which build to make
+        type: choice
+        options: [preview, development]
+        default: preview
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - app.config.ts
+      - eas.json
+      - .github/workflows/android.yml
+  push:
+    branches: ['claude/**']
+    paths:
+      - package.json
+      - package-lock.json
+      - app.config.ts
+      - eas.json
+      - .github/workflows/android.yml
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Build ${{ inputs.variant || 'preview' }} APK (arm64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      APP_VARIANT: ${{ inputs.variant || 'preview' }}
+      # Public client config (it ships inside the app anyway). Set these under
+      # Settings → Secrets and variables → Actions → Variables. Without them the
+      # app opens on its "Setup needed" screen.
+      EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+      EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+      EXPO_PUBLIC_POWERSYNC_URL: ${{ vars.EXPO_PUBLIC_POWERSYNC_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Install the Android SDK parts React Native 0.86 expects
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.30.5"
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      - name: Generate the native Android project
+        run: npx expo prebuild --platform android --no-install --clean
+      - name: Build
+        working-directory: android
+        run: |
+          if [ "$APP_VARIANT" = "development" ]; then TASK=assembleDebug; else TASK=assembleRelease; fi
+          ./gradlew "$TASK" -PreactNativeArchitectures=arm64-v8a --no-daemon --stacktrace
+      - name: Find the APK
+        id: apk
+        run: |
+          APK=$(find android/app/build/outputs/apk -name '*.apk' | head -n 1)
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          ls -la "$APK"
+      - name: Check 16 KB page size support (Play requirement for updates from Feb 1, 2027)
+        run: bash scripts/check-16kb.sh "${{ steps.apk.outputs.path }}"
+      - name: List the permissions the APK requests
+        run: |
+          "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump permissions "${{ steps.apk.outputs.path }}" | tee permissions.txt
+          {
+            echo "### APK permissions ($APP_VARIANT)"
+            echo '```'
+            cat permissions.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dualrep-${{ env.APP_VARIANT }}-arm64-apk
+          path: ${{ steps.apk.outputs.path }}
+          retention-days: 14

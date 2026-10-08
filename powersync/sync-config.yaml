@@ -1,0 +1,119 @@
+# DualRep sync config (PowerSync Sync Streams).
+#
+# Decides which Postgres rows each signed-in device receives. Deployed with `npx powersync deploy`
+# (see powersync/service.yaml) and checked offline by `npm run validate:sync`, which compiles it with
+# @powersync/service-sync-rules against supabase/schema.snapshot.json.
+#
+# Ground rules (each one is enforced by the validator or the src/db tests):
+# - Sync must agree with RLS: a device may only receive rows its user could SELECT through the
+#   Supabase Data API. Each stream below names the RLS select policy it mirrors.
+# - Every query selects `id`. Edition 3 compiles a query without it silently, and the device would
+#   then keep one arbitrary row per table.
+# - `source_chunks` (pgvector embeddings) is never synced and is not in the `powersync` publication.
+# - No literal `IN ('a', 'b')` lists (not supported; use OR) and no `numeric` columns (they would
+#   arrive as TEXT; the schema uses double precision).
+# - Every table in the client registry (src/db/tables.ts) is synced by at least one query here.
+# - `auth.user_id()` is the JWT `sub` claim, i.e. auth.users.id, the same value as auth.uid() in RLS.
+#   Only signed claims are used for authorization (no connection or subscription parameters).
+
+config:
+  edition: 3
+  # Timestamps arrive as 2026-10-08T09:30:00.123Z, the same format as JS toISOString(), so values
+  # written on the device and values synced from the server sort and compare the same way.
+  timestamp_max_precision: milliseconds
+  # Booleans nested inside JSON stay true/false instead of becoming 1/0.
+  fixed_booleans_in_json: true
+
+# Global CTE: ids of the groups the signed-in user belongs to (one column, so `IN my_groups` works).
+with:
+  my_groups: SELECT group_id FROM group_members WHERE user_id = auth.user_id()
+
+streams:
+  # One bucket per user: the user's private data. Priority 1 so the app can render as soon as this
+  # and the library have arrived (db.waitForFirstSync({ priority: 1 })).
+  # Mirrors the "own rows" select policies (user_id = auth.uid()); profiles: id = auth.uid().
+  user_private:
+    auto_subscribe: true
+    priority: 1
+    queries:
+      - SELECT * FROM profiles WHERE id = auth.user_id()
+      - SELECT * FROM entitlements WHERE user_id = auth.user_id()
+      - SELECT * FROM study_sessions WHERE user_id = auth.user_id()
+      # interval_blocks, exercise_sets and transitions carry a denormalized user_id (checked by RLS
+      # WITH CHECK against the parent) so they land in this per-user bucket rather than one bucket
+      # per parent row.
+      - SELECT * FROM interval_blocks WHERE user_id = auth.user_id()
+      - SELECT * FROM equipment_setups WHERE user_id = auth.user_id()
+      - SELECT * FROM workout_sessions WHERE user_id = auth.user_id()
+      # A set's exercise_id may name an exercise this user no longer receives (its owner unshared it or
+      # left the group; a deleted exercise turns it into null). exercise_name, copied when the set was
+      # logged, keeps the history readable either way.
+      - SELECT * FROM exercise_sets WHERE user_id = auth.user_id()
+      - SELECT * FROM transitions WHERE user_id = auth.user_id()
+      # Spaced-repetition state and answer log stay private even for shared group cards.
+      - SELECT * FROM card_states WHERE user_id = auth.user_id()
+      - SELECT * FROM reviews WHERE user_id = auth.user_id()
+      # Explicit light column list: the large input/output/usage JSON and the worker bookkeeping
+      # (attempts, locked_at, model) stay on the server. Must match TABLES.tracy_events in
+      # src/db/tables.ts (checked by src/db/__tests__/sync-config.test.ts).
+      - SELECT id, user_id, job, status, error, accepted, created_at, updated_at FROM tracy_events WHERE user_id = auth.user_id()
+
+  # One global bucket shared by every user: the reviewed exercise library and the six system presets.
+  # Mirrors exercises select `(owner_id is null and reviewed)` and presets select `owner_id is null`.
+  # Unreviewed imports never reach devices.
+  library:
+    auto_subscribe: true
+    priority: 1
+    queries:
+      - SELECT * FROM exercises WHERE owner_id IS NULL AND reviewed = true
+      - SELECT * FROM presets WHERE owner_id IS NULL
+
+  # One bucket per user: rows the user owns in tables that can also be shared with a group.
+  # Mirrors the `owner_id = auth.uid()` branch of each select policy.
+  user_owned:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM exercises WHERE owner_id = auth.user_id()
+      - SELECT * FROM presets WHERE owner_id = auth.user_id()
+      - SELECT * FROM sources WHERE owner_id = auth.user_id()
+      # source_files.owner_id/group_id are copied from the parent source by a server trigger.
+      - SELECT * FROM source_files WHERE owner_id = auth.user_id()
+      - SELECT * FROM study_plans WHERE owner_id = auth.user_id()
+      - SELECT * FROM groups WHERE owner_id = auth.user_id()
+
+  # One bucket per group the user belongs to. Joining or leaving a group adds or removes its bucket
+  # automatically. Mirrors the is_group_member(...) branches of the select policies, and
+  # profiles' shares_group_with(id).
+  group_shared:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM groups WHERE id IN my_groups
+      # Includes the user's own membership rows (their group_id is in my_groups).
+      - SELECT * FROM group_members WHERE group_id IN my_groups
+      # Fellow members' profiles (display names). The policy exposes whole profile rows to group
+      # mates, so syncing whole rows reveals nothing the Data API would not.
+      - SELECT * FROM profiles WHERE id IN (SELECT user_id FROM group_members WHERE group_id IN my_groups)
+      # When a member leaves or is removed, the server unshares their exercises, sources (with files)
+      # and study plans from the group (group_id = null), so those rows leave the group's bucket and
+      # stay only in their owner's user_owned bucket.
+      - SELECT * FROM exercises WHERE group_id IN my_groups
+      - SELECT * FROM sources WHERE group_id IN my_groups
+      - SELECT * FROM source_files WHERE group_id IN my_groups
+      - SELECT * FROM study_plans WHERE group_id IN my_groups
+
+  # One bucket per visible study plan (own plans and plans of the user's groups).
+  # Mirrors can_read_plan(plan_id). cards and card_links carry a denormalized plan_id (trigger-copied
+  # on the server) so they sync per plan instead of per topic / per card.
+  plan_content:
+    auto_subscribe: true
+    with:
+      # Stream CTEs cannot reference the global my_groups CTE, so the membership lookup is inlined.
+      visible_plans: >-
+        SELECT id FROM study_plans
+        WHERE owner_id = auth.user_id()
+           OR group_id IN (SELECT group_id FROM group_members WHERE user_id = auth.user_id())
+    queries:
+      - SELECT * FROM plan_sources WHERE plan_id IN visible_plans
+      - SELECT * FROM topics WHERE plan_id IN visible_plans
+      - SELECT * FROM cards WHERE plan_id IN visible_plans
+      - SELECT * FROM card_links WHERE plan_id IN visible_plans

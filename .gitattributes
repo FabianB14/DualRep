@@ -1,0 +1,8 @@
+# Keep LF line endings for files that run in bash/Postgres, even on a Windows checkout
+# (Git for Windows defaults to core.autocrlf=true, which breaks scripts/db-test.sh under WSL).
+*.sh   text eol=lf
+*.sql  text eol=lf
+*.mjs  text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
