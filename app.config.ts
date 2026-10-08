@@ -104,8 +104,19 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         android: {},
       },
     ],
-    // No expo-notifications or expo-audio plugin in Phase 0: they add permissions, receivers and
-    // foreground services (with Play Console declarations) that the foundation does not use.
+    [
+      // Phase 1: the end-of-block alert is a scheduled local notification (docs/ANDROID.md 1.1, D8).
+      // Adds POST_NOTIFICATIONS and RECEIVE_BOOT_COMPLETED (pending alerts survive a reboot). No exact
+      // alarms yet (1.3) and never USE_EXACT_ALARM.
+      'expo-notifications',
+      {
+        // White silhouette on transparent (Android tints it); the mind accent from src/theme/tokens.ts.
+        icon: './assets/notification-icon.png',
+        color: '#3A55A4',
+      },
+    ],
+    // No expo-audio plugin yet: its defaults add a media foreground service and microphone access
+    // (docs/ANDROID.md 2.2). It comes with audio study mode in Phase 2.
   ],
   experiments: {
     typedRoutes: true,

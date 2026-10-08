@@ -1,6 +1,6 @@
 import { column, Schema, Table, type BaseColumnType } from '@powersync/react-native';
 
-import { UPLOAD_FAILURES_TABLE } from './constants';
+import { LOCAL_STATE_TABLE, UPLOAD_FAILURES_TABLE } from './constants';
 import { TABLES, TABLE_NAMES, type ColumnKind, type TableDefinition, type TableName } from './tables';
 
 /**
@@ -65,7 +65,26 @@ const upload_failures = new Table(
   { localOnly: true, indexes: { by_created: ['created_at'] } },
 );
 
-export const AppSchema = new Schema({ ...syncedTables, [UPLOAD_FAILURES_TABLE]: upload_failures });
+/**
+ * Local-only key-value store for state that belongs to this phone, not to the account: the running
+ * study/move cycle (its timer's end time, the circuit, where the user is in it), so an app restart or
+ * a killed process picks up exactly where it was. `id` is the key; `value` is JSON text. Never synced
+ * or uploaded, and cleared with everything else on sign-out (disconnectAndClear clears local-only
+ * tables too).
+ */
+const local_state = new Table(
+  {
+    value: column.text,
+    updated_at: column.text,
+  },
+  { localOnly: true },
+);
+
+export const AppSchema = new Schema({
+  ...syncedTables,
+  [UPLOAD_FAILURES_TABLE]: upload_failures,
+  [LOCAL_STATE_TABLE]: local_state,
+});
 
 export type Database = (typeof AppSchema)['types'];
 export type TableRow<T extends keyof Database> = Database[T];
@@ -93,3 +112,4 @@ export type CardStateRow = Database['card_states'];
 export type ReviewRow = Database['reviews'];
 export type TracyEventRow = Database['tracy_events'];
 export type UploadFailure = Database['upload_failures'];
+export type LocalStateRow = Database['local_state'];
