@@ -232,7 +232,7 @@ git clone https://github.com/FabianB14/DualRep.git ~/dualrep   # add -b claude/b
 cd ~/dualrep
 npm run db:test
 ```
-It ends with `db-test: all 13 test files passed (518 tests)`.
+It ends with `db-test: all 13 test files passed (523 tests)`.
 
 **Line endings on Windows.** Git for Windows' default setting checks files out with Windows line
 endings, which breaks shell scripts in Linux. The repo's `.gitattributes` keeps `.sh`, `.sql`, `.mjs`,

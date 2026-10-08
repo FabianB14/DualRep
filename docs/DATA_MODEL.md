@@ -10,7 +10,7 @@ Related files:
 | File | What it is |
 |---|---|
 | [`supabase/migrations/`](../supabase/migrations/) | The schema, RLS policies, grants, triggers, system presets and the `powersync` publication |
-| [`supabase/tests/`](../supabase/tests/) | pgTAP tests for every table and policy: 13 files, 518 tests (`npm run db:test`, or `supabase test db`) |
+| [`supabase/tests/`](../supabase/tests/) | pgTAP tests for every table and policy: 13 files, 523 tests (`npm run db:test`, or `supabase test db`) |
 | [`supabase/schema.snapshot.json`](../supabase/schema.snapshot.json) | Column list per table, written by `npm run db:test`, read by `npm run validate:sync` |
 | [`powersync/sync-config.yaml`](../powersync/sync-config.yaml) | The Sync Streams: which rows each phone receives |
 | [`src/db/tables.ts`](../src/db/tables.ts) | The app's registry of synced tables: columns, local indexes and what the device may write |

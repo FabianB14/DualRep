@@ -19,7 +19,7 @@ How to use this page:
 *Updated 2026-10-08.*
 
 - **Phase 0 is built in this repo:** the Expo SDK 57 app, the full database (23 tables with row level
-  security, 518 pgTAP tests), PowerSync sync streams, email-code sign-in, design tokens, and the Sync
+  security, 523 pgTAP tests), PowerSync sync streams, email-code sign-in, design tokens, and the Sync
   Check screen that proves the gate. The code is on the branch `claude/bold-fermi-oglgch` until you
   merge it into `main` (a manual step below, before you clone).
 - **The gate is not passed yet.** It needs a real Android phone and the hosted services. Your remaining
@@ -59,7 +59,7 @@ tokens.
       `powersync` publication ([DATA_MODEL.md](DATA_MODEL.md)). Deleting an account or a group never
       depends on anyone else's data, and offline writes are never refused because of what someone
       else did meanwhile ([normalized writes](DATA_MODEL.md#writes-the-server-normalizes-instead-of-refusing))
-- [x] pgTAP tests for every table and policy (`npm run db:test`: 13 files, 518 tests)
+- [x] pgTAP tests for every table and policy (`npm run db:test`: 13 files, 523 tests)
 - [x] Supabase local config and email templates that show the 6-digit code (`supabase/`)
 - [x] PowerSync Sync Streams config and instance config (`powersync/`), checked offline by
       `npm run validate:sync`
@@ -99,8 +99,9 @@ tokens.
 - [x] [0.2 Leave the SDK levels alone](ANDROID.md#02-leave-the-sdk-levels-alone)
 - [ ] [0.3 Edge-to-edge and insets](ANDROID.md#03-edge-to-edge-and-insets-in-the-design-tokens): check
       on the phone with gesture and 3-button navigation
-- [ ] [0.4 Keep the manifest lean](ANDROID.md#04-keep-the-manifest-lean): read the permission list in
-      the first CI APK build
+- [x] [0.4 Keep the manifest lean](ANDROID.md#04-keep-the-manifest-lean): the CI-built preview APK
+      requests only `INTERNET` and `VIBRATE` (plus the app's own internal receiver permission); re-read
+      the list in each build's summary when a dependency changes
 - [ ] [0.5 Play Console account: decide now](ANDROID.md#05-play-console-account-decide-now)
 - [x] [0.7 16 KB page size check](ANDROID.md#07-16-kb-page-size-check) runs in CI (zip and ELF
       alignment; the APK build fails if either is off). EAS builds: check by hand (0.7)

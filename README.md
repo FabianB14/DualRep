@@ -16,7 +16,7 @@ friends. Android first, then iOS, then Meta glasses.
 ## Status
 
 **Phase 0 (Foundation) is built; the gate is pending on a real phone.** The app,
-the database (23 tables with row level security, 518 pgTAP tests), PowerSync sync,
+the database (23 tables with row level security, 523 pgTAP tests), PowerSync sync,
 email-code sign-in, design tokens and the Sync Check screen are in this repo. The
 gate, "a row created offline on a phone appears in Postgres after reconnecting",
 passes once the hosted services are set up and the Sync Check is run on a phone:
