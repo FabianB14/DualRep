@@ -7,7 +7,7 @@ import { emailError, normalizeEmail } from '@/auth/validation';
 import { Button, Screen, Text, TextField } from '@/components';
 import { haptic, useTheme } from '@/theme';
 
-/** Step 1 of sign-in: enter an email address and get a 6-digit code. */
+/** Step 1 of sign-in: enter an email address and get a one-time code. */
 export default function SignInScreen() {
   const { signInWithEmailCode } = useAuth();
   const { space } = useTheme();
@@ -42,7 +42,7 @@ export default function SignInScreen() {
           DualRep
         </Text>
         <Text variant="headline">Sign in</Text>
-        <Text tone="secondary">We’ll email you a 6-digit code. No password needed.</Text>
+        <Text tone="secondary">We’ll email you a sign-in code. No password needed.</Text>
       </View>
       <TextField
         label="Email address"

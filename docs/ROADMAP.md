@@ -22,14 +22,17 @@ How to use this page:
   security, 523 pgTAP tests), PowerSync sync streams, email-code sign-in, design tokens, and the Sync
   Check screen that proves the gate. The code is on the branch `claude/bold-fermi-oglgch` until you
   merge it into `main` (a manual step below, before you clone).
-- **The gate is not passed yet.** It needs a real Android phone and the hosted services. Your remaining
-  steps are the unticked boxes under "Your manual steps" in Phase 0, in the order of
-  [SETUP.md](SETUP.md).
-- **Next:** pass the gate, then start Phase 1 (the core loop).
+- **The Phase 0 gate passed on 2026-10-08** on Fabian's Android phone: a preview APK built by GitHub
+  Actions, against the hosted Supabase project and PowerSync Cloud instance (Resend for sign-in
+  email). A row created in airplane mode reached Postgres after reconnecting, and the Sync Check showed
+  PASS.
+- **Before Phase 1:** merge the branch into `main`, and tick off the few Phase 0 leftovers below
+  (PowerSync free-tier check, Play Console decision, the edge-to-edge look on the phone).
+- **Next:** Phase 1 (the core loop).
 
 | Phase | Est. weeks | Status |
 |---|---|---|
-| 0. Foundation | 1–2 | Built; gate pending on a phone |
+| 0. Foundation | 1–2 | **Gate passed** (2026-10-08) |
 | 1. Core loop | 4–5 | Not started |
 | 2. Study engine | 4–6 | Not started |
 | 3. Tracy coaching | 2–3 | Not started |
@@ -73,20 +76,30 @@ tokens.
       [DECISIONS.md](DECISIONS.md), [TRACY_INTEGRATION.md](TRACY_INTEGRATION.md)
 
 ### Your manual steps (in [SETUP.md](SETUP.md) order)
-- [ ] Create the accounts: GitHub, Expo, Supabase, PowerSync ([SETUP §1](SETUP.md#1-create-your-accounts))
-- [ ] Set up the Windows PC and the phone ([SETUP §2](SETUP.md#2-set-up-your-windows-pc), [§3](SETUP.md#3-set-up-your-android-phone))
+- [x] Create the accounts: GitHub, Supabase, PowerSync, Resend ([SETUP §1](SETUP.md#1-create-your-accounts)); Expo
+      only when you start using EAS builds
+- [ ] Set up the Windows PC ([SETUP §2](SETUP.md#2-set-up-your-windows-pc)): not needed for the gate (it
+      used the GitHub-built APK), needed before Phase 1 coding
 - [ ] Merge the Phase 0 branch (`claude/bold-fermi-oglgch`) into `main` on GitHub with a pull request
       ([SETUP §4](SETUP.md#first-put-the-phase-0-code-on-main)). Until then `main` has none of the code,
       and the Android APK workflow has no "Run workflow" button
-- [ ] Clone the repo and run `npm ci` and `npm run check` ([SETUP §4](SETUP.md#4-get-the-code))
-- [ ] Create the Supabase project, link it and push the migration ([SETUP §5](SETUP.md#5-create-the-supabase-project-and-push-the-database))
-- [ ] Set up the sign-in emails and check the JWT signing keys ([SETUP §6](SETUP.md#6-set-up-sign-in-emails-and-check-the-signing-keys))
-- [ ] Create the PowerSync replication role ([SETUP §7](SETUP.md#7-create-the-powersync-database-role))
-- [ ] Create the PowerSync instance and deploy the sync config ([SETUP §8](SETUP.md#8-create-the-powersync-instance))
-- [ ] Fill in `.env`, then build and install the development build ([SETUP §9](SETUP.md#9-build-the-app-and-put-it-on-your-phone))
-- [ ] Sign in on the phone and run the Sync Check ([SETUP §12](SETUP.md#12-run-the-sync-check-the-phase-0-gate))
-- [ ] Confirm the row in the Supabase table editor ([SETUP §13](SETUP.md#13-confirm-the-row-in-postgres))
-- [ ] Repeat the Sync Check once on a **preview** (release) APK against the hosted project
+- [ ] Clone the repo and run `npm ci` and `npm run check` ([SETUP §4](SETUP.md#4-get-the-code)). The first
+      time you use the Supabase CLI on the project, run
+      `npx supabase migration repair 20261008000000 --status applied` (the migration went in through the
+      SQL Editor)
+- [x] Create the Supabase project and apply the migration ([SETUP §5](SETUP.md#5-create-the-supabase-project-and-push-the-database)), through the SQL Editor
+- [x] Set up the sign-in emails ([SETUP §6](SETUP.md#6-set-up-sign-in-emails-and-check-the-signing-keys)): custom SMTP with Resend (test
+      mode), code templates, OTP length 6
+- [x] Create the PowerSync replication role ([SETUP §7](SETUP.md#7-create-the-powersync-database-role))
+- [x] Create the PowerSync instance and deploy the sync config ([SETUP §8](SETUP.md#8-create-the-powersync-instance))
+- [x] Build and install the app: the preview APK from GitHub Actions with the three repository
+      variables ([SETUP §10](SETUP.md#10-optional-the-github-actions-apk)). The development build (`.env`,
+      [SETUP §9](SETUP.md#9-build-the-app-and-put-it-on-your-phone)) comes with the PC setup
+- [x] Sign in on the phone and run the Sync Check ([SETUP §12](SETUP.md#12-run-the-sync-check-the-phase-0-gate)): **PASS**
+- [ ] Optional: look at the row in the Supabase table editor ([SETUP §13](SETUP.md#13-confirm-the-row-in-postgres)); the
+      Sync Check's PASS already asked Postgres directly
+- [x] Run the Sync Check on a **preview** (release) APK against the hosted project (that is the build
+      the gate passed on)
 - [ ] Confirm the PowerSync free-tier limits on powersync.com/pricing (the plan asks for this before
       Phase 0 ends; see [SETUP §8](SETUP.md#8-create-the-powersync-instance))
 - [x] Confirm the native modules build (the plan's second check): **confirmed by CI.** The GitHub

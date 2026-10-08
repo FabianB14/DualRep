@@ -10,7 +10,10 @@
  *   3. server-only tables (source_chunks) are never referenced, not even as a parameter lookup;
  *   4. every table in the client registry (src/db/tables.ts) is synced by some query, every synced
  *      table is in the registry, and each query outputs exactly the registry's columns plus id
- *      (a column the registry lacks would be dropped on the device; a missing one would read as NULL).
+ *      (a column the registry lacks would be dropped on the device; a missing one would read as NULL);
+ *   5. every key under `config:` is one the hosted PowerSync Cloud service accepts. The compiler here
+ *      can be newer than the service: `fixed_booleans_in_json` (new in 0.43) compiled locally but the
+ *      PowerSync dashboard rejected it with "Unknown key" on 2026-10-08.
  *
  * The registry is read by importing src/db/tables.ts itself through Node's built-in TypeScript type
  * stripping (that file is import-free and uses only erasable syntax), so there is no second copy of
@@ -131,6 +134,28 @@ for (const error of errors) {
         .slice(0, 100)}"`
     : rel(syncConfigPath);
   problems.push(`[${error.type}] ${error.message}\n      at ${where}`);
+}
+
+// --- 5. Only config keys the hosted service knows -----------------------------------------------------
+// Keys known to @powersync/service-sync-rules 0.42 (what PowerSync Cloud ran when 0.43's
+// `fixed_booleans_in_json` was rejected). Add a key here only after the dashboard accepts it.
+const CLOUD_CONFIG_KEYS = new Set([
+  'edition',
+  'timestamp_max_precision',
+  'timestamps_iso8601',
+  'versioned_bucket_ids',
+  'fixed_json_extract',
+  'custom_postgres_types',
+]);
+{
+  const configBlock = /^config:\n((?:[ \t]+.*\n|[ \t]*#.*\n|\s*\n)*)/m.exec(yamlText);
+  for (const match of configBlock?.[1].matchAll(/^[ \t]+([A-Za-z_][\w-]*)\s*:/gm) ?? []) {
+    if (!CLOUD_CONFIG_KEYS.has(match[1])) {
+      problems.push(
+        `config key '${match[1]}' is not accepted by PowerSync Cloud yet (see CLOUD_CONFIG_KEYS in ${rel(scriptPath)})`,
+      );
+    }
+  }
 }
 
 // --- 2-4. Inspect the compiled plan ------------------------------------------------------------------
