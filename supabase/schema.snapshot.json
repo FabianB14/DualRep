@@ -66,7 +66,7 @@
           "name": "id",
           "type": "uuid",
           "nullable": false,
-          "has_default": true
+          "has_default": false
         },
         {
           "name": "user_id",
@@ -337,7 +337,13 @@
         {
           "name": "exercise_id",
           "type": "uuid",
-          "nullable": false,
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "exercise_name",
+          "type": "text",
+          "nullable": true,
           "has_default": false
         },
         {

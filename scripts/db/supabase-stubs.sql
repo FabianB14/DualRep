@@ -5,7 +5,9 @@
 -- (supabase/postgres init scripts and the auth service's schema) closely enough that a test passing
 -- here also passes under `supabase test db`:
 --   * the API roles anon / authenticated / service_role (BYPASSRLS) and the authenticator login role;
---   * the `extensions` schema (pgvector, pgTAP) and the database search_path "$user", public, extensions;
+--   * the `extensions` schema and the database search_path "$user", public, extensions (pgTAP is
+--     preinstalled there; the migration itself creates pgvector and uuid-ossp in it, as it does on
+--     Supabase, where uuid-ossp is already installed and that line is a no-op);
 --   * `auth.users` with the columns the migration's trigger and the tests touch;
 --   * auth.uid() / auth.role() / auth.email() / auth.jwt() with Supabase's exact definitions, which read
 --     the JWT claims PostgREST puts in `request.jwt.claims` (tests set that GUC directly);

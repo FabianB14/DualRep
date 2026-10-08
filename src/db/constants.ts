@@ -20,6 +20,27 @@ export const SYSTEM_PRESET_IDS = {
 
 export type SystemPresetKind = keyof typeof SYSTEM_PRESET_IDS;
 
+/**
+ * Namespace of card_states ids. A card_states id is not random; it is derived from the row's user
+ * and card, so two offline devices of the same user pick the same id for a card and converge on one
+ * row (Phase 2):
+ *
+ *   id = UUIDv5(namespace = CARD_STATE_ID_NAMESPACE, name = `${user_id}:${card_id}`)
+ *
+ * UUIDv5 is RFC 9562 section 5.5: SHA-1 over the 16 namespace bytes followed by the UTF-8 bytes of
+ * the name, then the version (5) and variant bits set. user_id and card_id are written in canonical
+ * lowercase hyphenated form (what Postgres' uuid::text produces), joined by a single ':'.
+ *
+ * The server enforces it (CHECK card_states_id_derived in the first migration, using Postgres'
+ * uuid_generate_v5): any other id is refused with 23514, so nobody can take another user's id first.
+ * Worked example, asserted by supabase/tests/06_study_engine.test.sql and src/db/__tests__/constants.test.ts:
+ *   user 11111111-1111-4111-8111-111111111111 + card 70000000-0000-4000-8000-000000000001
+ *   -> 57743c5a-f966-538b-bccb-0919027b21c9
+ *
+ * Never change this value: every stored card_states id depends on it.
+ */
+export const CARD_STATE_ID_NAMESPACE = 'c4cae30d-9668-4354-adc3-2ee1071432e7';
+
 /** SQLite file name of the local PowerSync database. */
 export const DB_FILENAME = 'dualrep.sqlite';
 

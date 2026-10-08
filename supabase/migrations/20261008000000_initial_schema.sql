@@ -9,12 +9,21 @@
 --   * Tables live in `public`, are lowercase plurals, and have `id uuid primary key default
 --     gen_random_uuid()` (devices send their own UUIDs; the default serves server-created rows),
 --     `created_at` and `updated_at timestamptz not null default now()`. `updated_at` is maintained by
---     public.set_updated_at() on every UPDATE, so the server, not the device, owns it.
+--     public.set_updated_at() on every UPDATE, so the server, not the device, owns it. The one id
+--     without a default is card_states.id, which must be derived from (user_id, card_id).
 --   * Enumerations are text + CHECK (adding a value is a one-line migration; no enum types).
 --     JSON is jsonb; lists are jsonb arrays. No `numeric` columns: PowerSync would sync them as TEXT,
 --     so fractional values use double precision.
 --   * Every user reference is `references auth.users (id) on delete cascade`: deleting an account
 --     deletes its data (Google Play requires account deletion).
+--   * Deleting a row or an account never depends on anyone else's data. No foreign key restricts a
+--     delete, and a reference that can point at another person's row (a set's exercise, a session's
+--     plan, a card's source chunk, a shared row's group, ...) is `on delete set null`, so their
+--     delete detaches your row instead of failing or deleting it. 00_schema.test.sql enforces this.
+--   * References to rows other people own are checked when the client SETS them (BEFORE triggers,
+--     section 4), not on every later edit: after leaving a group, your old rows that point at the
+--     group's rows must stay editable. References that always stay readable (your own rows, system
+--     presets) are plain WITH CHECK clauses.
 --   * Every foreign key and every column used by RLS or by a sync stream filter is indexed.
 --   * RLS is enabled on every table. Policies are `to authenticated` and call `(select auth.uid())`
 --     so Postgres evaluates it once per statement instead of once per row. Checks that read other
@@ -39,6 +48,9 @@
 -- =================================================================================================
 
 create extension if not exists vector with schema extensions;
+-- uuid_generate_v5() for the card_states id rule (section 2). Supabase preinstalls uuid-ossp in
+-- `extensions`, so there this is a no-op.
+create extension if not exists "uuid-ossp" with schema extensions;
 
 
 -- =================================================================================================
@@ -86,11 +98,11 @@ begin
 end;
 $$;
 
--- Default for groups.invite_code: 8 characters from an alphabet without look-alikes (no I, L, O, 0,
--- 1), so a code read aloud or copied by hand still works. Randomness comes from gen_random_uuid()
--- (core Postgres), so there is no pgcrypto dependency. Bytes >= 248 are skipped so each of the 31
--- characters is equally likely (248 = 8 * 31). 31^8 ~ 8.5e11 codes; the unique constraint catches the
--- (negligible) chance of a collision.
+-- Default for groups.invite_code (and the new code made by regenerate_invite_code()): 8 characters
+-- from an alphabet without look-alikes (no I, L, O, 0, 1), so a code read aloud or copied by hand
+-- still works. Randomness comes from gen_random_uuid() (core Postgres), so there is no pgcrypto
+-- dependency. Bytes >= 248 are skipped so each of the 31 characters is equally likely (248 = 8 * 31).
+-- 31^8 ~ 8.5e11 codes; the unique constraint catches the (negligible) chance of a collision.
 create function public.generate_invite_code()
 returns text
 language plpgsql
@@ -126,6 +138,8 @@ $$;
 -- =================================================================================================
 
 -- Groups of friends (max 8 members). Subscribers create and host; anyone can join with the code.
+-- The server always picks the invite code: clients have no INSERT or UPDATE privilege on it
+-- (section 7), and only the owner can replace it, through regenerate_invite_code() (section 6).
 create table public.groups (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users (id) on delete cascade,
@@ -230,13 +244,20 @@ create table public.exercises (
   dataset_id text unique,
   reviewed boolean not null default false,
   owner_id uuid references auth.users (id) on delete cascade,
-  group_id uuid references public.groups (id) on delete cascade,
+  -- The exercise belongs to its owner, not to the group: deleting the group only unshares it (as
+  -- for sources and study plans), so a group delete never destroys a member's own exercise.
+  group_id uuid references public.groups (id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   -- User exercises always have an owner; library rows never do.
   constraint exercises_owner_matches_origin check ((origin = 'user') = (owner_id is not null)),
   -- Only user exercises can be shared with a group.
-  constraint exercises_group_only_for_user_rows check (group_id is null or origin = 'user')
+  constraint exercises_group_only_for_user_rows check (group_id is null or origin = 'user'),
+  -- dataset_id is the library import's idempotency key (free-exercise-db ids are public). A user row
+  -- holding one would make the import fail, skip the exercise, or merge into the user's row.
+  constraint exercises_dataset_id_only_for_dataset check (dataset_id is null or origin = 'dataset'),
+  -- `reviewed` is the library's human-review flag; a user row can never claim it.
+  constraint exercises_user_rows_unreviewed check (origin <> 'user' or reviewed = false)
 );
 create index exercises_owner_id_idx on public.exercises (owner_id);
 create index exercises_group_id_idx on public.exercises (group_id);
@@ -337,6 +358,8 @@ create table public.cards (
   id uuid primary key default gen_random_uuid(),
   topic_id uuid not null references public.topics (id) on delete cascade,
   plan_id uuid not null references public.study_plans (id) on delete cascade,
+  -- The passage the card came from. It may be in a group member's source; checked when set
+  -- (check_source_chunk_reference, section 4).
   source_chunk_id uuid references public.source_chunks (id) on delete set null,
   page integer,
   question text not null,
@@ -373,6 +396,7 @@ create index card_links_created_by_idx on public.card_links (created_by);
 create table public.study_sessions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
+  -- May be a group plan someone else owns; checked when set (check_plan_reference, section 4).
   plan_id uuid references public.study_plans (id) on delete set null,
   focus_subject text not null default '' check (char_length(focus_subject) <= 200),
   created_at timestamptz not null default now(),
@@ -398,10 +422,16 @@ create table public.interval_blocks (
 create index interval_blocks_user_id_idx on public.interval_blocks (user_id);
 create index interval_blocks_study_session_id_idx on public.interval_blocks (study_session_id);
 
--- Current FSRS state per user per card, with ts-fsrs `Card` field names. The device computes
--- id = UUIDv5(user_id:card_id), so two offline devices converge on one row (Phase 2).
+-- Current FSRS state per user per card, with ts-fsrs `Card` field names. The device computes the id
+-- from (user_id, card_id), so two offline devices converge on one row (Phase 2):
+--   id = uuid_generate_v5('c4cae30d-9668-4354-adc3-2ee1071432e7', '<user_id>:<card_id>')
+-- (both uuids in Postgres' lowercase text form; the namespace is CARD_STATE_ID_NAMESPACE in
+-- src/db/constants.ts). The server enforces the derivation with a CHECK. Otherwise the id would be
+-- predictable but unprotected: a group mate who knows your user id and a shared card id could insert
+-- a row under YOUR future id (with their own user_id and card), and every upload of your real state
+-- for that card would then hit their row and fail. No default: a random id can never be valid.
 create table public.card_states (
-  id uuid primary key default gen_random_uuid(),
+  id uuid primary key,
   user_id uuid not null references auth.users (id) on delete cascade,
   card_id uuid not null references public.cards (id) on delete cascade,
   state smallint not null default 0 check (state between 0 and 3),
@@ -416,7 +446,12 @@ create table public.card_states (
   suspended boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (user_id, card_id)
+  unique (user_id, card_id),
+  -- Also stops an UPDATE from moving a row to another user or card.
+  constraint card_states_id_derived check (
+    id = extensions.uuid_generate_v5('c4cae30d-9668-4354-adc3-2ee1071432e7'::uuid,
+                                     user_id::text || ':' || card_id::text)
+  )
 );
 -- The due list: WHERE user_id = ? AND due <= ? ORDER BY due. (user_id alone is covered by the unique index.)
 create index card_states_user_id_due_idx on public.card_states (user_id, due);
@@ -468,7 +503,14 @@ create table public.exercise_sets (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
   workout_session_id uuid not null references public.workout_sessions (id) on delete cascade,
-  exercise_id uuid not null references public.exercises (id) on delete restrict,
+  -- The exercise may be someone else's (shared with a group), so it must not pin that row: when the
+  -- exercise or its owner's account is deleted the set is kept with exercise_id = null (a RESTRICT
+  -- here let any set, even an outsider's, block another person's account deletion). Checked when
+  -- set (check_exercise_reference, section 4).
+  exercise_id uuid references public.exercises (id) on delete set null,
+  -- The exercise's name, copied by the device when the set is logged, so the history still reads
+  -- "Goblet squat" after the exercise is deleted, unshared or no longer visible to this user.
+  exercise_name text,
   set_index integer not null check (set_index >= 0),
   reps integer check (reps >= 0),
   weight_lbs double precision check (weight_lbs >= 0),
@@ -598,7 +640,7 @@ create trigger set_updated_at before update on public.tracy_events
 
 
 -- =================================================================================================
--- 3. Access helpers used by RLS policies
+-- 3. Access helpers used by RLS policies and the reference checks in section 4
 --    security definer: they read tables the caller may not see (and group_members' own policy
 --    would otherwise recurse). stable + search_path '' + fully-qualified names.
 -- =================================================================================================
@@ -750,6 +792,29 @@ as $$
   );
 $$;
 
+-- Can the caller read the exercise? The same rule as the exercises SELECT policy: a reviewed library
+-- row, the caller's own row, or a row shared with one of the caller's groups.
+create function public.can_read_exercise(eid uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from public.exercises e
+    where e.id = eid
+      and (
+        (e.owner_id is null and e.reviewed)
+        or e.owner_id = (select auth.uid())
+        or (e.group_id is not null and exists (
+          select 1 from public.group_members m
+          where m.group_id = e.group_id and m.user_id = (select auth.uid())
+        ))
+      )
+  );
+$$;
+
 
 -- =================================================================================================
 -- 4. Triggers
@@ -831,6 +896,42 @@ $$;
 create trigger enforce_member_limit
   before insert on public.group_members
   for each row execute function public.enforce_group_member_limit();
+
+-- Leaving a group, or being removed from it, unshares that person's own content from the group:
+-- their exercises, sources (the source's files and chunks follow through
+-- propagate_source_ownership below) and study plans in that group get group_id = null.
+-- Why: otherwise the rows would stay visible to people they no longer share a group with, and every
+-- later edit of them would fail the "share only into your own groups" WITH CHECK (dropped on the
+-- device as a fatal 42501). That WITH CHECK still applies, so the content cannot be re-shared into
+-- the group after leaving.
+-- Other members keep their own rows that point at the unshared content (sets keep exercise_id and
+-- exercise_name, study sessions keep plan_id); they just no longer see the rows themselves.
+-- Skipped when the membership goes because the whole group or the member's account is being
+-- deleted: the foreign-key actions (set null / cascade) already handle every one of those rows.
+create function public.unshare_after_leaving_group()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not exists (select 1 from public.groups g where g.id = old.group_id)
+     or not exists (select 1 from auth.users u where u.id = old.user_id) then
+    return null;
+  end if;
+  update public.exercises e set group_id = null
+   where e.owner_id = old.user_id and e.group_id = old.group_id;
+  update public.sources s set group_id = null
+   where s.owner_id = old.user_id and s.group_id = old.group_id;
+  update public.study_plans p set group_id = null
+   where p.owner_id = old.user_id and p.group_id = old.group_id;
+  return null;
+end;
+$$;
+
+create trigger unshare_after_leaving
+  after delete on public.group_members
+  for each row execute function public.unshare_after_leaving_group();
 
 -- source_files / source_chunks: owner_id and group_id always come from the parent source.
 create function public.copy_source_ownership()
@@ -993,22 +1094,167 @@ create trigger skip_stale_write
   before update on public.card_states
   for each row execute function public.skip_stale_card_state();
 
+-- References to rows someone else may own are checked when they are SET, not forever.
+-- A study session may name a group plan, a set a group-shared exercise and a card a chunk of a group
+-- member's source. When the user later leaves the group (or the owner unshares), their own old rows
+-- must stay editable, so the check cannot sit in the UPDATE policy's WITH CHECK, which re-tests the
+-- stored value on every edit. These BEFORE INSERT/UPDATE triggers check the reference only when a
+-- client sets or changes it:
+--   * Only client requests are checked: current_user = 'authenticated', i.e. a Data API request
+--     made with a user's JWT (the functions are security invoker so current_user is the caller).
+--     The service role (Edge Functions), SQL run as postgres and foreign-key actions (ON DELETE SET
+--     NULL runs as the table owner) are trusted.
+--   * null always passes (it is also what ON DELETE SET NULL writes).
+--   * PowerSync uploads a new row as an upsert (INSERT ... ON CONFLICT (id) DO UPDATE) and re-sends
+--     it unchanged when a half-uploaded transaction is retried. Postgres fires BEFORE INSERT on the
+--     proposed row even when the id already exists, so an INSERT counts as unchanged when the stored
+--     row with that id already has this reference (looked up under the caller's RLS, so only a row
+--     they can see counts; whether they may overwrite it is still up to the UPDATE policy). The
+--     DO UPDATE half then fires BEFORE UPDATE with old = the stored row, which also sees no change.
+--   * A refused reference raises 42501 (insufficient_privilege), the same code as an RLS denial.
+
+-- study_sessions.plan_id: a plan the caller can read (own, or shared with one of their groups).
+create function public.check_study_session_plan()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if current_user <> 'authenticated' or new.plan_id is null then
+    return new;
+  end if;
+  if tg_op = 'UPDATE' then
+    if new.plan_id is not distinct from old.plan_id then
+      return new;
+    end if;
+  elsif exists (
+    select 1 from public.study_sessions s where s.id = new.id and s.plan_id = new.plan_id
+  ) then
+    return new;  -- a re-sent upsert of the caller's own row
+  end if;
+  if not public.can_read_plan(new.plan_id) then
+    raise exception 'study_sessions.plan_id: study plan % is not one you can read', new.plan_id
+      using errcode = '42501',
+            hint = 'A study session may point at your own plan or one shared with a group you are in.';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger check_plan_reference
+  before insert or update of plan_id on public.study_sessions
+  for each row execute function public.check_study_session_plan();
+
+-- exercise_sets.exercise_id: an exercise the caller can read (reviewed library, own, or shared with
+-- one of their groups). Without this, anyone who knew an exercise's id could attach sets to it.
+create function public.check_exercise_set_exercise()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if current_user <> 'authenticated' or new.exercise_id is null then
+    return new;
+  end if;
+  if tg_op = 'UPDATE' then
+    if new.exercise_id is not distinct from old.exercise_id then
+      return new;
+    end if;
+  elsif exists (
+    select 1 from public.exercise_sets s where s.id = new.id and s.exercise_id = new.exercise_id
+  ) then
+    return new;  -- a re-sent upsert of the caller's own row
+  end if;
+  if not public.can_read_exercise(new.exercise_id) then
+    raise exception 'exercise_sets.exercise_id: exercise % is not one you can read', new.exercise_id
+      using errcode = '42501',
+            hint = 'A set may use a library exercise, your own or one shared with a group you are in.';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger check_exercise_reference
+  before insert or update of exercise_id on public.exercise_sets
+  for each row execute function public.check_exercise_set_exercise();
+
+-- cards.source_chunk_id: a chunk whose source the caller can read. (Only the plan owner writes
+-- cards. The chunk lookup runs under RLS, which shows a chunk exactly when its source is readable,
+-- because a chunk's owner_id/group_id are copied from its source.)
+create function public.check_card_source_chunk()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if current_user <> 'authenticated' or new.source_chunk_id is null then
+    return new;
+  end if;
+  if tg_op = 'UPDATE' then
+    if new.source_chunk_id is not distinct from old.source_chunk_id then
+      return new;
+    end if;
+  elsif exists (
+    select 1 from public.cards c where c.id = new.id and c.source_chunk_id = new.source_chunk_id
+  ) then
+    return new;  -- a re-sent upsert of the caller's own row
+  end if;
+  if not exists (
+    select 1 from public.source_chunks sc
+    where sc.id = new.source_chunk_id and public.can_read_source(sc.source_id)
+  ) then
+    raise exception 'cards.source_chunk_id: source chunk % is not from a source you can read',
+      new.source_chunk_id
+      using errcode = '42501',
+            hint = 'A card may cite a chunk of your own source or of one shared with a group you are in.';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger check_source_chunk_reference
+  before insert or update of source_chunk_id on public.cards
+  for each row execute function public.check_card_source_chunk();
+
 
 -- =================================================================================================
 -- 5. Row level security policies (all `to authenticated`; anon has no grants at all)
 -- =================================================================================================
 
--- profiles: own row, plus group mates' rows (display names).
+-- profiles: own row, plus group mates' rows (display names). The defaults may only point at a system
+-- preset or the user's own preset / equipment setup (group mates can read the profile, so it must
+-- not name rows the user cannot see). Those stay readable to the user for good, so a plain WITH
+-- CHECK is safe on every write.
 create policy "profiles: read own and group mates" on public.profiles
   for select to authenticated
   using (id = (select auth.uid()) or public.shares_group_with(id));
 create policy "profiles: insert own" on public.profiles
   for insert to authenticated
-  with check (id = (select auth.uid()));
+  with check (
+    id = (select auth.uid())
+    and (default_preset_id is null or exists (
+      select 1 from public.presets p
+      where p.id = default_preset_id and (p.owner_id is null or p.owner_id = (select auth.uid()))
+    ))
+    and (default_setup_id is null or exists (
+      select 1 from public.equipment_setups s
+      where s.id = default_setup_id and s.user_id = (select auth.uid())
+    ))
+  );
 create policy "profiles: update own" on public.profiles
   for update to authenticated
   using (id = (select auth.uid()))
-  with check (id = (select auth.uid()));
+  with check (
+    id = (select auth.uid())
+    and (default_preset_id is null or exists (
+      select 1 from public.presets p
+      where p.id = default_preset_id and (p.owner_id is null or p.owner_id = (select auth.uid()))
+    ))
+    and (default_setup_id is null or exists (
+      select 1 from public.equipment_setups s
+      where s.id = default_setup_id and s.user_id = (select auth.uid())
+    ))
+  );
 
 -- entitlements: read own; written by the service role only.
 create policy "entitlements: read own" on public.entitlements
@@ -1060,7 +1306,9 @@ create policy "exercises: insert own" on public.exercises
     origin = 'user' and owner_id = (select auth.uid())
     and (group_id is null or public.is_group_member(group_id))
   );
--- USING checks ownership only, so an owner who left a group can still edit or delete the row.
+-- Sharing INTO a group requires membership, on insert and on every update. Leaving a group unshares
+-- the leaver's rows (unshare_after_leaving_group), so this never blocks editing them afterwards; it
+-- only refuses re-sharing into a group the owner is no longer in. Same for sources and study_plans.
 create policy "exercises: update own" on public.exercises
   for update to authenticated
   using (origin = 'user' and owner_id = (select auth.uid()))
@@ -1090,7 +1338,11 @@ create policy "groups: owner deletes" on public.groups
   using (owner_id = (select auth.uid()));
 
 -- group_members: members see the roster. Joining goes through join_group(); a member can leave
--- (the owner cannot, they delete the group instead) and the owner can remove others.
+-- (the owner cannot, they delete the group instead) and the owner can remove others. Either way the
+-- departed member's shared content is unshared by unshare_after_leaving_group().
+-- Removing someone for good (Phase 4) = delete their membership + regenerate_invite_code(), because
+-- the removed member still knows the old code. (There is no ban list: a new code is enough, since
+-- join_group() only admits holders of the current code.)
 create policy "group_members: read own groups" on public.group_members
   for select to authenticated
   using (user_id = (select auth.uid()) or public.is_group_member(group_id));
@@ -1194,7 +1446,8 @@ create policy "topics: delete by plan owner" on public.topics
   for delete to authenticated
   using (public.can_edit_plan(plan_id));
 
--- cards: readable with the plan; written by the plan owner (plan_id is trigger-copied from the topic).
+-- cards: readable with the plan; written by the plan owner (plan_id is trigger-copied from the topic;
+-- source_chunk_id is checked when set, by check_source_chunk_reference in section 4).
 create policy "cards: read with plan" on public.cards
   for select to authenticated
   using (public.can_read_plan(plan_id));
@@ -1248,31 +1501,35 @@ create policy "card_states: delete own" on public.card_states
   for delete to authenticated
   using (user_id = (select auth.uid()));
 
--- reviews: append-only (no update or delete policies, and no such grants).
+-- reviews: append-only (no update or delete policies, and no such grants). The interval block, if
+-- any, is one of the caller's own.
 create policy "reviews: read own" on public.reviews
   for select to authenticated
   using (user_id = (select auth.uid()));
 create policy "reviews: insert own" on public.reviews
   for insert to authenticated
-  with check (user_id = (select auth.uid()) and public.can_read_card(card_id));
+  with check (
+    user_id = (select auth.uid())
+    and public.can_read_card(card_id)
+    and (interval_block_id is null or exists (
+      select 1 from public.interval_blocks b
+      where b.id = interval_block_id and b.user_id = (select auth.uid())
+    ))
+  );
 
--- study_sessions: own rows; a session may point at any plan the user can read.
+-- study_sessions: own rows. A session may point at any plan the user can read, but that is checked
+-- only when plan_id is set (check_plan_reference, section 4), not here: after leaving a group, a
+-- session that pointed at the group's plan must stay editable (and re-uploadable).
 create policy "study_sessions: read own" on public.study_sessions
   for select to authenticated
   using (user_id = (select auth.uid()));
 create policy "study_sessions: insert own" on public.study_sessions
   for insert to authenticated
-  with check (
-    user_id = (select auth.uid())
-    and (plan_id is null or public.can_read_plan(plan_id))
-  );
+  with check (user_id = (select auth.uid()));
 create policy "study_sessions: update own" on public.study_sessions
   for update to authenticated
   using (user_id = (select auth.uid()))
-  with check (
-    user_id = (select auth.uid())
-    and (plan_id is null or public.can_read_plan(plan_id))
-  );
+  with check (user_id = (select auth.uid()));
 create policy "study_sessions: delete own" on public.study_sessions
   for delete to authenticated
   using (user_id = (select auth.uid()));
@@ -1305,22 +1562,45 @@ create policy "interval_blocks: delete own" on public.interval_blocks
   for delete to authenticated
   using (user_id = (select auth.uid()));
 
--- workout_sessions: own rows.
+-- workout_sessions: own rows. The preset is a system preset or the user's own; the equipment setup is
+-- the user's own (both stay readable to the user for good, so a plain WITH CHECK is safe).
 create policy "workout_sessions: read own" on public.workout_sessions
   for select to authenticated
   using (user_id = (select auth.uid()));
 create policy "workout_sessions: insert own" on public.workout_sessions
   for insert to authenticated
-  with check (user_id = (select auth.uid()));
+  with check (
+    user_id = (select auth.uid())
+    and (preset_id is null or exists (
+      select 1 from public.presets p
+      where p.id = preset_id and (p.owner_id is null or p.owner_id = (select auth.uid()))
+    ))
+    and (setup_id is null or exists (
+      select 1 from public.equipment_setups s
+      where s.id = setup_id and s.user_id = (select auth.uid())
+    ))
+  );
 create policy "workout_sessions: update own" on public.workout_sessions
   for update to authenticated
   using (user_id = (select auth.uid()))
-  with check (user_id = (select auth.uid()));
+  with check (
+    user_id = (select auth.uid())
+    and (preset_id is null or exists (
+      select 1 from public.presets p
+      where p.id = preset_id and (p.owner_id is null or p.owner_id = (select auth.uid()))
+    ))
+    and (setup_id is null or exists (
+      select 1 from public.equipment_setups s
+      where s.id = setup_id and s.user_id = (select auth.uid())
+    ))
+  );
 create policy "workout_sessions: delete own" on public.workout_sessions
   for delete to authenticated
   using (user_id = (select auth.uid()));
 
--- exercise_sets: own rows whose workout session is also the caller's.
+-- exercise_sets: own rows whose workout session is also the caller's. The exercise is checked when
+-- exercise_id is set (check_exercise_reference, section 4), because a shared exercise can later
+-- become unreadable (its owner leaves the group) and the set must stay editable.
 create policy "exercise_sets: read own" on public.exercise_sets
   for select to authenticated
   using (user_id = (select auth.uid()));
@@ -1347,7 +1627,8 @@ create policy "exercise_sets: delete own" on public.exercise_sets
   for delete to authenticated
   using (user_id = (select auth.uid()));
 
--- transitions: own rows whose interval block is also the caller's.
+-- transitions: own rows whose interval block is also the caller's, leading to (if anything) one of
+-- the caller's own workout sessions.
 create policy "transitions: read own" on public.transitions
   for select to authenticated
   using (user_id = (select auth.uid()));
@@ -1359,6 +1640,10 @@ create policy "transitions: insert own" on public.transitions
       select 1 from public.interval_blocks b
       where b.id = interval_block_id and b.user_id = (select auth.uid())
     )
+    and (workout_session_id is null or exists (
+      select 1 from public.workout_sessions w
+      where w.id = workout_session_id and w.user_id = (select auth.uid())
+    ))
   );
 create policy "transitions: update own" on public.transitions
   for update to authenticated
@@ -1369,6 +1654,10 @@ create policy "transitions: update own" on public.transitions
       select 1 from public.interval_blocks b
       where b.id = interval_block_id and b.user_id = (select auth.uid())
     )
+    and (workout_session_id is null or exists (
+      select 1 from public.workout_sessions w
+      where w.id = workout_session_id and w.user_id = (select auth.uid())
+    ))
   );
 create policy "transitions: delete own" on public.transitions
   for delete to authenticated
@@ -1385,7 +1674,7 @@ create policy "tracy_events: update own" on public.tracy_events
 
 
 -- =================================================================================================
--- 6. Join a group by invite code (the only way a client adds a membership)
+-- 6. Group RPCs: join by invite code (the only way a client adds a membership) and rotate the code
 -- =================================================================================================
 
 -- Returns the group id. Errors: invalid_invite_code (P0002) when no group has the code,
@@ -1425,6 +1714,36 @@ begin
   values (target_group, caller, 'member')
   on conflict (group_id, user_id) do nothing;  -- a concurrent duplicate join
   return target_group;
+end;
+$$;
+
+-- Gives the group a new invite code and returns it; the old code stops working at once (people who
+-- already joined stay members). Owner only: anyone else gets not_group_owner (42501).
+-- Every member can read the code, so removing someone for good (Phase 4) is: delete their
+-- group_members row, then call this, then share the new code with the people who should have it.
+create function public.regenerate_invite_code(p_group_id uuid)
+returns text
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  caller uuid := (select auth.uid());
+  new_code text;
+begin
+  if caller is null then
+    raise exception 'not_authenticated' using errcode = '42501';
+  end if;
+
+  update public.groups g
+     set invite_code = public.generate_invite_code()
+   where g.id = p_group_id and g.owner_id = caller
+  returning g.invite_code into new_code;
+  if new_code is null then
+    raise exception 'not_group_owner' using errcode = '42501';
+  end if;
+  return new_code;
 end;
 $$;
 
@@ -1475,11 +1794,17 @@ revoke all on public.transitions from anon, authenticated;
 grant select, insert, update, delete on public.transitions to authenticated;
 grant all on public.transitions to service_role;
 
--- invite_code and owner_id are not client-updatable. Because PostgREST's upsert puts every sent
--- column in its DO UPDATE SET list (and Postgres checks those privileges even when nothing
--- conflicts), the device creates groups with INSERT ... ON CONFLICT (id) DO NOTHING instead.
+-- invite_code is never chosen by the phone: there is no INSERT or UPDATE privilege on it, so it always
+-- comes from the column default, and only regenerate_invite_code() replaces it (a client-chosen code
+-- could be guessable, and a code the owner cannot change cannot shut a removed member out). The
+-- registry marks it serverGenerated, so the connector never sends it. A column added to groups later
+-- must be added to this INSERT grant if the device creates it.
+-- owner_id is not client-updatable either. Because PostgREST's upsert puts every sent column in its
+-- DO UPDATE SET list (and Postgres checks those privileges even when nothing conflicts), the device
+-- creates groups with INSERT ... ON CONFLICT (id) DO NOTHING instead.
 revoke all on public.groups from anon, authenticated;
-grant select, insert, delete on public.groups to authenticated;
+grant select, delete on public.groups to authenticated;
+grant insert (id, owner_id, name, created_at, updated_at) on public.groups to authenticated;
 grant update (name) on public.groups to authenticated;
 grant all on public.groups to service_role;
 
@@ -1557,14 +1882,18 @@ revoke all on function public.can_edit_source(uuid) from public, anon;
 grant execute on function public.can_edit_source(uuid) to authenticated, service_role;
 revoke all on function public.can_read_card(uuid) from public, anon;
 grant execute on function public.can_read_card(uuid) to authenticated, service_role;
+revoke all on function public.can_read_exercise(uuid) from public, anon;
+grant execute on function public.can_read_exercise(uuid) to authenticated, service_role;
 revoke all on function public.is_valid_split(jsonb) from public, anon;
 grant execute on function public.is_valid_split(jsonb) to authenticated, service_role;
 revoke all on function public.generate_invite_code() from public, anon;
 grant execute on function public.generate_invite_code() to authenticated, service_role;
 
--- The RPC is for signed-in users only (it needs auth.uid()).
+-- The RPCs are for signed-in users only (they need auth.uid()).
 revoke all on function public.join_group(text) from public, anon, service_role;
 grant execute on function public.join_group(text) to authenticated;
+revoke all on function public.regenerate_invite_code(uuid) from public, anon, service_role;
+grant execute on function public.regenerate_invite_code(uuid) to authenticated;
 
 -- Trigger functions are never called directly (Postgres does not check EXECUTE when a trigger
 -- fires), so nobody gets EXECUTE.
@@ -1579,6 +1908,10 @@ revoke all on function public.propagate_topic_plan_id() from public, anon, authe
 revoke all on function public.copy_card_link_plan_id() from public, anon, authenticated, service_role;
 revoke all on function public.propagate_card_plan_id() from public, anon, authenticated, service_role;
 revoke all on function public.skip_stale_card_state() from public, anon, authenticated, service_role;
+revoke all on function public.unshare_after_leaving_group() from public, anon, authenticated, service_role;
+revoke all on function public.check_study_session_plan() from public, anon, authenticated, service_role;
+revoke all on function public.check_exercise_set_exercise() from public, anon, authenticated, service_role;
+revoke all on function public.check_card_source_chunk() from public, anon, authenticated, service_role;
 
 
 -- =================================================================================================

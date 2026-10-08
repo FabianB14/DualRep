@@ -3,6 +3,7 @@ import { UpdateType, type CommonPowerSyncDatabase, type CrudEntry } from '@power
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { SupabaseConnector } from '../connector';
+import { NoSessionError } from '../upload';
 
 // The runtime SDK loads native modules (and ESM jest cannot transform); @powersync/common
 // exports the same classes and enums. babel-jest hoists this above the imports.
@@ -15,9 +16,17 @@ type Call =
   | { method: 'delete'; table: string; eq: [string, string] };
 
 const OK: Result = { error: null, status: 201 };
+const SIGNED_IN = { access_token: 'jwt-token', expires_at: 1_800_000_000 };
 
-/** A stand-in for the supabase-js query builder: records each request and answers via `respond`. */
-function fakeSupabase(respond: (call: Call) => Result = () => OK, session: unknown = null, sessionError: unknown = null) {
+/**
+ * A stand-in for the supabase-js client: records each request and answers via `respond`.
+ * auth.getSession() returns `session` (signed in by default; pass null for signed out).
+ */
+function fakeSupabase(
+  respond: (call: Call) => Result = () => OK,
+  session: unknown = SIGNED_IN,
+  sessionError: unknown = null,
+) {
   const calls: Call[] = [];
   const send = (call: Call) => {
     calls.push(call);
@@ -80,7 +89,7 @@ describe('SupabaseConnector.fetchCredentials', () => {
   });
 
   it('hands PowerSync the Supabase access token, its expiry and the endpoint (trailing slash removed)', async () => {
-    const { client } = fakeSupabase(undefined, { access_token: 'jwt-token', expires_at: 1_800_000_000 });
+    const { client } = fakeSupabase(undefined, SIGNED_IN);
     await expect(new SupabaseConnector(client, `${URL}/`).fetchCredentials()).resolves.toEqual({
       endpoint: URL,
       token: 'jwt-token',
@@ -101,6 +110,28 @@ describe('SupabaseConnector.uploadData', () => {
     await new SupabaseConnector(client, URL).uploadData(database);
     expect(calls).toHaveLength(0);
     expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing without a signed-in session and keeps the transaction queued', async () => {
+    // With no session supabase-js would send the anon key and every write would be refused as anon.
+    const { client, calls } = fakeSupabase(undefined, null);
+    const { database, complete, executed } = fakeDatabase([
+      entry('study_sessions', UpdateType.PUT, ROW, { user_id: USER, focus_subject: 'Offline' }),
+    ]);
+    const upload = new SupabaseConnector(client, URL).uploadData(database);
+    await expect(upload).rejects.toBeInstanceOf(NoSessionError);
+    expect(calls).toHaveLength(0);
+    expect(complete).not.toHaveBeenCalled();
+    expect(executed).toHaveLength(0);
+  });
+
+  it('keeps the transaction queued when the session cannot be read or refreshed', async () => {
+    const { client, calls } = fakeSupabase(undefined, null, new Error('refresh failed: offline'));
+    const { database, complete, executed } = fakeDatabase([entry('topics', UpdateType.PUT, ROW, { title: 'T' })]);
+    await expect(new SupabaseConnector(client, URL).uploadData(database)).rejects.toThrow('refresh failed');
+    expect(calls).toHaveLength(0);
+    expect(complete).not.toHaveBeenCalled();
+    expect(executed).toHaveLength(0);
   });
 
   it('applies every operation in order and completes the transaction', async () => {
@@ -189,9 +220,14 @@ describe('SupabaseConnector.uploadData', () => {
     expect(complete).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
+  it.each<[string, Result]>([
     ['offline', { error: { code: '', message: 'TypeError: Network request failed' }, status: 0 }],
     ['expired JWT', { error: { code: 'PGRST301', message: 'JWT expired' }, status: 401 }],
+    // The session was lost mid-upload: PostgREST ran the request as anon (no grants) and says 401/42501.
+    [
+      'signed out mid-upload',
+      { error: { code: '42501', message: 'permission denied for table study_sessions' }, status: 401 },
+    ],
     ['server error', { error: { message: 'upstream connect error' }, status: 503 }],
   ])('rethrows a retryable error (%s) without completing or recording anything', async (_label, failure) => {
     // The first operation fails fatally, the second transiently: the whole transaction must be
@@ -203,7 +239,9 @@ describe('SupabaseConnector.uploadData', () => {
       entry('topics', UpdateType.PUT, ROW, { title: '' }),
       entry('study_sessions', UpdateType.PUT, ROW2, { user_id: USER }),
     ]);
+    // The thrown error carries supabase-js's HTTP status (isFatalUploadError depends on it).
     await expect(new SupabaseConnector(client, URL).uploadData(database)).rejects.toMatchObject({
+      code: failure.error?.code ?? '',
       status: failure.status,
     });
     expect(complete).not.toHaveBeenCalled();

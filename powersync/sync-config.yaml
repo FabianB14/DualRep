@@ -45,6 +45,9 @@ streams:
       - SELECT * FROM interval_blocks WHERE user_id = auth.user_id()
       - SELECT * FROM equipment_setups WHERE user_id = auth.user_id()
       - SELECT * FROM workout_sessions WHERE user_id = auth.user_id()
+      # A set's exercise_id may name an exercise this user no longer receives (its owner unshared it or
+      # left the group; a deleted exercise turns it into null). exercise_name, copied when the set was
+      # logged, keeps the history readable either way.
       - SELECT * FROM exercise_sets WHERE user_id = auth.user_id()
       - SELECT * FROM transitions WHERE user_id = auth.user_id()
       # Spaced-repetition state and answer log stay private even for shared group cards.
@@ -90,6 +93,9 @@ streams:
       # Fellow members' profiles (display names). The policy exposes whole profile rows to group
       # mates, so syncing whole rows reveals nothing the Data API would not.
       - SELECT * FROM profiles WHERE id IN (SELECT user_id FROM group_members WHERE group_id IN my_groups)
+      # When a member leaves or is removed, the server unshares their exercises, sources (with files)
+      # and study plans from the group (group_id = null), so those rows leave the group's bucket and
+      # stay only in their owner's user_owned bucket.
       - SELECT * FROM exercises WHERE group_id IN my_groups
       - SELECT * FROM sources WHERE group_id IN my_groups
       - SELECT * FROM source_files WHERE group_id IN my_groups

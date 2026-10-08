@@ -35,6 +35,14 @@ export type WritePolicy = {
   /** true = any registry column may be changed; a list = only those columns; false = no updates. */
   patch: boolean | readonly string[];
   delete: boolean;
+  /**
+   * Columns the server always fills in itself and the client has no privilege to write (e.g.
+   * groups.invite_code, made by the column default and changed only by regenerate_invite_code()).
+   * They sync down like any other column but are never uploaded: `planOperation` strips them from
+   * every PUT (a locally created row may hold null or a placeholder there), and refuses a PATCH that
+   * changes one (DUALREP_WRITE_NOT_ALLOWED), because no device code should ever do that.
+   */
+  serverGenerated?: readonly string[];
 };
 
 export type TableDefinition = {
@@ -127,7 +135,8 @@ export const TABLES = {
       group_id: 'uuid',
       ...TIMESTAMPS,
     },
-    // Library rows (dataset/interverse) are service-role only; RLS allows writes to own 'user' rows.
+    // Library rows (dataset/interverse) are service-role only; RLS allows writes to own 'user' rows,
+    // and CHECKs keep a user row from ever holding a dataset_id or reviewed = true.
     writes: OWNER_WRITES,
     indexes: { by_pattern: ['movement_pattern', 'location'], by_owner: ['owner_id'], by_group: ['group_id'] },
   },
@@ -177,7 +186,12 @@ export const TABLES = {
     columns: {
       user_id: 'uuid',
       workout_session_id: 'uuid',
+      // null once the exercise is deleted (ON DELETE SET NULL): another person's exercise must never
+      // block their account deletion. The server checks the exercise is readable when this is set.
       exercise_id: 'uuid',
+      // The exercise's name, copied by the device when the set is logged, so the history stays
+      // readable after the exercise is deleted, unshared or otherwise no longer visible.
+      exercise_name: 'text',
       set_index: 'integer',
       reps: 'integer',
       weight_lbs: 'real',
@@ -217,7 +231,9 @@ export const TABLES = {
     // there is no conflict (verified on Postgres 16: "permission denied for table groups"). So a new
     // group is uploaded as insert-ignore (needs INSERT only; a retried upload is a no-op) and renames
     // go through PATCH, which may only touch `name`.
-    writes: { put: 'insert-ignore', patch: ['name'], delete: true },
+    // The server always picks the invite code: INSERT is granted on (id, owner_id, name, created_at,
+    // updated_at) only, so invite_code is never sent. The new group's code arrives with the next sync.
+    writes: { put: 'insert-ignore', patch: ['name'], delete: true, serverGenerated: ['invite_code'] },
   },
 
   group_members: {
@@ -328,7 +344,9 @@ export const TABLES = {
   },
 
   card_states: {
-    // ts-fsrs `Card` field names, so a row can be handed to ts-fsrs directly.
+    // ts-fsrs `Card` field names, so a row can be handed to ts-fsrs directly. The id must be
+    // UUIDv5(CARD_STATE_ID_NAMESPACE, `${user_id}:${card_id}`) (see constants.ts); the server refuses
+    // any other id.
     columns: {
       user_id: 'uuid',
       card_id: 'uuid',

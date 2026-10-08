@@ -10,6 +10,7 @@ import type { PostgrestError, SupabaseClient } from '@supabase/supabase-js';
 import { UPLOAD_FAILURES_TABLE } from './constants';
 import {
   isFatalUploadError,
+  NoSessionError,
   planOperation,
   uploadErrorCode,
   UploadRequestError,
@@ -56,11 +57,12 @@ export class SupabaseConnector implements PowerSyncBackendConnector {
    * Uploads the oldest local transaction. The SDK calls this repeatedly while the queue is non-empty
    * and, if it throws, retries the same transaction after its retry delay (5 s by default).
    *
-   * Every operation is attempted in order. A transient failure (offline, 5xx, expired JWT) aborts and
-   * rethrows so the whole transaction is retried; the operations already applied are idempotent
-   * (upsert / insert-ignore / update / delete by id), so re-sending them is harmless. A fatal failure
-   * (see isFatalUploadError) is remembered and the remaining operations still run — each one is a
-   * separate request anyway, so there is no atomicity to preserve, and continuing loses less data.
+   * Nothing is sent without a signed-in session (see below). Every operation is attempted in order.
+   * A transient failure (offline, 5xx, any HTTP 401) aborts and rethrows so the whole transaction is
+   * retried; the operations already applied are idempotent (upsert / insert-ignore / update / delete
+   * by id), so re-sending them is harmless. A fatal failure (see isFatalUploadError) is remembered
+   * and the remaining operations still run — each one is a separate request anyway, so there is no
+   * atomicity to preserve, and continuing loses less data.
    * Fatal failures are written to the local-only upload_failures table only once the transaction has
    * otherwise succeeded, so a retry never records the same failure twice; then the transaction is
    * completed so later writes are not stuck behind a write that can never succeed.
@@ -68,6 +70,16 @@ export class SupabaseConnector implements PowerSyncBackendConnector {
   async uploadData(database: CommonPowerSyncDatabase): Promise<void> {
     const transaction = await database.getNextCrudTransaction();
     if (!transaction) return;
+
+    // Never upload without a signed-in session. The SDK calls uploadData whether or not it has
+    // credentials, and with no usable session (refresh token revoked or reused, refresh failed)
+    // supabase-js would send the publishable/anon key instead of a user JWT: every write would run as
+    // `anon` and be refused. Throwing leaves the transaction queued; the SDK retries after its retry
+    // delay, so the writes go up once the same user is signed in again. (A session lost during the
+    // requests themselves surfaces as HTTP 401, which isFatalUploadError also treats as retryable.)
+    const { data, error } = await this.supabase.auth.getSession();
+    if (error) throw error;
+    if (!data.session) throw new NoSessionError();
 
     const failures: FailedOperation[] = [];
     for (const op of transaction.crud) {
@@ -87,6 +99,8 @@ export class SupabaseConnector implements PowerSyncBackendConnector {
     if (plan.method === 'skip') return;
     const table = this.supabase.from(plan.table);
     // supabase-js reports failures as { error, status } rather than throwing; status 0 = no HTTP response.
+    // The status goes into the UploadRequestError: isFatalUploadError needs it (a 42501 with HTTP 401
+    // means "not signed in" and is retried; with 403 it is a real denial and is dropped).
     let response: { error: PostgrestError | null; status: number };
     switch (plan.method) {
       case 'upsert':

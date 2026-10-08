@@ -1,9 +1,10 @@
 -- Schema-wide guarantees: every table has RLS, policies, the updated_at trigger and indexed foreign
--- keys; the API roles hold exactly the privileges the spec lists (anon: none at all); the powersync
--- publication lists every synced table and nothing else.
+-- keys; no foreign key can make a delete depend on another row; the API roles hold exactly the
+-- privileges the spec lists (anon: none at all); the powersync publication lists every synced table
+-- and nothing else.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(67);
+select plan(72);
 
 -- Tables ------------------------------------------------------------------------------------------
 select set_eq(
@@ -67,6 +68,28 @@ select is_empty(
   'no numeric columns (PowerSync would sync them as text)'
 );
 
+-- Deleting a row (or an account) must never depend on anyone else's rows: no RESTRICT / NO ACTION.
+select is_empty(
+  $$select con.conrelid::regclass::text || '.' || con.conname from pg_constraint con
+    where con.contype = 'f' and con.connamespace = 'public'::regnamespace
+      and con.confdeltype not in ('c', 'n')$$,
+  'every foreign key either cascades or sets null on delete (none can block a delete)'
+);
+
+-- The ones that point at rows another person may own detach instead of deleting.
+select set_eq(
+  $$select con.conrelid::regclass::text || '.' || a.attname from pg_constraint con
+    join pg_attribute a on a.attrelid = con.conrelid and a.attnum = con.conkey[1]
+    where con.contype = 'f' and con.connamespace = 'public'::regnamespace and con.confdeltype = 'n'$$,
+  array[
+    'cards.source_chunk_id', 'exercise_sets.exercise_id', 'exercises.group_id', 'profiles.default_preset_id',
+    'profiles.default_setup_id', 'reviews.interval_block_id', 'source_chunks.group_id',
+    'source_files.group_id', 'sources.group_id', 'study_plans.group_id', 'study_sessions.plan_id',
+    'transitions.workout_session_id', 'workout_sessions.preset_id', 'workout_sessions.setup_id'
+  ],
+  'references that may cross users (and group links) are ON DELETE SET NULL'
+);
+
 -- Privileges --------------------------------------------------------------------------------------
 select is_empty(
   $$select c.relname, p.privilege from pg_class c
@@ -98,7 +121,7 @@ select set_eq(
     union all
     values ('profiles', 'SELECT'), ('profiles', 'INSERT'), ('profiles', 'UPDATE'),
            ('entitlements', 'SELECT'),
-           ('groups', 'SELECT'), ('groups', 'INSERT'), ('groups', 'DELETE'),
+           ('groups', 'SELECT'), ('groups', 'DELETE'),
            ('group_members', 'SELECT'), ('group_members', 'DELETE'),
            ('source_chunks', 'SELECT'),
            ('reviews', 'SELECT'), ('reviews', 'INSERT'),
@@ -114,6 +137,17 @@ select set_eq(
       and has_column_privilege('authenticated', c.oid, a.attnum, 'UPDATE')$$,
   $$values ('groups', 'name'), ('tracy_events', 'accepted')$$,
   'the only column-level updates are groups.name and tracy_events.accepted'
+);
+
+select set_eq(
+  $$select c.relname::text, a.attname::text from pg_class c
+    join pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
+    where c.relnamespace = 'public'::regnamespace and c.relkind = 'r'
+      and not has_table_privilege('authenticated', c.oid, 'INSERT')
+      and has_column_privilege('authenticated', c.oid, a.attnum, 'INSERT')$$,
+  $$values ('groups', 'id'), ('groups', 'owner_id'), ('groups', 'name'), ('groups', 'created_at'),
+           ('groups', 'updated_at')$$,
+  'the only column-level inserts are on groups, and invite_code is not among them (the server picks it)'
 );
 
 select is_empty(
@@ -134,11 +168,22 @@ select set_eq(
   $$select p.proname::text from pg_proc p
     where p.pronamespace = 'public'::regnamespace and has_function_privilege('authenticated', p.oid, 'EXECUTE')$$,
   array[
-    'can_edit_plan', 'can_edit_source', 'can_read_card', 'can_read_plan', 'can_read_source',
-    'generate_invite_code', 'has_paid_access', 'is_group_member', 'is_group_owner', 'is_valid_split',
-    'join_group', 'shares_group_with'
+    'can_edit_plan', 'can_edit_source', 'can_read_card', 'can_read_exercise', 'can_read_plan',
+    'can_read_source', 'generate_invite_code', 'has_paid_access', 'is_group_member', 'is_group_owner',
+    'is_valid_split', 'join_group', 'regenerate_invite_code', 'shares_group_with'
   ],
-  'authenticated can execute exactly the RLS helpers and join_group (no trigger functions)'
+  'authenticated can execute exactly the access helpers and the group RPCs (no trigger functions)'
+);
+
+select set_eq(
+  $$select p.proname::text from pg_proc p
+    where p.pronamespace = 'public'::regnamespace and has_function_privilege('service_role', p.oid, 'EXECUTE')$$,
+  array[
+    'can_edit_plan', 'can_edit_source', 'can_read_card', 'can_read_exercise', 'can_read_plan',
+    'can_read_source', 'generate_invite_code', 'has_paid_access', 'is_group_member', 'is_group_owner',
+    'is_valid_split', 'shares_group_with'
+  ],
+  'service_role can execute the access helpers but not the user-only RPCs or trigger functions'
 );
 
 select is_empty(
@@ -193,6 +238,10 @@ order by c.relname;
 select throws_ok(
   $$select public.join_group('ABCD2345')$$, '42501', null,
   'anon cannot call join_group'
+);
+select throws_ok(
+  $$select public.regenerate_invite_code('30000000-0000-4000-8000-000000000001')$$, '42501', null,
+  'anon cannot call regenerate_invite_code'
 );
 
 reset role;

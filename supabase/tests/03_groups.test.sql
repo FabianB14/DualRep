@@ -1,9 +1,11 @@
 -- groups and group_members: only subscribers create groups; the owner becomes the first member;
--- join_group() by invite code (case-insensitive, idempotent, max 8 members); leaving and removing;
--- who sees groups, rosters, profiles and group-shared exercises.
+-- the server always picks the invite code and only the owner can rotate it; join_group() by invite
+-- code (case-insensitive, idempotent, max 8 members); leaving and removing (a removal sticks once the
+-- code is rotated); who sees groups, rosters, profiles and group-shared exercises; deleting a group
+-- unshares (never deletes) members' exercises.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(42);
+select plan(50);
 
 -- Runs one write and returns how many rows it changed. RLS hides other people's rows from UPDATE
 -- and DELETE (0 rows, no error), so that is how "cannot modify" is asserted.
@@ -80,6 +82,14 @@ select matches(
   (select invite_code from public.groups where id = '30000000-0000-4000-8000-000000000001'),
   '^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$',
   'a new group gets an 8-character invite code without look-alike characters'
+);
+
+select throws_ok(
+  $$insert into public.groups (id, owner_id, name, invite_code)
+    values ('30000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000001', 'Easy code', 'AAAAAAAA')
+    on conflict (id) do nothing$$,
+  '42501', null,
+  'a client cannot choose the invite code (no INSERT privilege on it; the server picks it)'
 );
 
 select throws_ok(
@@ -168,6 +178,12 @@ select throws_ok(
   'a member cannot change the invite code'
 );
 
+select throws_ok(
+  $$select public.regenerate_invite_code('30000000-0000-4000-8000-000000000001')$$,
+  '42501', 'not_group_owner',
+  'a member cannot rotate the invite code'
+);
+
 select is(
   pg_temp.affected($$update public.groups set name = 'Mia''s now' where id = '30000000-0000-4000-8000-000000000001'$$),
   0::bigint,
@@ -210,6 +226,11 @@ select is(
   (select count(*) from public.profiles where id = '10000000-0000-4000-8000-000000000001'),
   0::bigint,
   'a non-member cannot see the members'' profiles'
+);
+select throws_ok(
+  $$select public.regenerate_invite_code('30000000-0000-4000-8000-000000000001')$$,
+  '42501', 'not_group_owner',
+  'a non-member cannot rotate the invite code'
 );
 
 set local request.jwt.claims to '{"sub": "10000000-0000-4000-8000-000000000001", "role": "authenticated"}';
@@ -276,6 +297,35 @@ select is(
   'the owner can remove a member'
 );
 
+-- The removed member still knows the code, so the owner rotates it (the Phase 4 remove flow).
+select matches(
+  public.regenerate_invite_code('30000000-0000-4000-8000-000000000001'),
+  '^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$',
+  'the owner can rotate the invite code'
+);
+select isnt(
+  (select invite_code from public.groups where id = '30000000-0000-4000-8000-000000000001'),
+  'ABCD2345',
+  '... which replaces the old code'
+);
+
+set local request.jwt.claims to '{"sub": "20000000-0000-4000-8000-000000000002", "role": "authenticated"}';
+select throws_ok(
+  $$select public.join_group('ABCD2345')$$,
+  'P0002', 'invalid_invite_code',
+  'after removal and rotation, the removed member cannot rejoin with the old code'
+);
+select is(
+  (select count(*) from public.groups where id = '30000000-0000-4000-8000-000000000001'),
+  0::bigint,
+  '... and stays out of the group'
+);
+
+reset role;
+-- A known code again for the rest of the file.
+update public.groups set invite_code = 'EFGH6789' where id = '30000000-0000-4000-8000-000000000001';
+set local role authenticated;
+
 set local request.jwt.claims to '{"sub": "20000000-0000-4000-8000-000000000003", "role": "authenticated"}';
 select is(
   pg_temp.affected($$delete from public.group_members
@@ -286,7 +336,7 @@ select is(
 
 set local request.jwt.claims to '{"sub": "10000000-0000-4000-8000-000000000004", "role": "authenticated"}';
 select is(
-  public.join_group('abcd2345'),
+  public.join_group('efgh6789'),
   '30000000-0000-4000-8000-000000000001'::uuid,
   'once there is room again, joining works'
 );
@@ -316,12 +366,17 @@ select is(
   'non-members do not see exercises shared with the group'
 );
 
--- join_group needs a signed-in user.
+-- The group RPCs need a signed-in user.
 set local request.jwt.claims to '';
 select throws_ok(
-  $$select public.join_group('ABCD2345')$$,
+  $$select public.join_group('EFGH6789')$$,
   '42501', 'not_authenticated',
   'join_group refuses a request without a user'
+);
+select throws_ok(
+  $$select public.regenerate_invite_code('30000000-0000-4000-8000-000000000001')$$,
+  '42501', 'not_authenticated',
+  'regenerate_invite_code refuses a request without a user'
 );
 
 -- Deleting the group ------------------------------------------------------------------------------
@@ -338,10 +393,10 @@ select is(
   0::bigint,
   'deleting a group removes its memberships'
 );
-select is(
-  (select count(*) from public.exercises where id = 'b0000000-0000-4000-8000-000000000001'),
-  0::bigint,
-  '... and the exercises shared with it'
+select results_eq(
+  $$select owner_id::text, group_id from public.exercises where id = 'b0000000-0000-4000-8000-000000000001'$$,
+  $$values ('20000000-0000-4000-8000-000000000003', null::uuid)$$,
+  '... but only unshares the exercises shared with it (they belong to their owners)'
 );
 
 select * from finish();

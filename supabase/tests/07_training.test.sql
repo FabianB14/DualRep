@@ -47,13 +47,15 @@ select lives_ok(
   'PUT: workout_sessions'
 );
 select lives_ok(
-  $$insert into public.exercise_sets (id, user_id, workout_session_id, exercise_id, set_index, reps, weight_lbs, rpe)
+  $$insert into public.exercise_sets (id, user_id, workout_session_id, exercise_id, exercise_name, set_index, reps,
+                                      weight_lbs, rpe)
     values ('e3000000-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111',
-            'e2000000-0000-4000-8000-000000000001', 'b0000000-0000-4000-8000-000000000001', 0, 12, 0, 7.5)
+            'e2000000-0000-4000-8000-000000000001', 'b0000000-0000-4000-8000-000000000001', 'Push-up', 0, 12, 0, 7.5)
     on conflict (id) do update set id = excluded.id, user_id = excluded.user_id,
       workout_session_id = excluded.workout_session_id, exercise_id = excluded.exercise_id,
-      set_index = excluded.set_index, reps = excluded.reps, weight_lbs = excluded.weight_lbs, rpe = excluded.rpe$$,
-  'PUT: exercise_sets'
+      exercise_name = excluded.exercise_name, set_index = excluded.set_index, reps = excluded.reps,
+      weight_lbs = excluded.weight_lbs, rpe = excluded.rpe$$,
+  'PUT: exercise_sets (with the exercise''s name copied onto the set)'
 );
 select lives_ok(
   $$insert into public.study_sessions (id, user_id, focus_subject)
@@ -255,8 +257,8 @@ select is(pg_temp.affected($$delete from public.equipment_setups where id = 'e10
 
 -- Account deletion ----------------------------------------------------------------------------------
 reset role;
--- Ada logs a full day again, including a set of her own exercise (exercise_sets.exercise_id is
--- ON DELETE RESTRICT, which must not block deleting the account).
+-- Ada logs a full day again, including a set of her own exercise (09_deletion.test.sql covers sets
+-- that other people logged against her exercises).
 insert into public.presets (id, owner_id, name, split)
 values ('a0000000-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111', 'Mine',
         '{"lower": 50, "upper": 50, "core": 0, "cardio": 0}');

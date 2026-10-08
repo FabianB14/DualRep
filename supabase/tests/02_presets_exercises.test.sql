@@ -1,8 +1,9 @@
 -- presets (system rows read-only, own rows CRUD, split validation) and exercises (library rows
--- visible only once reviewed and never client-writable; user rows owner-only).
+-- visible only once reviewed and never client-writable; user rows owner-only and never able to pass
+-- as library rows: no dataset_id, never reviewed).
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(38);
+select plan(44);
 
 -- Runs one write and returns how many rows it changed. RLS hides other people's rows from UPDATE
 -- and DELETE (0 rows, no error), so that is how "cannot modify" is asserted.
@@ -252,6 +253,37 @@ select is(
   1::bigint,
   'PATCH: a user can update their own exercise'
 );
+
+-- dataset_id is the library import's idempotency key and `reviewed` its review flag: a user row may
+-- hold neither (otherwise a user could claim a public free-exercise-db id ahead of the import).
+select throws_ok(
+  $$insert into public.exercises (id, name, origin, owner_id, dataset_id)
+    values ('b0000000-0000-4000-8000-000000000023', 'Squat', 'user', '11111111-1111-4111-8111-111111111111',
+            'Barbell_Deadlift')
+    on conflict (id) do update set id = excluded.id, name = excluded.name, origin = excluded.origin,
+      owner_id = excluded.owner_id, dataset_id = excluded.dataset_id$$,
+  '23514', null,
+  'a user exercise cannot claim a library dataset_id'
+);
+select throws_ok(
+  $$insert into public.exercises (id, name, origin, owner_id, reviewed, images)
+    values ('b0000000-0000-4000-8000-000000000024', 'Squat', 'user', '11111111-1111-4111-8111-111111111111',
+            true, '["https://attacker.example/x.png"]')
+    on conflict (id) do update set id = excluded.id, name = excluded.name, origin = excluded.origin,
+      owner_id = excluded.owner_id, reviewed = excluded.reviewed, images = excluded.images$$,
+  '23514', null,
+  'a user exercise cannot be marked reviewed'
+);
+select throws_ok(
+  $$update public.exercises set dataset_id = 'Barbell_Deadlift' where id = 'b0000000-0000-4000-8000-000000000020'$$,
+  '23514', null,
+  'PATCH: a user cannot add a dataset_id to their exercise'
+);
+select throws_ok(
+  $$update public.exercises set reviewed = true where id = 'b0000000-0000-4000-8000-000000000020'$$,
+  '23514', null,
+  'PATCH: a user cannot mark their exercise reviewed'
+);
 select throws_ok(
   $$insert into public.exercises (id, name, origin, owner_id, group_id)
     values ('b0000000-0000-4000-8000-000000000021', 'Shared', 'user', '11111111-1111-4111-8111-111111111111',
@@ -308,6 +340,20 @@ select results_eq(
   $$select name from public.exercises where id = 'b0000000-0000-4000-8000-000000000001'$$,
   $$values ('Barbell Squat')$$,
   'the library row is unchanged'
+);
+
+-- The service role (the importer) is held to the same rules.
+select throws_ok(
+  $$insert into public.exercises (name, origin, dataset_id, reviewed)
+    values ('Desk Lunge', 'interverse', 'Desk_Lunge', true)$$,
+  '23514', null,
+  'only dataset rows carry a dataset_id'
+);
+select lives_ok(
+  $$insert into public.exercises (name, origin, dataset_id, reviewed)
+    values ('Barbell Deadlift', 'dataset', 'Barbell_Deadlift', false)
+    on conflict (dataset_id) do nothing$$,
+  'the import can still claim every dataset id (no user row can hold one)'
 );
 
 select * from finish();

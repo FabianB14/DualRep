@@ -11,7 +11,7 @@
 # The server is always stopped and the temp dir removed, also on failure or Ctrl-C.
 #
 # Usage:  npm run db:test [-- supabase/tests/<name>.test.sql ...]   (default: every test file)
-# Needs:  Postgres 16 server binaries with pgvector and pgTAP
+# Needs:  Postgres 16 server binaries with pgvector, pgTAP and uuid-ossp (contrib)
 #         (Ubuntu: apt-get install postgresql-16 postgresql-16-pgvector postgresql-16-pgtap), and node.
 # Env:    PG_BIN=/path/to/postgres/bin to pick the binaries (default: `pg_config --bindir`, then
 #         /usr/lib/postgresql/16/bin).
@@ -41,13 +41,14 @@ has_server_binaries() {
   [[ -x "$1/initdb" && -x "$1/pg_ctl" && -x "$1/postgres" && -x "$1/psql" ]]
 }
 
-# True when the install next to these binaries has pgvector and pgTAP (or when that cannot be told,
-# in which case the check after startup reports it).
+# True when the install next to these binaries has pgvector, pgTAP and uuid-ossp (or when that cannot
+# be told, in which case the check after startup reports it).
 has_extensions() {
   local share_dir
   [[ -x "$1/pg_config" ]] || return 0
   share_dir="$("$1/pg_config" --sharedir 2>/dev/null)" || return 0
-  [[ -f "$share_dir/extension/vector.control" && -f "$share_dir/extension/pgtap.control" ]]
+  [[ -f "$share_dir/extension/vector.control" && -f "$share_dir/extension/pgtap.control" &&
+    -f "$share_dir/extension/uuid-ossp.control" ]]
 }
 
 find_pg_bin() {
@@ -69,7 +70,7 @@ find_pg_bin() {
       return
     fi
   done
-  die "Postgres 16 with pgvector and pgTAP not found. Install postgresql-16, postgresql-16-pgvector and postgresql-16-pgtap, or set PG_BIN."
+  die "Postgres 16 with pgvector, pgTAP and uuid-ossp not found. Install postgresql-16, postgresql-16-pgvector and postgresql-16-pgtap, or set PG_BIN."
 }
 
 PG_BIN="$(find_pg_bin)"
@@ -153,12 +154,14 @@ as_cluster_owner "$PG_BIN/pg_ctl" -D "$DATA_DIR" -l "$WORK_DIR/postgres.log" -w 
 
 PSQL=("$PG_BIN/psql" -X -q -v ON_ERROR_STOP=1 -h "$WORK_DIR" -p "$PORT" -U postgres -d postgres)
 
+# The migration creates vector and uuid-ossp in `extensions`; uuid-ossp ships with the postgresql-16
+# package itself (contrib).
 missing_extensions="$("${PSQL[@]}" -At -c "
   select string_agg(name, ', ' order by name)
-  from unnest(array['vector', 'pgtap']) as name
+  from unnest(array['vector', 'pgtap', 'uuid-ossp']) as name
   where name not in (select e.name from pg_available_extensions e)")"
 if [[ -n "$missing_extensions" ]]; then
-  die "Postgres extensions not installed: $missing_extensions (apt-get install postgresql-16-pgvector postgresql-16-pgtap)"
+  die "Postgres extensions not installed: $missing_extensions (apt-get install postgresql-16 postgresql-16-pgvector postgresql-16-pgtap)"
 fi
 
 # Applies one SQL file in a single transaction (like the Supabase CLI does for a migration).
