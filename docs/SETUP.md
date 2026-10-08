@@ -334,10 +334,49 @@ security. The app refuses to start with them and shows "Setup needed".
 ## 6. Set up sign-in emails and check the signing keys
 
 DualRep signs you in with a **6-digit code** typed into the app. Supabase's default emails contain a
-link instead, so change them.
+link instead, so change them. Supabase only lets you edit the templates once the project sends email
+through **your own email service ("custom SMTP")**: until then the template page shows "Set up custom
+SMTP to edit templates" and the subject and body can't be edited. You need custom SMTP before beta
+testers join anyway (the built-in sender only emails your Supabase team, a few times an hour).
+
+### Custom SMTP with Resend (free)
+[Resend](https://resend.com) has a free plan (about 3,000 emails a month, 100 a day; **verify** at
+resend.com/pricing). Without a domain of your own it runs in test mode: it sends only **from**
+`onboarding@resend.dev` and only **to** the email address you signed up to Resend with (**verify**).
+That's enough for the Phase 0 gate: sign up to Resend with the same address you'll sign in to DualRep
+with.
+
+1. Sign up at https://resend.com with the email address you'll use in DualRep.
+2. Resend dashboard → **API Keys** → **Create API Key** → name `dualrep-supabase`, permission
+   **Sending access** → **Add**. Copy the key (starts with `re_`); it is shown once. Save it in your
+   password manager.
+3. Supabase dashboard → **Authentication → Emails → SMTP Settings** (or the **Set up SMTP** button on
+   the template page) → turn on **Enable custom SMTP** and fill in:
+
+   | Field | Value |
+   |---|---|
+   | Sender email | `onboarding@resend.dev` |
+   | Sender name | `DualRep` |
+   | Host | `smtp.resend.com` |
+   | Port | `465` |
+   | Username | `resend` |
+   | Password | the `re_…` API key |
+
+   Leave the minimum interval as it is and **Save**.
+4. Later, before testers join: buy a domain (for example `dualrep.app`), verify it in Resend
+   (**Domains → Add domain**, then add the DNS records it shows), and change the sender email to
+   something like `no-reply@dualrep.app`. Then Resend can email anyone.
+
+**Success:** the template page no longer shows "Set up custom SMTP to edit templates", and the
+subject and body can be edited.
 
 ### Email templates
-In the dashboard: **Authentication → Emails** (email templates; **verify** the menu name).
+In the dashboard: **Authentication → Emails → Templates**. For each template, switch the **Body** to
+**Source**, select everything in it (Ctrl+A), delete it, and paste the new one. The easiest way to
+copy a file is to open its "raw" link and press Ctrl+A, Ctrl+C:
+`https://raw.githubusercontent.com/FabianB14/DualRep/main/supabase/templates/magic_link.html` and
+`.../confirmation.html` (until the Phase 0 pull request is merged, replace `main` with
+`claude/bold-fermi-oglgch` in the link).
 
 1. **Magic link** template (sent to existing users):
    - Subject: `Your DualRep sign-in code`
@@ -854,13 +893,16 @@ select pg_drop_replication_slot('<slot_name>');
 - **"This server can’t send email to that address yet":** the built-in sender only sends to members of
   your Supabase team. Use your own address, or invite the other address to your team, or set up a
   custom email sender (SMTP) under Authentication settings (needed before beta testers join).
+- **Custom SMTP with Resend in test mode** (section 6) delivers only to the address your Resend
+  account uses. Sign in to DualRep with that address, or verify a domain in Resend.
 - **"Too many emails sent…":** the app shows this for two different email limits.
   One allows one email per address per minute: waiting a minute fixes it. The other is for the whole
   project: Supabase's built-in sender sends only a few emails **per hour** (2–3 according to search
   results; **verify** under Authentication → Rate Limits). If waiting a minute doesn't help, wait up
   to an hour, or set up a custom email sender (SMTP), which lets you raise the limit.
   (**"Too many tries. Wait a minute, then try again."** is the general request limit: just wait.)
-- The email has a **link but no code:** the template wasn't saved (section 6).
+- The email has a **link but no code:** the templates are still Supabase's defaults. Set up custom
+  SMTP, then paste and save both templates (section 6).
 
 ### "Setup needed" on the phone
 The build is missing an `EXPO_PUBLIC_…` value, or one is wrong (the screen says which). For a
