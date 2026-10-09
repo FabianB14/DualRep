@@ -76,6 +76,12 @@ export type CycleStoreDeps = {
   newId(): string;
   setTimeout(callback: () => void, ms: number): unknown;
   clearTimeout(handle: unknown): void;
+  /**
+   * A focus block that quizzed from a study plan has been closed on the phone (its end is written):
+   * the daily review reminder is rescheduled, since this block's answers changed what is due. Not
+   * awaited and never during sign-out (finishAndStop). Optional: without it nothing happens.
+   */
+  studyBlockEnded?(userId: string): void;
 };
 
 /** What circuits are built from: the live library and the profile's unit. */
@@ -132,6 +138,8 @@ export class CycleStore {
   private context: CycleContext | null = null;
   private loading: Promise<void> | null = null;
   private disposed = false;
+  /** Sign-out is closing the cycle: nothing may be scheduled for this account any more. */
+  private stopping = false;
   private dirty = false;
   private writing: Promise<void> | null = null;
   private running = false;
@@ -189,6 +197,7 @@ export class CycleStore {
    * here (sign-out goes ahead). Never rejects.
    */
   async finishAndStop(): Promise<void> {
+    this.stopping = true;
     try {
       await this.load();
       if (!this.disposed && this.state) {
@@ -535,7 +544,9 @@ export class CycleStore {
       case 'start_focus_block':
         return repo.startFocusBlock(effect.input);
       case 'end_focus_block':
-        return repo.endFocusBlock(effect.blockId, effect.endedAt, effect.interrupted, effect.at);
+        await repo.endFocusBlock(effect.blockId, effect.endedAt, effect.interrupted, effect.at);
+        if (effect.studyPlanId) this.studyBlockEnded();
+        return;
       case 'rate_block':
         return repo.rateBlock(effect.blockId, effect.effort, effect.at);
       case 'start_move_block':
@@ -555,6 +566,16 @@ export class CycleStore {
         return;
       case 'cancel_notification':
         return this.deps.cancelScheduled(effect.notificationId);
+    }
+  }
+
+  /** Tells the deps a study block is over (see CycleStoreDeps.studyBlockEnded). Never throws. */
+  private studyBlockEnded(): void {
+    if (this.disposed || this.stopping) return;
+    try {
+      this.deps.studyBlockEnded?.(this.userId);
+    } catch {
+      // A reminder that could not be rescheduled must never hold up the cycle.
     }
   }
 

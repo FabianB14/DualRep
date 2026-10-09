@@ -55,9 +55,10 @@ streams:
       - SELECT * FROM card_states WHERE user_id = auth.user_id()
       - SELECT * FROM reviews WHERE user_id = auth.user_id()
       # Explicit light column list: the large input/output/usage JSON and the worker bookkeeping
-      # (attempts, locked_at, model) stay on the server. Must match TABLES.tracy_events in
+      # (attempts, locked_at, model, cap_units) stay on the server. stage, plan_id and source_id let the
+      # phone show each source's progress and errors. Must match TABLES.tracy_events in
       # src/db/tables.ts (checked by src/db/__tests__/sync-config.test.ts).
-      - SELECT id, user_id, job, status, error, accepted, created_at, updated_at FROM tracy_events WHERE user_id = auth.user_id()
+      - SELECT id, user_id, job, stage, plan_id, source_id, status, error, accepted, created_at, updated_at FROM tracy_events WHERE user_id = auth.user_id()
 
   # One global bucket shared by every user: the reviewed exercise library and the six system presets.
   # Mirrors exercises select `(owner_id is null and reviewed)` and presets select `owner_id is null`.

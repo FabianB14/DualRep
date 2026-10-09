@@ -98,6 +98,9 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
 - **Alternatives:** a queue on Tracy's server; Tracy returning `202` and calling back a signed DualRep
   webhook (acceptable later, still without the service key).
 - **Revisit when:** Phase 2, when the worker is built. Details: [TRACY_INTEGRATION.md](TRACY_INTEGRATION.md).
+- **Built (2026-10-09):** as decided, in Phase 2: the `tracy-worker` Edge Function and the queue
+  functions ([D31](#d31-the-study-pipeline-lives-in-dualrep-ai-calls-go-to-tracy-2026-10-09),
+  [D37](#d37-the-job-queue-claiming-fencing-retries-and-repeatable-ids-2026-10-09)).
 
 ## D8. Focus timer without a foreground service (recommendation; final call in Phase 1) (2026-10-08)
 
@@ -172,8 +175,12 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
 - **Decision:** Phase 0 only reviewed the `tracy-ai` repo (at commit `88f4201`). No Tracy code changed.
 - **Why:** Phase 0 has no AI features, and the right changes depend on decisions made in Phase 2
   (models, task list, per-caller secret, logging). The proposed changes are written down in
-  [TRACY_INTEGRATION.md](TRACY_INTEGRATION.md#10-tracy-ai-changes-for-phase-2-proposed-not-made).
+  [TRACY_INTEGRATION.md](TRACY_INTEGRATION.md#10-tracy-ai-changes-for-phase-2-done).
 - **Revisit when:** Phase 2 starts.
+- **Closed (2026-10-09):** Phase 2 made the changes in `tracy-ai`, on its branch
+  `claude/bold-fermi-oglgch` until its pull request is merged
+  ([D33](#d33-tracys-models-and-json-output-for-dualrep-2026-10-09),
+  [D34](#d34-tracys-dualrep-lane-own-secret-no-groq-metadata-only-logs-2026-10-09)).
 
 ## D13. Deleting never depends on anyone else's data (2026-10-08)
 
@@ -553,6 +560,9 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
   ([ANDROID.md 1.2](ANDROID.md#12-notification-permission-and-channels)).
 - **Alternatives:** ask at first launch (no context, more refusals); never ask (no alerts).
 - **Revisit when:** Phase 2 adds review reminders (a second reason to ask).
+- **Phase 2 (2026-10-09):** kept. The review reminder asks in the same way, at its own moment:
+  when the user turns on **Remind me when cards are due** in Settings
+  ([D47](#d47-the-daily-review-reminder-2026-10-09)).
 
 ## D30. expo-notifications' extra permissions are blocked in Phase 1 (2026-10-08)
 
@@ -569,3 +579,536 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
 - **Alternatives:** leave them in until push arrives (more to declare, for nothing).
 - **Revisit when:** Phase 4 adds push: take `c2dm.permission.RECEIVE` out of the list
   ([ANDROID.md 4.2](ANDROID.md#42-push-notifications-for-friend-activity)).
+
+---
+
+## Phase 2: the study engine (2026-10-09)
+
+D31–D49 record how Phase 2 was built. The founder's steps are in
+[SETUP §17](SETUP.md#17-phase-2-the-study-engine-on-your-phone); the tables, functions and jobs are
+in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
+
+## D31. The study pipeline lives in DualRep; AI calls go to Tracy (2026-10-09)
+
+- **Decision:** the work of turning material into cards runs in DualRep, as jobs in `tracy_events`
+  ([D7](#d7-dualrep-owns-the-ai-job-queue-2026-10-08)). A `tracy-worker` Edge Function does the work.
+  - It does **one step per call**: one Tracy call of at most 110 s, inside the Edge Function's
+    150 s limit on the Free plan. Then it calls itself again (with `EdgeRuntime.waitUntil`) while
+    more work is queued, at most 20 times in a row (`MAX_HOPS`).
+  - `pg_cron` is the safety net: every minute it wakes the worker, but **only when a job is queued**
+    or a running one is stale, so an idle project spends none of its monthly function calls.
+  - The worker calls Tracy's `POST /ai/extract` and `POST /ai/tasks/dualrep_*` with
+    `X-Service-Secret` (Tracy's `SERVICE_SECRET_DUALREP`, kept in Supabase as
+    `TRACY_SERVICE_SECRET`), and writes the results with DualRep's own service role.
+  - Before a step that needs Tracy it calls `GET /health` (5 s). If Tracy is asleep (Render's free
+    plan), the job goes back in the queue without counting an attempt
+    (`release_tracy_event`), and the next minute tries again. The health call itself wakes Tracy.
+  - Tracy stores nothing and logs only metadata. DualRep's tasks never fall back to Groq.
+- **Why:** DualRep's service-role key never leaves DualRep, and its data never rests on Tracy. One
+  short step per call fits the Free plan's limits, and the jobs table doubles as the phone's
+  progress view.
+- **Alternatives:** a queue on Tracy's server (Tracy would need DualRep's service key); one long
+  call per source (doesn't fit in 150 s); Supabase Queues (pgmq), possible later.
+- **Revisit when:** a step regularly needs more than 110 s (move to Supabase Pro's 400 s, or the
+  Message Batches API), or the queue gets busy enough that one user's long PDF delays others.
+
+## D32. One Edge Function, `study`, starts AI work for the user (2026-10-09)
+
+- **Decision:** everything a person does that starts or steers AI work goes through one Edge
+  Function, `study`, with five actions: `submit_source`, `confirm_transcripts`, `approve_outline`,
+  `retry_job` and `cancel_job`. The request and response shapes are written at the top of
+  [`supabase/functions/study/index.ts`](../supabase/functions/study/index.ts), and the app's copy is
+  [`studyApi.ts`](../src/features/study/studyApi.ts).
+  - It checks the caller's sign-in itself (`auth.getClaims`, role `authenticated`). The gateway's
+    own check (`verify_jwt`) is off, because it also lets in the publishable key, which ships
+    inside the app and so proves nothing.
+  - It checks ownership as the user (an RLS client), and only then writes with the service role
+    and queues jobs.
+  - **Building a plan needs the internet; studying never does.** The phone makes the source's id,
+    uploads the files, then calls `submit_source`. The function writes the `sources`,
+    `source_files` and `plan_sources` rows, and the phone receives them by sync.
+  - Every action is safe to send twice: `submit_source` answers `already_submitted`,
+    `approve_outline` answers `already_approved`.
+  - `approve_outline` takes `source_id: null` to approve every outline of the plan that is waiting,
+    because the phone can't tell which source a draft topic came from.
+  - `retry_job` puts **the same row** back in the queue (not counted again against the monthly
+    cap). `cancel_job` stops a queued or running step; on a failed page transcription it means
+    **Skip this page**.
+  - Errors are a `code` plus a fixed English sentence the app may show (never the person's
+    material). Over the cap it answers 429 `cap_reached` with the reset date.
+- **Why:** one place to check the session, the tier and the cap, and the phone never holds a
+  secret. The phone writing no source rows itself means a retried upload can never undo what the
+  pipeline did.
+- **Alternatives:** the phone inserting `sources` and a database trigger queuing the job (no clean
+  place for the cap and the file checks); one function per action (five deploys, five copies of the
+  same checks).
+- **Revisit when:** Phase 3 adds Tracy actions for the user (the planner, the grader): they can be
+  new actions here, or their own function if they must answer within 3 seconds.
+
+## D33. Tracy's models and JSON output for DualRep (2026-10-09)
+
+- **Decision:**
+  - The four DualRep tasks (outline, cards, handwritten notes, scanned PDF pages) run on Tracy's
+    **strong** tier, `TRACY_TASK_MODEL_STRONG`, default **`claude-sonnet-5-5`**. The cheaper
+    **`claude-haiku-5-5`** is a one-variable switch on Render. The fast tier,
+    `TRACY_TASK_MODEL` (default `claude-haiku-4-5`), is unchanged; `convert_asset` runs there
+    exactly as before.
+  - JSON comes from **structured outputs** (`output_config.format` with a JSON schema), on every
+    model, with no `temperature` and no forced `tool_choice` (Sonnet 5.5 rejects both).
+  - On `claude-sonnet-5-5`, `claude-opus-5` and `claude-opus-5-5` only, Tracy also sends
+    `fallbacks: "default"` with the header `anthropic-beta: server-side-fallback-2026-07-01`. **In
+    plain words:** if Anthropic's safety checks decline a request (for example course material
+    about computer security or AI), Anthropic re-runs it on another Claude model in the same call.
+    `TRACY_TASK_FALLBACKS=off` on Render turns it off. Haiku 5.5 has no such fallback.
+  - A decline that remains comes back as `502 code: "refused"` (with its category), an answer cut
+    off at the length limit as `code: "truncated"`. All model errors are 502, so the worker reads
+    `code`, not the status.
+  - Each task has one time budget that includes preparing its input (downloading and rendering
+    scanned pages): 105 s for outline, cards and scanned pages, 90 s for notes, and the model
+    always keeps at least 5 s. The worker waits 110 s, so Tracy's answer always arrives first.
+  - Tracy wraps a single content block in a list: the Messages API takes a string or a list of
+    blocks, and a bare block would have failed every outline and cards call.
+- **Why:** the plan names Sonnet 5.5 for the study builder; structured outputs are the one way
+  that works on every current model. Costs (estimates from the Phase 2 research, not measured):
+  about **$1.10 per 100-page PDF** on Sonnet 5.5 (likely $0.80–$1.80) and **$0.03 per handwritten
+  page**; about **$0.06** and **$0.002** on Haiku 5.5
+  ([SETUP §17 costs](SETUP.md#what-phase-2-costs-each-month)).
+- **Alternatives:** a forced tool with `strict: true` (rejected by Sonnet 5.5); Haiku 5.5 as the
+  default (twenty times cheaper, quality on DualRep's material not compared yet); sending whole PDFs
+  as documents (page images cost 5–10 times more).
+- **Revisit when:** the first real course has run: compare Haiku 5.5 with Sonnet 5.5 on the same
+  material, and check the real `usage` against the estimates. If the first live call returns 400,
+  set `TRACY_TASK_FALLBACKS=off` (the fallback with structured outputs is not verified live).
+
+## D34. Tracy's DualRep lane: own secret, no Groq, metadata-only logs (2026-10-09)
+
+- **Decision:**
+  - **One secret per caller.** `SERVICE_SECRET` is Interverse's, `SERVICE_SECRET_DUALREP` is
+    DualRep's. Each caller runs only its own tasks; `/ai/extract` is DualRep's only. A wrong
+    secret and another caller's task both get the same 403. If the two secrets are equal, Tracy
+    treats the caller as Interverse (DualRep gets 403) and warns at boot.
+  - **No Groq** for DualRep: uploads may be private or copyrighted, so they stay with Anthropic.
+  - **Metadata-only logs:** one JSON line per call (caller, task, request id, status, code, model,
+    token counts, stop reason, latency). Never the material, the answer or an error's text, and
+    never a conversation log.
+  - **Error texts are content-free:** validator and input errors name fields and indexes only, and
+    a failed model call reads "model call failed (upstream 429)" or "(timed out)". The worker still
+    stores only its own fixed sentences in `tracy_events.error`, which syncs to the phone
+    ([D37](#d37-the-job-queue-claiming-fencing-retries-and-repeatable-ids-2026-10-09)).
+  - **`DUALREP_STORAGE_HOSTS` fails closed:** Tracy downloads files only from the hosts it lists
+    (`<project-ref>.supabase.co`). Unset, every PDF, Word and photo job is refused.
+  - **`/ai/extract` pages through long PDFs:** at most 100 pages per call, and it stops starting
+    new pages after 60 s; `last_page` says where it stopped, and the worker continues from there.
+- **Why:** [TRACY_INTEGRATION.md §7](TRACY_INTEGRATION.md#7-data-boundary-keep-dualrep-data-out-of-tracys-stores):
+  DualRep's material must never land in Tracy's memory, knowledge, logs or a third provider.
+- **Alternatives:** sharing Interverse's secret (no way to revoke or limit DualRep alone).
+- **Revisit when:** a third caller arrives (copy the pattern), or DualRep gets its own Anthropic
+  workspace and spend limit (today it shares Tracy's account and monthly limit).
+
+## D35. Embeddings are optional and off by default (2026-10-09)
+
+- **Decision:** without a `GEMINI_API_KEY` secret, the pipeline skips embeddings and
+  `source_chunks.embedding` stays null. With one, an `embed` job runs beside the outline (never
+  blocking it): `gemini-embedding-2` at 1536 dimensions, 50 chunks per call, each chunk sent as
+  `title: … | text: …` (this model ignores task types), the key in the `x-goog-api-key` header,
+  and `embed_model = 'gemini-embedding-2@1536#p1'` (`#p1` names the prefix scheme). Vectors are
+  checked and normalised.
+- **Why:** Phase 2 needs no search: links between cards come from the card builder seeing the
+  plan's existing cards. And on Gemini's free tier Google may use what is sent to improve its
+  products, with human reviewers. So **set the key only with Gemini billing turned on** (about
+  $0.012 per 100-page PDF).
+- **Alternatives:** embed from day one on the free tier (a privacy problem for private notes).
+- **Revisit when:** a feature needs search over the material (Phase 3 explanations, perhaps). Also
+  decide then about `halfvec(1536)` and the global HNSW index: the Free plan's 500 MB holds only
+  about 25,000 chunks at today's layout (an estimate).
+
+## D36. Monthly caps count units per stage (2026-10-09)
+
+- **Decision:** each user has monthly caps, enforced by `enqueue_tracy_event` in the database.
+  - Two stages are counted: **sources** (`extract`, 1 unit per PDF, Word file or link) and **pages**
+    (`transcribe`, 1 unit per photo or scanned PDF page). Outline, cards and embeddings are not
+    counted.
+  - The limits come from Edge Function settings: `DUALREP_CAP_SOURCES_FREE` (default 5),
+    `_PAID` (30), `DUALREP_CAP_PAGES_FREE` (20), `_PAID` (200). `none` means no limit. They are
+    optional GitHub variables that the Deploy backend workflow copies across.
+  - Usage is the sum of `tracy_events.cap_units` (a new server-only column) for that user and
+    stage since the start of the month, UTC. A job cancelled before it ever ran gives its units
+    back; one that ran still counts. An advisory lock per user and stage makes two requests at once
+    unable to both slip under the limit.
+  - Over the cap the function answers 429 `cap_reached` with `{stage, used, limit, resets_at}`,
+    and the app says, for example, "You've used all 5 sources for this month. More can be added
+    from November 1." Hitting the cap during `submit_source` undoes the whole submit (its uploaded files
+    are swept after 3 days). Scanned PDF pages past the page cap are skipped, with a note on the
+    source.
+  - The tier comes from `has_paid_access()`, so beta access ([SETUP §14](SETUP.md#14-give-yourself-beta-access-for-testing))
+    gets the paid limits.
+- **Why:** each source and page costs real money at Anthropic
+  ([D33](#d33-tracys-models-and-json-output-for-dualrep-2026-10-09)). Counting units, not rows,
+  because a long PDF re-queues itself once per window and one transcription job can hold 4 pages.
+- **Alternatives:** counting rows (wrong for long PDFs); caps in the app (anyone could skip them);
+  counting tokens (the bill's real unit, but impossible to show a person in advance).
+- **Revisit when:** beta usage shows the real cost per user (a Phase 5 decision sets the free-tier
+  caps and the price).
+
+## D37. The job queue: claiming, fencing, retries and repeatable ids (2026-10-09)
+
+- **Decision:**
+  - `claim_tracy_events` takes the oldest queued job with `FOR UPDATE SKIP LOCKED` and counts the
+    attempt. First it reaps jobs still `running` 5 minutes after they were locked: back to the
+    queue, or failed after the third attempt with "This step took too long. Try again."
+  - **Fencing:** the worker finishes a job only where `status = 'running'` and `attempts` and
+    `locked_at` still match what it claimed. A worker that was presumed dead can't overwrite a job
+    that has since been retried. `locked_at` is in the fence so a long PDF can reset `attempts` for
+    each new window and get three tries per window.
+  - **Retries:** an answer Tracy's checks rejected goes back to Tracy with the findings as
+    `previous_errors`; a cut-off answer goes back with "answer more briefly". A refusal, a bad file
+    or a wrong secret fails at once. Network errors, timeouts and 5xx retry, up to 3 attempts. An
+    HTML 502/503/504 page (Render waking) or a failed `/health` releases the job without counting
+    the attempt. Express's own 404/405 page ("the DualRep lane isn't deployed yet") fails at once
+    with "The study builder isn't set up yet. Try again later."
+  - **Fixed messages:** every `error` the phone shows is one of a fixed list of English sentences
+    (`MESSAGES` in [`supabase/functions/_shared/errors.ts`](../supabase/functions/_shared/errors.ts)).
+    They never contain the material, a URL or a model's words.
+  - **Repeatable ids:** every row and follow-up job the server makes gets a UUIDv5 id worked out
+    from what it is (namespace `1689dae2-a02e-4c59-b2ad-51fab8769792`): chunks from
+    source, page and position; draft topics, cards, links, and the outline, embed and cards jobs.
+    Writing the same thing twice hits the same id, so a retried step never duplicates rows and a
+    follow-up job is queued at most once, without locks.
+  - **Two-phase outline and cards steps:** Tracy's answer is saved in the job's `output` before any
+    rows are written, so a run cut short continues from the saved answer without a second Tracy
+    call.
+- **Why:** an Edge Function can die mid-step (the 150 s limit, a restart). Every step must be
+  safe to repeat and must never cost a second Tracy call when it doesn't have to.
+- **Alternatives:** a lease without fencing (a slow old worker could overwrite a new result);
+  random ids plus checks (races between two workers).
+- **Revisit when:** the first real jobs run: the worker log's `applied` field should be true. If
+  finishes come back `applied: false`, the `locked_at` round trip through PostgREST is the suspect.
+
+## D38. How a source moves through the pipeline (2026-10-09)
+
+- **Decision:**
+  - `sources.status`: `pending` → `processing` → `ready` or `failed`. It belongs to the server: a
+    phone's value is ignored, not refused ([D40](#d40-schema-changes-for-the-study-engine-2026-10-09)).
+  - **PDF, Word and links:** `extract` reads the text page by page into `source_chunks`. Scanned
+    PDF pages (no text layer) go to `transcribe` jobs of up to 4 pages, and are chunked straight
+    away with no review. Whichever of these jobs finishes last queues the outline, so nothing waits
+    or polls.
+  - **Photos of notes:** one `transcribe` job per photo. The transcripts are drafts
+    (`source_files.confirmed = false`) until the person checks them and taps **Confirm**
+    (`confirm_transcripts`). Only then are they chunked and outlined. A diagram is kept as a
+    `[Diagram: …]` line the person can edit.
+  - A page whose transcription failed holds the outline until the person tries it again or skips
+    it (**Skip this page** = `cancel_job`).
+  - **The outline** writes new topics as `draft`, numbered after the plan's existing topics, and
+    keeps which chunks go where. The person keeps, cuts, renames and orders them, then taps **Save
+    and make cards** (`approve_outline`). Kept topics become `confirmed`.
+  - **An outline that only adds to topics the plan already has** (common in a growing course) has
+    no drafts to review, so the worker approves it itself and goes on to cards.
+  - `approve_outline` sets aside the drafts of an outline whose job didn't finish; they are
+    reviewed with it later.
+  - **Cards:** one job per kept topic (at most 40 chunks each), plus one for each existing topic
+    the outline added material to. Up to 300 of the plan's existing cards go along, so the builder
+    can link to them and avoid repeats. A topic is `ready` when its cards jobs are done and at least
+    one succeeded; a source is `ready` when none of its cards jobs is open. A failed or cancelled
+    extract or outline marks the source `failed`, and **Try again** puts it back to `processing`.
+  - **Sizes:** at most ceil(chunks / 5) topics (1–30) and ceil(1.5 × chunks) cards per topic
+    (2–20); card types question, fill-the-gap and explain-why. A source of more than 600 chunks is
+    outlined in groups of neighbouring chunks.
+  - Signed Storage URLs for Tracy last 600 s, and the worker checks a file's path is inside its
+    owner's and source's folder before signing it.
+- **Why:** the plan says transcriptions are confirmed before any cards are made, and the outline is
+  reviewed before cards. Everything else follows the rule "nothing waits on a person unless a person
+  has something to decide".
+- **Alternatives:** one cards job per source (too long for one call); asking the person to approve
+  outlines that add nothing new (a screen with nothing on it).
+- **Revisit when:** `source_chunks` gets a title column (better outline hints for plain PDFs), or
+  testers find the outline review a chore.
+
+## D39. The backend is deployed by a GitHub workflow (2026-10-09)
+
+- **Decision:** [`.github/workflows/deploy-backend.yml`](../.github/workflows/deploy-backend.yml),
+  **Deploy backend**, run by hand (Actions → Deploy backend → Run workflow). The founder no longer
+  pastes migrations into the SQL Editor.
+  - **Dry run** is ticked by default: it shows what would change and changes nothing. A real
+    deploy runs from `main` only.
+  - The project ref comes from the existing `EXPO_PUBLIC_SUPABASE_URL` variable
+    (`SUPABASE_PROJECT_REF` overrides it, only needed for a custom domain). Supabase CLI 2.119.0,
+    with the `SUPABASE_ACCESS_TOKEN` secret; no database password.
+  - The first time, it records the two migrations that were pasted by hand, but only when the
+    migration history is empty **and** the tables are really there (the starter library only when
+    its 90 exercises are).
+  - Then `db push` (dry run first), the functions' secrets, the worker secret, `functions deploy
+    --use-api`, and a smoke test: `tracy-worker` must answer a wrong secret with its own 403, and
+    `study` a bad sign-in with its own 401. It also reports whether Tracy's `/health` answered.
+  - **Secrets:** `TRACY_SERVICE_SECRET` and the optional `GEMINI_API_KEY` from GitHub secrets;
+    `TRACY_URL` and the optional caps from GitHub **variables** (an address and numbers are not
+    secrets). They reach the CLI through a private temporary file, never a command line. An
+    optional setting missing in GitHub is removed from the project, so deleting the
+    `GEMINI_API_KEY` secret and re-running turns embeddings off.
+  - **The worker secret** (pg_cron → `tracy-worker`) is made by the workflow: `openssl rand -hex
+    32`, saved first as the function secret `DUALREP_WORKER_SECRET`, then in Vault as
+    `dualrep_worker_secret`, then checked by comparing hashes (never the value). It is made when
+    either copy is missing, or when **Make a new cron -> tracy-worker secret** is ticked. Vault also
+    gets `dualrep_project_url`.
+  - **CI:** a new **Edge Functions** job in `ci.yml` runs `deno check`, `deno lint` and `deno test`
+    in `supabase/functions` with Deno 2.2.15 (pinned). `supabase/functions/deno.json` is for that
+    tooling only (the CLI never deploys it), and every import names an exact version. The app's
+    TypeScript and jest leave `supabase/functions` out.
+- **Why:** the founder has a Windows PC and no Docker; GitHub's runners do the work, and the dry
+  run shows the plan before anything changes.
+- **Alternatives:** the CLI on the founder's PC (needs the database password and more tools); the
+  SQL Editor (no history, and the migration is too long for one paste); `[db.vault]` in
+  `config.toml` (only applied when a migration is pending, so a rotation would silently do nothing).
+- **Revisit when:** a production project arrives (Phase 5): run it per environment, with a GitHub
+  Environment for each.
+
+## D40. Schema changes for the study engine (2026-10-09)
+
+- **Decision:** one migration,
+  [`20261009120000_study_engine.sql`](../supabase/migrations/20261009120000_study_engine.sql), applied
+  by the Deploy backend workflow:
+  - `topics.status`: `draft | confirmed | ready`, default `ready` (a topic made by hand is ready at
+    once). Existing rows were touched so PowerSync sends the new value.
+  - `cards.source_id`: the card's source, **worked out by a trigger** from its source chunk (the
+    phone never receives chunks). A writer can clear it but never point it elsewhere. The app marks
+    it `serverGenerated`, so it is never uploaded.
+  - `sources.status` **belongs to the server.** A phone's INSERT is stored as `pending`, and a
+    phone's UPDATE keeps the stored status: ignored, not refused, so old app builds keep working
+    and a late upload never undoes the pipeline's progress.
+  - `tracy_events` gains `stage` (`extract | transcribe | outline | cards | embed`, and a CHECK
+    that ties each stage to its job), `plan_id` and `source_id` (synced, `on delete set null`), and
+    the server-only `cap_units`. The phone still may only change `accepted`.
+  - `source_files.storage_path` must be `<owner_id>/<source_id>/<plain file name>` (lowercase ids,
+    no subfolders or `..`), otherwise 23514. The worker reads files with the service role, which
+    skips Storage's own rules, so this stops a path into someone else's folder.
+  - The private Storage bucket `sources`, the queue functions (service role only), and the
+    pg_cron schedule ([DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline)).
+- **Why:** the phone has to show each source's progress, the outline review and "p. 12, Lecture 3"
+  from synced rows only.
+- **Alternatives:** a separate `jobs` view (more sync config); letting the phone set
+  `sources.status` (a retried upload could move a finished source back to pending).
+- **Revisit when:** the next schema change: new migrations need timestamps after `20261009120000`.
+
+## D41. Uploads go to a private bucket, prepared on the phone (2026-10-09)
+
+- **Decision:**
+  - Files go to the private bucket `sources` at `<user_id>/<source_id>/<n>.<ext>` (`n` = the file's
+    number, from 1), with an explicit content type. Each user may read and write only their own
+    folder; group members can't read the files in Phase 2.
+  - Limits: PDF or Word (`.docx`) up to 25 MiB, one per source; up to 20 photos per set of notes;
+    the bucket accepts only PDF, DOCX, JPEG, PNG and WebP.
+  - **Photos** are picked at full quality and decoded once: the long edge shrunk to at most 2576 px
+    (never enlarged), saved as JPEG at 0.85. That also removes EXIF and GPS data and converts HEIC.
+    Photos over 50 megapixels are refused (decoding one needs about 200 MB of memory).
+  - Documents up to 5 MiB upload through supabase-js; larger ones stream from disk with
+    expo-file-system's `File.upload`.
+  - A failed attempt keeps what was picked and reuses the **same source id**, so tapping **Add to
+    plan** again overwrites the files instead of adding copies.
+  - Before `submit_source`, the app waits up to 15 s for the phone's own pending uploads (a plan
+    made offline must reach the server first), and asks again after 2, 4 and 8 s if the server
+    says the plan isn't there yet.
+  - Files nobody points at any more are swept daily once they are 3 days old.
+  - Adding material needs the internet; the app says so plainly.
+- **Why:** the worker downloads with the service role, so the path rule and the bucket rules are
+  the guard. Shrinking photos on the phone saves upload time, storage (1 GB on the Free plan) and
+  model cost, and strips location data before it leaves the phone.
+- **Alternatives:** uploading the original photos (larger, and they keep GPS); resumable uploads
+  (not needed at 25 MiB).
+- **Revisit when:** group sharing of sources (Phase 4) needs members to read files; or uploads of big
+  PDFs over mobile data fail often.
+
+## D42. Android: CAMERA is the only new permission (2026-10-09)
+
+- **Decision:** Phase 2 adds exactly one Android permission, `CAMERA` (from expo-image-picker),
+  asked when the person taps **Take a photo**.
+  - The gallery uses the system Photo Picker and documents the system file picker: no permission.
+  - `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED` and
+    `ACCESS_MEDIA_LOCATION` are blocked in `app.config.ts`, whatever a library declares.
+  - A small inline config plugin declares `android.hardware.camera` and `…camera.autofocus` as
+    `required="false"`, so Play doesn't hide the app from devices without a camera.
+  - `RECORD_AUDIO` stays in `blockedPermissions`. expo-image-picker's `microphonePermission: false`
+    option is **not** used: it would remove the microphone app-wide, out of sight, and break audio
+    study mode later.
+  - **Take a photo** is hidden below Android 10 (API 29), where the camera would also need
+    `WRITE_EXTERNAL_STORAGE`, which stays blocked. The gallery works there.
+- **Why:** each permission is a Play declaration or a Data safety answer
+  ([ANDROID.md permission ledger](ANDROID.md#permission-ledger)).
+- **Alternatives:** a small native module that opens the camera app without declaring `CAMERA`
+  (more native code to maintain); broad photo access (needs a Play declaration DualRep can't
+  justify).
+- **Revisit when:** audio study mode (Phase 2B) unblocks `RECORD_AUDIO`.
+
+## D43. FSRS runs on the phone, one transaction per answer (2026-10-09)
+
+- **Decision:**
+  - Scheduling uses `ts-fsrs` 5.4.2 on the phone. **DualRep's defaults are ts-fsrs's defaults plus
+    fuzz** (`enable_fuzz: true`, seeded from the review, so replaying the log gives the same
+    result). `profiles.fsrs_params` null means those defaults. When it is set, each valid field is
+    used and each invalid one ignored, so studying always works.
+  - **Each answer is one local `writeTransaction`:** check the review id (a repeat writes nothing),
+    read the card's state, INSERT the `reviews` row, then UPDATE the `card_states` row or INSERT it
+    under its derived UUIDv5 id ([D17](#d17-card_states-ids-are-derived-and-enforced-2026-10-08)).
+  - The review time is clamped to `max(now, last_review)`, so a clock that moved back never breaks
+    a card. `reviews.elapsed_days` is worked out on the phone in whole UTC days. `duration_ms` runs
+    from showing the card to the answer, capped at 10 minutes.
+  - **A `card_states` change uploads its whole FSRS state** (the 9 state columns, with their values
+    after the change), not only the changed columns. This is new: `patchTogether` in
+    [`tables.ts`](../src/db/tables.ts), using PowerSync's `trackPrevious`.
+    - The spec asked for the whole row. `suspended` is left out on purpose: it is the person's own
+      switch, and sending it with every review would let a review from a second phone turn a pause
+      back off.
+    - A change queued by an older app version uploads only its changed columns, as before.
+- **Why:** two phones studying offline could otherwise leave a mix of two states (stability from
+  one review, due date from the other). The server's stale-write guard keeps or skips whole states.
+- **Alternatives:** FSRS on the server (studying would need the internet); uploading the full row
+  (the pause problem above).
+- **Revisit when:** moving to ts-fsrs 6 (the stored columns don't change), or when there are
+  enough reviews to fit personal FSRS weights into `profiles.fsrs_params`.
+
+## D44. Answer modes and typed answers (2026-10-09)
+
+- **Decision:**
+  - **Two buttons by default:** "Missed it" (Again) and "Got it" (Good). Settings → **Answering
+    cards** switches to four (Again, Hard, Good, Easy). Each button says when the card comes back,
+    from the real FSRS preview.
+  - **Typed answers are opt-in** (Settings → **Type short answers**) and checked on the phone, only
+    for short answers. Alternatives in an answer are separated by `;` or `|`. Two rules on top of
+    the research version: every number must match exactly (decimal points and minus signs kept, so
+    9.8 is not 9.81), and a spelling slip only counts as close when the first letter matches (so
+    "affect" for "effect" is wrong).
+  - A right or close answer is saved as Good ("Counted as right. Spelling: …" for a close one). A
+    wrong one shows the answer with **I missed it** (Again) or **Count it as right** (Good). An empty
+    answer counts as "I don't know". Typed answers never give Hard or Easy.
+  - Known false accepts stay (for example "mitochondrion" for "mitochondria"): the screen shows the
+    right spelling, and **Count it as right** covers the opposite mistake.
+- **Why:** self-grading is fast and honest enough for spaced repetition; typing helps for short
+  facts. Grading open answers needs Tracy (Phase 3).
+- **Alternatives:** typed answers by default (slow for long answers); stricter matching (more
+  false "wrong"s, which feel unfair).
+- **Revisit when:** Phase 3 adds Tracy's answer grader.
+
+## D45. The quiz-first block sits beside the timer, not inside it (2026-10-09)
+
+- **Decision:**
+  - **The start panel** offers "Just a timer" plus each study plan ("12 due · 5 new", or "No
+    cards yet"). A growing course with more than one source also offers **Everything so far** or
+    **Newest source**, for the whole cycle. With a plan, the session's subject is the plan's
+    title. The last choice is remembered on this phone. With no plans on the phone, the panel is
+    exactly Phase 1's.
+  - **The saved cycle stays at version 1.** `CyclePlan` gains two optional fields, `studyPlanId` and
+    `studyFilter`, present only when a plan was chosen, so Phase 1's saved cycles load unchanged.
+    `study_sessions.plan_id` is written once, when the session is created.
+  - **The study panel** reads and writes the phone's database itself; the timer machine, the alert
+    and the handoff are untouched. With a plan, the ring shrinks to 120 dp beside the "Next:" line
+    and the panel sits below it. Each answer is its own transaction, tagged with the block
+    (`reviews.interval_block_id`).
+  - **Order in a block:** due learning cards, then due reviews (taking turns between sources or
+    topics, the one served least first), then new cards, then a **closing self-test** in the last
+    2–5 minutes (12% of the block) of up to 5 of this block's new or missed cards. If a learning
+    card is due within a minute the panel waits ("Next card in 0:42", **Ask now**). Then "All caught
+    up".
+  - **New cards:** about one per 5 minutes of block (2–8; 5 in a 25-minute block) and 20 a day
+    (Settings: 5–100). A new card shows its question and answer together, then **Quiz me** hides the
+    answer and asks; its `duration_ms` is timed from **Quiz me**. Recall and self-test cards show
+    the question alone. With an exam date and unseen cards left, reviews stop after 60% of the block's
+    study time so new material still gets in.
+  - The card on screen stays until it is answered, even when the queue refreshes. Its answer mode
+    is fixed when it appears, and its review id is made at the first save and reused on a retry, so
+    a failed save never counts twice. Pause hides it.
+    When the block ends, an open card is dropped without a write and stays due, so the handoff stays
+    zero-tap.
+  - Cards of `draft` topics are never studied; `confirmed` ones are (a slow worker never hides cards
+    that exist).
+- **Why:** the plan's quiz-first block (due cards → new material → closing self-test) without
+  risking the Phase 1 loop, which is already tested offline end to end.
+- **Alternatives:** study steps inside the timer machine (a new state version and every Phase 1
+  test touched); a separate study screen (breaks the zero-tap handoff).
+- **Revisit when:** a week of real use: tune the constants (about 10 s per review, 40 s per new
+  card), and decide whether new cards should wait for their 10-minute learning step instead of
+  the early self-test.
+
+## D46. Reviews are due on their day, not their minute (2026-10-09)
+
+- **Decision:** a review card counts as due for the whole local day it falls due on. A block asks
+  every review due today from its start, and "due" counts on Home and the plan screen mean **due
+  today** ("12 cards due today"). Learning and relearning steps (minutes)
+  keep their exact times.
+- **Why:** FSRS schedules reviews in whole days, but stores the minute of the last answer. A card
+  answered at 09:02 was not due at the next day's 09:00 block: the block said "All caught up" and
+  the reminder rang a day late. A test that runs a full week of blocks
+  ([`weekOfReviews.test.ts`](../src/features/study/__tests__/weekOfReviews.test.ts)) failed before
+  this change.
+- **Alternatives:** due at the exact minute (the bug above); rounding the due time when saving it
+  (changes the stored FSRS values).
+- **Revisit when:** people study across midnight and find "today" confusing.
+
+## D47. The daily review reminder (2026-10-09)
+
+- **Decision:** an optional reminder, off until the person turns it on in Settings → **Daily review
+  reminder** (18:00 offered; any time in 15-minute steps). Turning it on asks for the notification
+  permission if Android still allows asking
+  ([D29](#d29-the-notification-permission-is-asked-in-context-2026-10-08)).
+  - Channel `reviews-v1` (default importance), one notification id (`reviews-due`). It says "Cards
+    to review: N cards are due. A 10-minute block clears a lot of them." The lock screen shows only
+    the count, never a card.
+  - If cards are due by the next reminder time: a daily reminder with that count. If not: one
+    reminder at the reminder time on the day the first card falls due. If no card will ever be due:
+    none.
+  - It is set again when the app starts, when it returns to the foreground, when card states change
+    (at most every 30 s), after each study block, and when the setting changes. It never throws.
+  - No background sync and no exact alarm: a reminder a little late is fine.
+- **Why:** the plan's daily "reviews due" nudge, without a server or push.
+- **Alternatives:** push from the server (needs Firebase and Phase 4's push setup); a fixed daily
+  reminder whether or not cards are due (noise).
+- **Revisit when:** Phase 4 adds push, or testers want more than one reminder a day.
+
+## D48. The study screens (2026-10-09)
+
+- **Decision:**
+  - **Routes:** `/plans` (list), `/plans/new`, `/plans/[id]` (plan), `/plans/[id]/edit` (Plan
+    settings), `/plans/[id]/add` (Add material), `/plans/[id]/check/[sourceId]` (transcription),
+    `/plans/[id]/outline`, `/plans/[id]/cards`, `/plans/[id]/cards/[cardId]` (`new` makes a card by
+    hand), `/plans/[id]/map`. Home has a **Study plans** row with the cards due today.
+  - **One primary action per screen.** On the plan screen it follows the next step: **Check the
+    transcription**, **Review the outline**, **Try again**, **Study now** or **Add material**. While
+    material is being prepared there is no button, only a line. **Study now** stays available as a
+    second button when cards exist.
+  - **Study now** makes this plan the start panel's choice on this phone and opens the cycle.
+  - **Add material** keeps one source id per piece of material (a document, a set of photos, a
+    link) until it is added, so a retry overwrites instead of duplicating. Several documents picked
+    at once each become their own source, added in turn; one that fails stops the rest, which stay
+    listed.
+  - "Online" on these screens means PowerSync is connected or connecting. The offline notice is
+    only a warning; buttons are never disabled for it, and the action's own error has the final
+    word.
+  - **Transcription review:** each page's photo (from a 600 s signed link; "The photo shows when
+    you're online" otherwise) and its text. Edits are saved on the phone when a field loses focus,
+    so they survive going offline. **Confirm** sends every page's text.
+  - **Outline review:** Keep or Cut, rename, **Move up** / **Move down** (also as screen-reader
+    actions, no drag). **Save and make cards** sends every draft in the chosen order in one call,
+    and asks first if every topic was cut.
+  - **Concept map:** the chosen card in the middle and up to 6 linked cards around it; tap one to
+    move it to the middle. Every link is also listed under the map. Relations read from the middle
+    card's side ("Learn this first", "Builds on this", "Reason", "Similar idea", "Contrast",
+    "Related"). Anyone who can read the plan may link cards and remove their own links.
+  - Plan settings, deleting a plan, and editing or deleting cards are owner-only; pausing a card is
+    for anyone who can read it.
+  - Per-phone study settings live in `local_state`: `study-prefs` (buttons, typed answers, new cards
+    a day, reminder), `study-defaults` (the start panel's last plan and filter) and
+    `study-self-test` (when the running block's self-test began).
+- **Why:** the plan's screen list, with nothing that depends on dragging or on being online except
+  the steps that call the server.
+- **Alternatives:** drag-to-reorder (not accessible enough alone); settings synced per account (a
+  schema change for little gain).
+- **Revisit when:** testers use the screens; removing a source from a plan isn't offered yet.
+
+## D49. Audio study mode moves to Phase 2B (2026-10-09)
+
+- **Decision:** on-the-go audio study is **not** in this build. It becomes Phase 2B and starts
+  with a spike ([ANDROID.md 2.4](ANDROID.md#24-speech-in-the-background-spike-first)). Until then
+  no `expo-audio`, no foreground services, and `RECORD_AUDIO` stays blocked.
+- **Why:** background speech on Android 14–17 is unproven, and it brings foreground-service
+  declarations with demo videos. The gate (a PDF and handwritten notes → one plan → a week of
+  reviews) doesn't need it.
+- **Alternatives:** build it now, unproven.
+- **Revisit when:** the Phase 2 gate has passed.

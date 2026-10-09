@@ -3,8 +3,8 @@
 Everything Android-specific about DualRep: the platform facts that shape the app, what the repo
 already does, and a checklist for every phase of the [roadmap](ROADMAP.md).
 
-- **Facts are as of 2026-10-08.** Google changes Play rules every year; re-check dates before relying
-  on them.
+- **Facts are as of 2026-10-08** (Phase 2 additions: 2026-10-09). Google changes Play rules every
+  year; re-check dates before relying on them.
 - Items marked **verify** come from search excerpts or inference, not from a primary source that was
   read in full. The full research, with sources, is in [research/android.md](research/android.md).
 - Setting up a Windows machine and a phone is in [SETUP.md](SETUP.md), not here.
@@ -49,14 +49,15 @@ already does, and a checklist for every phase of the [roadmap](ROADMAP.md).
 | CI APK build | [`.github/workflows/android.yml`](../.github/workflows/android.yml) | Builds an arm64 APK, runs [`scripts/check-16kb.sh`](../scripts/check-16kb.sh) (zip alignment and ELF alignment of every 64-bit native library; the build fails if either is off), and lists the APK's permissions in the run summary. Its runs on 2026-10-08 compiled the release (preview) APK cleanly under Expo SDK 57, PowerSync's and op-sqlite's native code included. |
 | Variants | [`app.config.ts`](../app.config.ts), chosen by `APP_VARIANT` (set per profile in [`eas.json`](../eas.json)) | `development` → `com.interverse.dualrep.dev`, scheme `dualrep-dev`; `preview` → `com.interverse.dualrep.preview`, scheme `dualrep-preview`; `production` → `com.interverse.dualrep`, scheme `dualrep`. All three install side by side. |
 | Build types | `eas.json` | `development` and `preview` build APKs for internal distribution; `production` builds an app bundle (AAB) with a remotely incremented `versionCode` |
-| Removed permissions | `android.blockedPermissions` | `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `RECORD_AUDIO`, `USE_BIOMETRIC` and `USE_FINGERPRINT` (pulled in through expo-secure-store; DualRep doesn't use biometrics), and `SYSTEM_ALERT_WINDOW` except in development builds (the dev client's overlay needs it). Since Phase 1 also the extras expo-notifications brings: Firebase push (`com.google.android.c2dm.permission.RECEIVE`), Google's install referrer, and 16 launcher-badge permissions ([DECISIONS.md](DECISIONS.md) D30) |
+| Removed permissions | `android.blockedPermissions` | `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE` (also declared by expo-image-picker and expo-file-system), `RECORD_AUDIO`, `USE_BIOMETRIC` and `USE_FINGERPRINT` (pulled in through expo-secure-store; DualRep doesn't use biometrics), and `SYSTEM_ALERT_WINDOW` except in development builds (the dev client's overlay needs it). Since Phase 1 also the extras expo-notifications brings: Firebase push (`com.google.android.c2dm.permission.RECEIVE`), Google's install referrer, and 16 launcher-badge permissions ([DECISIONS.md](DECISIONS.md) D30). Since Phase 2 also `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED` and `ACCESS_MEDIA_LOCATION`, as a guard: no broad photo access, whatever a library declares (D42) |
 | Backups | `android.allowBackup: false` | The auth session and local database stay out of Android cloud backups |
 | Predictive back | `android.predictiveBackGestureEnabled: false` | Off, as recommended below |
 | Orientation | `orientation: 'portrait'` | Phones stay portrait; screens must still work in landscape on ≥ 600 dp devices |
 | R8 shrinking | `expo-build-properties` with no options | Off for now ([DECISIONS.md](DECISIONS.md) D11) |
-| Notifications | `expo-notifications` 57.0.22 (Phase 1), config plugin in `app.config.ts` | The end-of-block alert: a scheduled local notification on the channel `timers-v1`, small icon `assets/notification-icon.png`. No foreground service, no exact alarms ([1.1](#11-the-focus-timer-scheduled-notification-not-a-foreground-service)) |
+| Notifications | `expo-notifications` 57.0.22 (Phase 1), config plugin in `app.config.ts` | The end-of-block alert: a scheduled local notification on the channel `timers-v1`, small icon `assets/notification-icon.png`. Since Phase 2 also the daily review reminder on `reviews-v1` ([2.5](#25-review-reminders-and-background-sync)). No foreground service, no exact alarms ([1.1](#11-the-focus-timer-scheduled-notification-not-a-foreground-service)) |
+| Photos, camera, documents | Phase 2: `expo-image-picker` 57.0.20 (listed in `plugins` with the iOS usage strings only), `expo-document-picker` 57.0.3, `expo-image-manipulator` 57.0.21, `expo-file-system` 57.0.7; the inline plugin `withOptionalCamera` in `app.config.ts` | The gallery uses the system Photo Picker and documents the system file picker (no permission). **Take a photo** adds `CAMERA` and is hidden below Android 10. The camera is declared "not required" ([2.7](#27-camera-and-photo-access)) |
 | Screen on | `expo-keep-awake` 57.0.2 (Phase 1) | Only during a move block ([1.4](#14-screen-on-during-sets)) |
-| Audio | not installed | No `expo-audio` until Phase 2, so no foreground services yet |
+| Audio | not installed | No `expo-audio` until audio study mode (Phase 2B), so no foreground services yet |
 | Play submission | `eas.json` → `submit.production` | Internal track, draft release, service-account key at `./secrets/play-service-account.json` (gitignored by name pattern) |
 | Icons and splash | `assets/` | Placeholder art from the Expo template; brand art is pending ([5.9](#59-brand-art-and-store-listing-assets)) |
 
@@ -73,6 +74,20 @@ to Play.
   `RECEIVE_BOOT_COMPLETED` and `POST_NOTIFICATIONS` (expo-notifications), and `ACCESS_NETWORK_STATE`
   and `WAKE_LOCK` (which come with expo-notifications' own dependencies). If the list shows anything
   else, compare it with the table below before releasing.
+- **Phase 2** preview APK (the expected list, from the Phase 2 research; `npx expo config --type
+  introspect` confirmed the blocks and the camera entries for all three variants, but no CI-built
+  APK has printed it yet): Phase 1's seven, plus **`CAMERA`**, the only new one
+  (expo-image-picker's library manifest). So, from `aapt2 dump permissions`:
+  - `permission`: `com.interverse.dualrep.preview.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`
+  - `uses-permission`: `INTERNET`, `VIBRATE`, the same `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`,
+    `RECEIVE_BOOT_COMPLETED`, `POST_NOTIFICATIONS`, `ACCESS_NETWORK_STATE`, `WAKE_LOCK`, `CAMERA`
+  - development builds also keep `SYSTEM_ALERT_WINDOW`.
+  - **Must not appear:** `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `RECORD_AUDIO`, any
+    `READ_MEDIA_*`, `ACCESS_MEDIA_LOCATION`, any `FOREGROUND_SERVICE*`.
+  - `aapt2 dump badging` should show `uses-feature-not-required` for `android.hardware.camera` and
+    `android.hardware.camera.autofocus`.
+  - The `<queries>` entries the pickers add (image capture, open document, get content) are
+    package-visibility declarations, not permissions.
 - expo-notifications' dependencies also declare `com.google.android.c2dm.permission.RECEIVE`
   (Firebase Cloud Messaging, for push), Google's install-referrer permission (expo-application, which
   expo-notifications depends on), and 16 launcher "badge" permissions (`READ_APP_BADGE` and vendor
@@ -90,7 +105,7 @@ to Play.
 | `INTERNET` | template | 0 | no | nothing |
 | `VIBRATE` | template, expo-haptics | 0 | no | nothing |
 | `<package>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` | AndroidX (a signature permission only the app itself holds) | 0 | no | nothing |
-| `SYSTEM_ALERT_WINDOW`, `READ/WRITE_EXTERNAL_STORAGE` | template | — | — | **remove** with `android.blockedPermissions` |
+| `SYSTEM_ALERT_WINDOW`, `READ/WRITE_EXTERNAL_STORAGE` | template; storage also expo-image-picker and expo-file-system (up to API 32) | — | — | **remove** with `android.blockedPermissions` (so **Take a photo** is hidden below Android 10, [2.7](#27-camera-and-photo-access)) |
 | `USE_BIOMETRIC`, `USE_FINGERPRINT` | expo-secure-store (through its AndroidX Biometric dependency; DualRep doesn't use biometrics) | — | — | **remove** with `android.blockedPermissions` |
 | `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED` | expo-notifications | 1 (in) | `POST_NOTIFICATIONS` yes (Android 13+), asked when the first study block starts ([1.2](#12-notification-permission-and-channels)) | nothing |
 | `ACCESS_NETWORK_STATE`, `WAKE_LOCK` | Firebase Cloud Messaging, through expo-notifications | 1 (in) | no | nothing (**verify**) |
@@ -99,10 +114,12 @@ to Play.
 | `READ_APP_BADGE` and 15 vendor launcher badge permissions | ShortcutBadger, through expo-notifications | — | — | **removed** with `android.blockedPermissions` (DualRep sets no badge count) |
 | `SCHEDULE_EXACT_ALARM` (optional) | `android.permissions` | 1 | special-access settings screen | believed none (**verify**) |
 | `USE_EXACT_ALARM` | — | — | — | **don't declare** |
-| `RECORD_AUDIO` | expo-audio / expo-speech-recognition | 2 | yes | Data safety (audio) |
-| `CAMERA` | expo-image-picker (its library manifest) | 2 | yes, when taking a photo ([2.7](#27-camera-and-photo-access)) | Data safety (photos) if uploaded |
-| `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | expo-audio (**on by default**) | 2 | no | **foreground-service declaration + video** |
-| `FOREGROUND_SERVICE_MICROPHONE` | expo-audio `enableBackgroundRecording` | 2 | no (needs `RECORD_AUDIO`) | **foreground-service declaration + video** |
+| `CAMERA` | expo-image-picker (its library manifest) | 2 (in) | yes, when the user taps **Take a photo** ([2.7](#27-camera-and-photo-access)) | nothing to declare; Data safety: photos (uploaded). `android.hardware.camera` and `…camera.autofocus` are declared `required="false"`, so Play doesn't hide the app from devices without a camera |
+| `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED`, `ACCESS_MEDIA_LOCATION` | none today (a guard against future libraries, for example expo-media-library) | — | — | **removed** with `android.blockedPermissions` since Phase 2: broad photo access needs a Play declaration DualRep can't justify |
+| `RECORD_AUDIO` | expo-image-picker's config plugin (default), later expo-audio / expo-speech-recognition | 2B (audio study mode) | yes | **removed** with `android.blockedPermissions` until audio mode; then Data safety (audio) |
+| `MODIFY_AUDIO_SETTINGS` | expo-audio (library manifest) | 2B | no | nothing (**verify**) |
+| `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | expo-audio (**on by default**) | 2B | no | **foreground-service declaration + video** |
+| `FOREGROUND_SERVICE_MICROPHONE` | expo-audio `enableBackgroundRecording` | 2B | no (needs `RECORD_AUDIO`) | **foreground-service declaration + video** |
 | `health.WRITE_EXERCISE` (+ `READ_*` if needed) | `android.permissions` | 3 | Health Connect screen | Health apps form + data types |
 | `BLUETOOTH_CONNECT`, `BLUETOOTH` | Meta glasses SDK | 7 | `BLUETOOTH_CONNECT` yes (Android 12+) | Data safety as applicable |
 | `com.android.vending.BILLING` | Play Billing (RevenueCat) | 5 | no | nothing (**verify**) |
@@ -154,7 +171,13 @@ needs that aren't installed yet are added in that phase with `npx expo install <
     blockedPermissions: [
       'android.permission.READ_EXTERNAL_STORAGE',
       'android.permission.WRITE_EXTERNAL_STORAGE',
+      // Blocked here, not with expo-image-picker's `microphonePermission: false` (2.7).
       'android.permission.RECORD_AUDIO',
+      // Phase 2: never broad photo or video access, whatever a future library declares.
+      'android.permission.READ_MEDIA_IMAGES',
+      'android.permission.READ_MEDIA_VIDEO',
+      'android.permission.READ_MEDIA_VISUAL_USER_SELECTED',
+      'android.permission.ACCESS_MEDIA_LOCATION',
       // expo-secure-store declares these for biometric-protected items; DualRep never uses them.
       'android.permission.USE_BIOMETRIC',
       'android.permission.USE_FINGERPRINT',
@@ -168,12 +191,12 @@ needs that aren't installed yet are added in that phase with `npx expo install <
     ],
   },
   ```
-  Remove `RECORD_AUDIO` from this list in Phase 2, when audio study mode needs it, and
+  Remove `RECORD_AUDIO` from this list in Phase 2B, when audio study mode needs it, and
   `c2dm.permission.RECEIVE` in Phase 4, when push arrives.
 - **When:** done; check the CI permission list on every build against the
   [permission ledger](#permission-ledger). Phase 1's expo-notifications adds `POST_NOTIFICATIONS`,
   `RECEIVE_BOOT_COMPLETED`, `ACCESS_NETWORK_STATE` and `WAKE_LOCK`; its push, install-referrer and
-  launcher-badge extras are blocked.
+  launcher-badge extras are blocked. Phase 2 adds only `CAMERA`.
 
 #### 0.5 Play Console account: decide now
 - **What:** choose a **personal** or an **organization** Play developer account, and create the app
@@ -348,8 +371,9 @@ waits for the Play Console app. How to run the gate on the phone:
 
 #### 1.2 Notification permission and channels
 - **Status: built.**
-- **What:** ask for `POST_NOTIFICATIONS` in context, and create channels (`timers-v1` HIGH now; later
-  `reviews`, `coach` and `social` at DEFAULT or LOW).
+- **What:** ask for `POST_NOTIFICATIONS` in context, and create channels (`timers-v1` HIGH; since
+  Phase 2 `reviews-v1` at DEFAULT, [2.5](#25-review-reminders-and-background-sync); later `coach`
+  and `social` at DEFAULT or LOW).
 - **Why:** on Android 13+ notifications are off until the user allows them, and the app decides when to
   ask. If the user says no, nothing can be posted.
 - **How (as built, [DECISIONS.md](DECISIONS.md) D29):**
@@ -428,6 +452,11 @@ waits for the Play Console app. How to run the gate on the phone:
 
 ### Phase 2: Study engine and audio study mode
 
+**Status (2026-10-09):** 2.5 and 2.7 are built ([DECISIONS.md](DECISIONS.md) D42, D47). Audio study
+mode moved to **Phase 2B** (D49), so 2.1–2.4 and 2.6 wait for it: they stay here as the plan for
+that phase. How to run the Phase 2 gate on the phone:
+[SETUP §17](SETUP.md#17-phase-2-the-study-engine-on-your-phone).
+
 #### 2.1 Foreground services for audio study mode
 - **What:** on-the-go mode plays questions aloud and listens for answers with the screen off.
 - **Why:** this one really needs foreground services:
@@ -449,12 +478,13 @@ waits for the Play Console app. How to run the gate on the phone:
   }]],
   ```
   Also take `android.permission.RECORD_AUDIO` out of `android.blockedPermissions` in
-  `app.config.ts`; Phase 0 blocks it.
-- **When:** Phase 2.
+  `app.config.ts` (blocked since Phase 0; Phase 2 keeps it blocked on purpose, see
+  [2.7](#27-camera-and-photo-access)).
+- **When:** Phase 2B (audio study mode).
 
 #### 2.2 The expo-audio defaults trap
-- **What:** if `expo-audio` is added **before** Phase 2 (for example for UI sounds), turn its
-  background features off.
+- **What:** if `expo-audio` is added **before** audio study mode (Phase 2B; for example for UI
+  sounds), turn its background features off.
 - **Why:** its config plugin defaults are `enableBackgroundPlayback: true` and
   `recordAudioAndroid: true`. Listing the plugin without options silently ships a media foreground
   service and `RECORD_AUDIO`, which trigger a Play foreground-service declaration with a video and
@@ -472,7 +502,7 @@ waits for the Play Console app. How to run the gate on the phone:
   foreground.
 - **How:** run the `mediaPlayback` service for the whole session (Google recommends media3
   `MediaSessionService`). Test with `adb shell cmd audio set-enable-hardening enable` (or `throw`).
-- **When:** Phase 2, and again at the API 37 target bump (likely Aug 2027).
+- **When:** Phase 2B, and again at the API 37 target bump (likely Aug 2027).
 
 #### 2.4 Speech in the background: spike first
 - **What:** prove screen-off speech recognition and text-to-speech before building the mode.
@@ -483,14 +513,34 @@ waits for the Play Console app. How to run the gate on the phone:
   inside the `microphone` service and send clips to Tracy for speech-to-text. Headset next/previous
   mappings need a local module around media3, because expo-audio's media session removes those
   commands.
-- **When:** start of Phase 2.
+- **When:** start of Phase 2B, after the Phase 2 gate.
 
 #### 2.5 Review reminders and background sync
+- **Status: the reminder is built; background sync is not** (not needed: the reminder is worked out
+  on the phone from its own data).
 - **What:** a daily "reviews due" reminder; optional background sync.
-- **How:** an inexact `DAILY` trigger on a `reviews` channel (no exact alarm needed). For periodic sync,
-  `expo-background-task` (WorkManager, roughly every 15 minutes at best), **not** a `dataSync`
-  foreground service.
-- **When:** Phase 2.
+- **How (as built, [`src/features/study/reminders.ts`](../src/features/study/reminders.ts),
+  [DECISIONS.md](DECISIONS.md) D47):**
+  - Channel `reviews-v1` ("Review reminders", default importance; versioned like `timers-v1`). One
+    notification id, `reviews-due`, so scheduling again replaces it. Its `data` is
+    `{url: '/', kind: 'reviews-due'}`: a tap opens Today.
+  - Off until the person turns it on in Settings → **Daily review reminder** (18:00 offered, any
+    time in 15-minute steps). Turning it on asks for `POST_NOTIFICATIONS` if Android still allows
+    asking ([1.2](#12-notification-permission-and-channels)).
+  - If cards are due by the next reminder time: an inexact `DAILY` trigger with that count. If not:
+    one `DATE` trigger at the reminder time on the day the first card falls due. If no card will
+    ever be due: none. No exact alarm: a little late is fine.
+  - The text holds only a count ("Cards to review": "12 cards are due. A 10-minute block clears a
+    lot of them."), never a card, so the lock screen shows nothing private.
+  - It is set again on app start, on return to the foreground, when card states change (at most
+    every 30 s), after each study block, and when the setting changes. It never throws.
+  - Signing out withdraws it with the other alerts.
+  - No `expo-background-task` and no `dataSync` foreground service. If periodic sync is ever wanted:
+    `expo-background-task` (WorkManager, roughly every 15 minutes at best).
+- **Verify on the phone:** turn the reminder on for a time a few minutes ahead on a day with cards
+  due: it rings with the count, and tapping it opens Today. Settings shows "Notifications are off for
+  DualRep, so the reminder can't ring" when notifications are refused.
+- **When:** built in Phase 2.
 
 #### 2.6 Play declarations for audio mode
 - **What:** the foreground-service declaration (one demo video per type) and the Data safety audio
@@ -501,25 +551,58 @@ waits for the Play Console app. How to run the gate on the phone:
 - **When:** before the first build with audio mode reaches a Play track.
 
 #### 2.7 Camera and photo access
-- **What:** the upload flow takes a photo with the camera or picks one from the gallery (photos of
-  handwritten notes).
+- **Status: built** ([DECISIONS.md](DECISIONS.md) D41, D42).
+- **What:** the upload flow takes a photo with the camera or picks photos from the gallery (photos of
+  handwritten notes), and picks PDF and Word files.
 - **Why:** taking a photo needs the `CAMERA` runtime permission. Picking from the gallery needs no
-  permission if it uses the system photo picker. Play's Photo and Video Permissions policy requires a
-  declaration for broad photo access (`READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`), which DualRep doesn't
-  need.
-- **How:** use `expo-image-picker` (add it with `npx expo install expo-image-picker`):
-  - `launchImageLibraryAsync()` opens the system photo picker and needs no permission.
-  - `launchCameraAsync()` needs `CAMERA`, which expo-image-picker's library manifest adds. Ask in
-    context with `requestCameraPermissionsAsync()` when the user taps "Take a photo", and keep the
-    file and gallery paths working when they say no.
-  - Its config plugin also adds `RECORD_AUDIO` unless told not to:
+  permission when it uses the system photo picker, and nor does the system file picker. Play's Photo
+  and Video Permissions policy requires a declaration for broad photo access (`READ_MEDIA_IMAGES`,
+  `READ_MEDIA_VIDEO`), which DualRep doesn't need.
+- **How (as built):**
+  - `expo-image-picker` 57.0.20: `launchImageLibraryAsync()` opens the system photo picker (no
+    permission). `launchCameraAsync()` needs `CAMERA`, which expo-image-picker's library manifest
+    adds; the app asks with `requestCameraPermissionsAsync()` when the user taps **Take a photo**.
+    If the answer is no, the screen says "Camera access is off" with **Open system settings**, and
+    the gallery and files keep working. Photos lost while the camera app was open (Android may stop
+    DualRep meanwhile) are recovered when the screen opens again.
+  - **Not on Android 9 and older:** there expo-image-picker's camera also needs
+    `WRITE_EXTERNAL_STORAGE`, which stays blocked, so **Take a photo** is hidden below API 29. The
+    gallery works on every version.
+  - **The plugin entry:** expo-image-picker's config plugin runs even when it isn't listed, and by
+    default it adds `RECORD_AUDIO`. Its `microphonePermission: false` option would remove the
+    microphone **app-wide**, out of sight, which would break audio study mode later. So DualRep
+    lists the plugin with the iOS usage strings only, and keeps `RECORD_AUDIO` in
+    `android.blockedPermissions`, where Phase 2B can delete one line:
     ```ts
-    plugins: [['expo-image-picker', { microphonePermission: false }]],
+    plugins: [['expo-image-picker', {
+      photosPermission: 'DualRep opens your photos when you add pictures of your notes.',
+      cameraPermission: 'DualRep uses the camera when you photograph your notes.',
+    }]],
     ```
-    (Leave that option out once audio study mode needs `RECORD_AUDIO` anyway.)
-  - Never add `READ_MEDIA_IMAGES` or `READ_MEDIA_VIDEO` (for example through expo-media-library).
+  - **The camera is optional on Play:** declaring `CAMERA` makes Play assume the app needs a camera
+    and autofocus, and hide it from devices without them. A small inline plugin in `app.config.ts`,
+    `withOptionalCamera`, declares both features as not required:
+    ```xml
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    ```
+  - **Photos are prepared on the phone:** picked at full quality, then decoded once with
+    `expo-image-manipulator`: the long edge shrunk to at most 2576 px, saved as JPEG at 0.85. That
+    also strips EXIF data (including GPS location) and converts HEIC. Photos over 50 megapixels are
+    refused (decoding one needs about 200 MB of memory).
+  - **Documents:** `expo-document-picker` 57.0.3 (PDF and `.docx`, no permission). Files over
+    5 MiB upload straight from disk with `expo-file-system`'s `File.upload`, so a 25 MiB PDF never
+    sits in JavaScript memory several times over.
+  - `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED` and
+    `ACCESS_MEDIA_LOCATION` are blocked, so no future library (for example expo-media-library) can
+    bring them in by accident.
   - The Data safety answer for photos is in [5.5](#55-data-safety-draft).
-- **When:** Phase 2, with the upload flow.
+- **Verify on the phone** (none of this has run on a phone yet): **Take a photo** asks for the camera
+  once, then opens the camera app; the photo appears in the list; turning the camera permission off
+  shows "Camera access is off"; **Choose photos from the gallery** asks for nothing; a 20 MB PDF
+  uploads with a moving percentage; the CI run's permission list matches the
+  [ledger](#permission-ledger).
+- **When:** built in Phase 2.
 
 ### Phase 3: Tracy coaching
 
@@ -688,8 +771,8 @@ waits for the Play Console app. How to run the gate on the phone:
 | Personal info → email address, user IDs (name if collected) | Supabase Auth, `profiles` | Collected; account management, app functionality |
 | Health and fitness → fitness info | Workouts, sets, Health Connect writes | Collected; app functionality, personalization |
 | Health and fitness → health info | Only if symptoms, diagnoses, medication or mood are stored | Avoid collecting it |
-| Photos and videos → photos | Note photos, card images, avatars | Collected if uploaded |
-| Files and docs | Uploaded PDFs and notes | Collected if uploaded |
+| Photos and videos → photos | Note photos (Phase 2), later card images and avatars | Collected (photos of notes are uploaded). Location data is stripped on the phone before upload ([2.7](#27-camera-and-photo-access)), so no location is collected through them |
+| Files and docs | Uploaded PDFs and Word files (Phase 2) | Collected |
 | Audio → voice or sound recordings | Clips sent to Tracy for speech-to-text | Collected if audio leaves the phone |
 | App activity → app interactions, other user-generated content | Study and training events, cards, Tracy messages, group content | Collected |
 | Financial info → purchase history | RevenueCat / Play | Likely collected |
@@ -697,8 +780,9 @@ waits for the Play Console app. How to run the gate on the phone:
 | Device or other IDs | FCM token, RevenueCat user ID | Likely collected |
 | Security practices | Encrypted in transit; deletion available | Yes / Yes |
 
-If Tracy sends user content to a third-party model provider, decide (with advice) whether that counts
-as "shared" or falls under the service-provider exemption.
+Since Phase 2, Tracy sends uploaded material and photos to Anthropic (Claude) to read, transcribe and
+make cards, and, if embeddings are turned on, text to Google (Gemini). Decide (with advice) whether
+that counts as "shared" or falls under the service-provider exemption.
 
 #### 5.6 Account deletion (required)
 - **What:** an in-app way to delete the account **and** a web page where users can request deletion
@@ -706,7 +790,8 @@ as "shared" or falls under the service-provider exemption.
 - **How:** a `delete-account` Edge Function (service role) that deletes the `auth.users` row (the
   cascades remove all of the user's data; other people's rows that pointed at it are kept, with that
   link set to null, see [0.8](#08-schema-ready-for-account-deletion)), removes the user's Storage
-  files and the RevenueCat subscriber; the app then clears the local database
+  files (since Phase 2 the daily sweep removes files no row points at, but only once they are 3 days
+  old, so delete the user's `sources/<user_id>/` folder at once) and the RevenueCat subscriber; the app then clears the local database
   (`disconnectAndClearSync()`).
 - **When:** build in Phase 4, required before the Phase 5 launch.
 
@@ -717,6 +802,8 @@ as "shared" or falls under the service-provider exemption.
 - [ ] The production build opens on the sign-in screen, not "Setup needed" (5.2 step 4)
 - [ ] The **merged manifest** has only the permissions you mean to declare (compare with the ledger
       above; the CI APK build prints them)
+- [ ] `aapt2 dump badging` shows the camera and autofocus as `uses-feature-not-required`
+      ([2.7](#27-camera-and-photo-access))
 - [ ] Edge-to-edge screens checked with gesture and 3-button navigation, on a ≥ 600 dp emulator, in
       dark mode
 - [ ] Notifications denied: the app still works

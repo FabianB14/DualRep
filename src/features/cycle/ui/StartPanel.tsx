@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useQuery } from '@powersync/react-native';
+import { useMemo, useState } from 'react';
 import { View } from 'react-native';
 
 import { useAuth } from '@/auth/AuthProvider';
@@ -21,19 +22,29 @@ import { useTrainingDefaults } from '@/features/settings/useTrainingDefaults';
 import { describeSetup } from '@/features/setups/setups';
 import { createSetupFromTemplate } from '@/features/setups/setupsRepo';
 import { useSetups } from '@/features/setups/useSetups';
+import { usePlans } from '@/features/study/hooks';
+import { PLAN_SOURCES_SQL, type PlanSourceRow } from '@/features/study/studyQueries';
+import { parseStudyDefaults, saveStudyDefaults, STUDY_DEFAULTS_KEY } from '@/features/study/studyPrefs';
 import type { NotificationPermission } from '@/features/timer/notifications';
 import { useTheme } from '@/theme';
 
 import { CYCLE_RULES, type CyclePlanInput } from '../cycleMachine';
+import { useLocalState } from '../localState';
 import {
+  chosenStudy,
   DEFAULT_MOVE_LENGTH,
   FULL_MINUTES_OPTIONS,
   MOVE_LENGTH_OPTIONS,
+  offersStudyFilter,
+  planChoiceSubtitle,
   planFromChoices,
   QUICK_SETUPS,
+  STUDY_FILTER_OPTIONS,
+  studyFilterNote,
   type MoveLength,
   type QuickSetup,
   type StartChoices,
+  type StudyPick,
 } from './startPlan';
 import { TopBar } from './TopBar';
 
@@ -60,6 +71,11 @@ export type StartPanelProps = {
  * Notifications: before the first block ever starts (the permission is still undetermined), one line
  * says why DualRep will ask, and Start asks. A "no" changes nothing but a quiet note: the timer works
  * on screen, there is just no alert.
+ *
+ * Studying a plan: when the phone has study plans, "What are you studying?" picks one (with its cards
+ * due and new) or "Just a timer"; a cumulative plan with several sources also picks everything so far
+ * or the newest source. The last choice is remembered on this phone and preselected, so one tap on
+ * Start still starts. Without any plan the panel is exactly Phase 1's: a free-text subject.
  */
 export function StartPanel({ mode, permission, requestPermission, onStart, onStartMove, error }: StartPanelProps) {
   const { space } = useTheme();
@@ -80,6 +96,17 @@ export function StartPanel({ mode, permission, requestPermission, onStart, onSta
   const [open, setOpen] = useState<'preset' | 'setup' | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const [studyPick, setStudyPick] = useState<StudyPick>(null);
+
+  const { plans } = usePlans();
+  const storedStudy = useLocalState<unknown>(STUDY_DEFAULTS_KEY).value;
+  const studyDefaults = useMemo(() => (storedStudy === null ? null : parseStudyDefaults(storedStudy)), [storedStudy]);
+  const offersPlans = studying && plans.length > 0;
+  const study = offersPlans ? chosenStudy(studyPick, studyDefaults, plans) : null;
+  const studyPlan = study ? (plans.find((entry) => entry.id === study.planId) ?? null) : null;
+  // The plan's sources, newest first: the newest one's title explains the filter.
+  const { data: studySources } = useQuery<PlanSourceRow>(PLAN_SOURCES_SQL, [study?.planId ?? '']);
+  const newestSource = studySources[0]?.title?.trim() || null;
 
   const preset = (presetId ? presets.byId.get(presetId) : undefined) ?? defaults.preset;
   const setup = (setupId ? setups.find((entry) => entry.id === setupId) : undefined) ?? defaults.setup;
@@ -91,7 +118,12 @@ export function StartPanel({ mode, permission, requestPermission, onStart, onSta
     quick,
     moveLength,
     fullMinutes,
+    study,
   });
+
+  const pickPlan = (planId: string | null) => {
+    setStudyPick({ planId, filter: planId !== null && planId === study?.planId ? study.filter : 'all' });
+  };
 
   const chooseQuick = (template: QuickSetup) => {
     if (creating) return;
@@ -127,6 +159,10 @@ export function StartPanel({ mode, permission, requestPermission, onStart, onSta
       await requestPermission().catch(() => undefined);
       setBusy(false);
     }
+    // Remembered for next time; a failed save only means the next panel offers the earlier choice.
+    if (offersPlans) {
+      saveStudyDefaults({ planId: study?.planId ?? null, filter: study?.filter ?? 'all' }).catch(() => undefined);
+    }
     onStart(plan);
   };
 
@@ -157,17 +193,61 @@ export function StartPanel({ mode, permission, requestPermission, onStart, onSta
       />
       {error ? <Notice tone="warning" message={error} /> : null}
 
+      {offersPlans ? (
+        <View style={{ gap: space[3] }}>
+          <ListGroup title="What are you studying?" description="A plan’s cards come up during each focus block.">
+            <ListRow
+              title="Just a timer"
+              subtitle="No cards"
+              accessory="radio"
+              checked={study === null}
+              onPress={() => pickPlan(null)}
+            />
+            {plans.map((entry) => (
+              <ListRow
+                key={entry.id}
+                title={entry.title || 'Untitled plan'}
+                subtitle={planChoiceSubtitle(entry)}
+                accessory="radio"
+                checked={study?.planId === entry.id}
+                onPress={() => pickPlan(entry.id)}
+              />
+            ))}
+          </ListGroup>
+          {study && offersStudyFilter(studyPlan) ? (
+            <>
+              <SegmentedControl
+                label="Cards"
+                options={STUDY_FILTER_OPTIONS}
+                value={study.filter}
+                onChange={(filter) => setStudyPick({ planId: study.planId, filter })}
+              />
+              <Text variant="caption" tone="secondary">
+                {studyFilterNote(study.filter, studyPlan?.sourceCount ?? 0, newestSource)}
+              </Text>
+            </>
+          ) : null}
+          {studyPlan && studyPlan.cardCount === 0 ? (
+            <Text variant="caption" tone="secondary">
+              This plan has no cards yet. The block runs as a plain timer until they’re ready.
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
       {studying ? (
         <>
-          <TextField
-            label="What are you studying?"
-            hint="Optional"
-            value={subject}
-            onChangeText={setSubject}
-            maxLength={SUBJECT_MAX}
-            returnKeyType="done"
-            autoCapitalize="sentences"
-          />
+          {study === null ? (
+            <TextField
+              label={offersPlans ? 'Subject' : 'What are you studying?'}
+              hint="Optional"
+              value={subject}
+              onChangeText={setSubject}
+              maxLength={SUBJECT_MAX}
+              returnKeyType="done"
+              autoCapitalize="sentences"
+            />
+          ) : null}
           <Stepper
             label="Focus block"
             value={blockMinutes ?? defaults.blockMinutes}

@@ -83,9 +83,10 @@ select set_eq(
     join pg_attribute a on a.attrelid = con.conrelid and a.attnum = con.conkey[1]
     where con.contype = 'f' and con.connamespace = 'public'::regnamespace and con.confdeltype = 'n'$$,
   array[
-    'cards.source_chunk_id', 'exercise_sets.exercise_id', 'exercises.group_id', 'profiles.default_preset_id',
-    'profiles.default_setup_id', 'reviews.interval_block_id', 'source_chunks.group_id',
-    'source_files.group_id', 'sources.group_id', 'study_plans.group_id', 'study_sessions.plan_id',
+    'cards.source_chunk_id', 'cards.source_id', 'exercise_sets.exercise_id', 'exercises.group_id',
+    'profiles.default_preset_id', 'profiles.default_setup_id', 'reviews.interval_block_id',
+    'source_chunks.group_id', 'source_files.group_id', 'sources.group_id', 'study_plans.group_id',
+    'study_sessions.plan_id', 'tracy_events.plan_id', 'tracy_events.source_id',
     'transitions.workout_session_id', 'workout_sessions.preset_id', 'workout_sessions.setup_id'
   ],
   'references that may cross users (and group links) are ON DELETE SET NULL'
@@ -181,10 +182,11 @@ select set_eq(
     where p.pronamespace = 'public'::regnamespace and has_function_privilege('service_role', p.oid, 'EXECUTE')$$,
   array[
     'can_edit_plan', 'can_edit_source', 'can_read_card', 'can_read_exercise', 'can_read_plan',
-    'can_read_source', 'generate_invite_code', 'has_paid_access', 'is_group_member', 'is_group_owner',
-    'is_valid_split', 'shares_group_with'
+    'can_read_source', 'claim_tracy_events', 'enqueue_tracy_event', 'generate_invite_code',
+    'has_paid_access', 'is_group_member', 'is_group_owner', 'is_valid_split', 'orphaned_source_objects',
+    'release_tracy_event', 'shares_group_with'
   ],
-  'service_role can execute the access helpers but not the user-only RPCs or trigger functions'
+  'service_role can execute the access helpers and the job queue, but not the user-only RPCs or trigger functions'
 );
 
 select is_empty(
@@ -219,17 +221,18 @@ select set_eq(
       and (has_column_privilege('authenticated', c.oid, a.attnum, 'INSERT')
            or has_column_privilege('authenticated', c.oid, a.attnum, 'UPDATE'))$$,
   array[
-    'cards.source_chunk_id', 'exercise_sets.exercise_id', 'exercises.group_id', 'profiles.default_preset_id',
-    'profiles.default_setup_id', 'reviews.interval_block_id', 'source_files.group_id', 'sources.group_id',
-    'study_plans.group_id', 'study_sessions.plan_id', 'transitions.workout_session_id',
-    'workout_sessions.preset_id', 'workout_sessions.setup_id'
+    'cards.source_chunk_id', 'cards.source_id', 'exercise_sets.exercise_id', 'exercises.group_id',
+    'profiles.default_preset_id', 'profiles.default_setup_id', 'reviews.interval_block_id',
+    'source_files.group_id', 'sources.group_id', 'study_plans.group_id', 'study_sessions.plan_id',
+    'transitions.workout_session_id', 'workout_sessions.preset_id', 'workout_sessions.setup_id'
   ],
   'the optional references clients can write'
 );
 
 -- ... and each one is rewritten by a BEFORE INSERT and UPDATE row trigger that covers the column
--- (a clear_* function, or the copy from the parent source for source_files.group_id), so a value
--- the writer may not use is stored as null instead of failing RLS (42501) or the foreign key (23503).
+-- (a clear_* function, the copy from the parent source for source_files.group_id, or the derivation
+-- from the source chunk for cards.source_id), so a value the writer may not use is stored as null (or
+-- replaced) instead of failing RLS (42501) or the foreign key (23503).
 select is_empty(
   $$select c.relname || '.' || a.attname from pg_constraint con
     join pg_class c on c.oid = con.conrelid
@@ -242,7 +245,7 @@ select is_empty(
         select 1 from pg_trigger t join pg_proc p on p.oid = t.tgfoid
         where t.tgrelid = c.oid and not t.tgisinternal
           and t.tgtype & (1 | 2 | 4 | 16) = (1 | 2 | 4 | 16)  -- row, before, insert, update
-          and (p.proname like 'clear\_%' or p.proname = 'copy_source_ownership')
+          and (p.proname like 'clear\_%' or p.proname in ('copy_source_ownership', 'copy_card_source_id'))
           and (cardinality(t.tgattr::int2[]) = 0 or a.attnum = any (t.tgattr::int2[]))
       )$$,
   'every optional reference a client can write is normalized by a BEFORE trigger'

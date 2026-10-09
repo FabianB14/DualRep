@@ -30,6 +30,24 @@ import {
 import { CycleStore, type CycleSnapshot, type CycleStoreDeps, type SetActuals } from './cycleStore';
 import { readLocalState, writeLocalState } from './localState';
 
+/**
+ * After a block that quizzed from a study plan: the daily review reminder is rescheduled with this
+ * phone's setting (Phase 2: "rescheduled on app start / foreground / block end / sync"). The study
+ * engine is loaded on demand, as ProgressRing loads Reanimated, so this module (which Settings also
+ * imports, for sign-out) does not pull it and its database and notification modules in at import:
+ * the screens that study have loaded it anyway, and the tests of the store and of Settings, which
+ * replace only the cycle's own I/O, keep working without it. Never throws.
+ */
+export function rescheduleReviewsAfterStudyBlock(userId: string): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const study = require('../study/hooks') as typeof import('../study/hooks');
+    study.rescheduleReviewReminderNow(userId).catch(() => undefined);
+  } catch {
+    // No reminder this time; the next app start or foreground reschedules it.
+  }
+}
+
 /** The real I/O: local_state, the repo, notifications, haptics, the clock and device ids. */
 export function defaultCycleStoreDeps(): CycleStoreDeps {
   return {
@@ -52,6 +70,7 @@ export function defaultCycleStoreDeps(): CycleStoreDeps {
     newId,
     setTimeout: (callback, ms) => setTimeout(callback, ms),
     clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    studyBlockEnded: rescheduleReviewsAfterStudyBlock,
   };
 }
 

@@ -3,16 +3,21 @@
 What is in the database, who writes each table, how each table reaches the phone, and how it is
 protected. It describes the migrations as built: the schema,
 [`supabase/migrations/20261008000000_initial_schema.sql`](../supabase/migrations/20261008000000_initial_schema.sql),
-and the Phase 1 starter-library seed,
+the Phase 1 starter-library seed,
 [`20261008120000_starter_library.sql`](../supabase/migrations/20261008120000_starter_library.sql)
-(rows only, no schema change). When this page and a migration disagree, the migration wins.
+(rows only, no schema change), and the Phase 2 study engine,
+[`20261009120000_study_engine.sql`](../supabase/migrations/20261009120000_study_engine.sql) (new
+columns, the `sources` Storage bucket, the job queue and its schedule:
+[the study pipeline](#the-study-pipeline)). When this page and a migration disagree, the migration
+wins.
 
 Related files:
 
 | File | What it is |
 |---|---|
-| [`supabase/migrations/`](../supabase/migrations/) | The schema, RLS policies, grants, triggers, system presets and the `powersync` publication (first migration); the 90 starter exercises (second) |
-| [`supabase/tests/`](../supabase/tests/) | pgTAP tests for every table and policy, and for the starter library: 14 files, 542 tests (`npm run db:test`, or `supabase test db`) |
+| [`supabase/migrations/`](../supabase/migrations/) | The schema, RLS policies, grants, triggers, system presets and the `powersync` publication (first migration); the 90 starter exercises (second); the study engine (third) |
+| [`supabase/tests/`](../supabase/tests/) | pgTAP tests for every table and policy, the starter library and the study engine: 15 files, 626 tests (`npm run db:test`, or `supabase test db`) |
+| [`supabase/functions/`](../supabase/functions/) | The Edge Functions `study` and `tracy-worker` (Deno), and their shared code in `_shared/` |
 | [`scripts/library/starter-library-sql.mjs`](../scripts/library/starter-library-sql.mjs) | Writes the starter-library migration from the app's own list; `npm run check:library` checks it is up to date |
 | [`supabase/schema.snapshot.json`](../supabase/schema.snapshot.json) | Column list per table, written by `npm run db:test`, read by `npm run validate:sync` |
 | [`powersync/sync-config.yaml`](../powersync/sync-config.yaml) | The Sync Streams: which rows each phone receives |
@@ -43,11 +48,11 @@ Related files:
   kept with the link set to null instead of the delete failing. For example, a set logged against a
   friend's shared exercise keeps its `exercise_name` and gets `exercise_id = null`, and deleting a
   group unshares the exercises, sources and study plans members shared into it instead of deleting
-  them. The SET NULL columns are `cards.source_chunk_id`, `exercise_sets.exercise_id`,
+  them. The SET NULL columns are `cards.source_chunk_id` and `source_id`, `exercise_sets.exercise_id`,
   `profiles.default_preset_id` and `default_setup_id`, `reviews.interval_block_id`,
   `study_sessions.plan_id`, `transitions.workout_session_id`, `workout_sessions.preset_id` and
-  `setup_id`, and `group_id` on `exercises`, `sources`, `source_files`, `source_chunks` and
-  `study_plans`. The cascades that remain never block a delete: a deleted card or plan takes its
+  `setup_id`, `tracy_events.plan_id` and `source_id`, and `group_id` on `exercises`, `sources`,
+  `source_files`, `source_chunks` and `study_plans`. The cascades that remain never block a delete: a deleted card or plan takes its
   `card_states`, `reviews` and `card_links` with it (other users' too), and a deleted source takes
   its `plan_sources` rows. `09_deletion.test.sql` deletes accounts and groups while other people
   hold references to them.
@@ -93,10 +98,18 @@ A PUT sends the whole row, including `created_at` and `updated_at` from the phon
 checks the SELECT policy against a row being upserted too, so every SELECT policy admits any row its
 INSERT policy admits.
 
-Columns the server fills in itself are never uploaded. Today that is `groups.invite_code`
-(`serverGenerated` in [`src/db/tables.ts`](../src/db/tables.ts)): the connector strips it from
-every PUT and refuses a PATCH that includes it (`DUALREP_WRITE_NOT_ALLOWED`). A new group's code
-reaches the phone with the next sync.
+Columns the server fills in itself are never uploaded. Today that is `groups.invite_code` and,
+since Phase 2, `cards.source_id` (`serverGenerated` in [`src/db/tables.ts`](../src/db/tables.ts)):
+the connector strips them from every PUT and refuses a PATCH that includes one
+(`DUALREP_WRITE_NOT_ALLOWED`). The server's value reaches the phone with the next sync.
+
+**Columns uploaded together** (Phase 2, `patchTogether` in `tables.ts`): a PATCH of `card_states`
+that changes any of its 9 FSRS columns (`state`, `due`, `stability`, `difficulty`,
+`scheduled_days`, `learning_steps`, `reps`, `lapses`, `last_review`) uploads all 9, with their values
+after the change. The values come from PowerSync's `trackPrevious`, turned on for those columns in
+[`schema.ts`](../src/db/schema.ts). So the server's stale-write guard keeps or skips a whole state,
+and two offline phones can never leave a mix of two reviews. `suspended` is the person's own switch
+and uploads on its own ([DECISIONS.md](DECISIONS.md) D43).
 
 **When an upload fails** ([`src/db/upload.ts`](../src/db/upload.ts), `isFatalUploadError`):
 
@@ -176,9 +189,10 @@ BEFORE triggers rewrite what the server may not store, before RLS and the foreig
   `exercise_id` whose exercise is no longer on the phone) by its `exercise_name`, and cope with
   `plan_id = null`, `source_chunk_id = null` and a row that comes back unshared.
 - All eight `clear_*` functions are `security invoker` with `search_path = ''`, and nobody may
-  execute them directly. `00_schema.test.sql` checks that, and that each of the 13 optional
+  execute them directly. `00_schema.test.sql` checks that, and that each of the 14 optional
   foreign-key columns a client can write has a BEFORE INSERT and UPDATE row trigger covering it (the
-  twelve above plus `source_files.group_id`, which is copied from its source).
+  twelve above, `source_files.group_id`, which is copied from its source, and since Phase 2
+  `cards.source_id`, which is worked out from the card's source chunk).
   `10_references.test.sql` and `12_offline_uploads.test.sql` test the behaviour.
 
 ### The sync streams (who receives what)
@@ -188,7 +202,7 @@ automatically; the app never subscribes by hand.
 
 | Stream | Bucket | Contents |
 |---|---|---|
-| `user_private` (priority 1) | One per user | The user's `profiles` row, `entitlements`, `study_sessions`, `interval_blocks`, `equipment_setups`, `workout_sessions`, `exercise_sets`, `transitions`, `card_states`, `reviews`, and `tracy_events` (light columns only) |
+| `user_private` (priority 1) | One per user | The user's `profiles` row, `entitlements`, `study_sessions`, `interval_blocks`, `equipment_setups`, `workout_sessions`, `exercise_sets`, `transitions`, `card_states`, `reviews`, and `tracy_events` (light columns only: `id`, `user_id`, `job`, `stage`, `plan_id`, `source_id`, `status`, `error`, `accepted`, `created_at`, `updated_at`) |
 | `library` (priority 1) | One shared by everyone | Reviewed library `exercises` (`owner_id IS NULL AND reviewed = true`) and the six system `presets` |
 | `user_owned` | One per user | Rows the user owns in shareable tables: `exercises`, `presets`, `sources`, `source_files`, `study_plans`, `groups` |
 | `group_shared` | One per group the user is in | That group's `groups` row, `group_members`, fellow members' `profiles`, and group-shared `exercises`, `sources`, `source_files`, `study_plans` |
@@ -214,6 +228,9 @@ Keys in `local_state`:
 |---|---|---|
 | `cycle` | The running study → move → study cycle: the phase, the timers' end times, the circuit, where you are in it, the sets logged so far, the ids of the rows it will write, and the writes not done yet. It holds the user's id, so another account's cycle is never resumed. | Before every write or alert the loop decides on, so an app restart picks up exactly where it was ([DECISIONS.md](DECISIONS.md) D23) |
 | `alert-test` | The Timer check's test alert: when it was scheduled, when it was due, and when Android showed it | When a test is scheduled, and when its result is read |
+| `study-prefs` | Phase 2: this phone's study settings: 2 or 4 answer buttons, typed answers on or off, new cards a day, the review reminder (on or off, and its time) | When Settings changes one |
+| `study-defaults` | Phase 2: the cycle start panel's last choice: the study plan (or none) and the filter (everything so far or newest source) | When a focus block is started from a start panel that offers plans, or **Study now** is tapped |
+| `study-self-test` | Phase 2: the running block's id and when its closing self-test began, so an app restart keeps the same self-test | When the self-test starts |
 
 Changing either table is an app change (`schema.ts`), not a migration. A new key needs no change at
 all.
@@ -239,17 +256,17 @@ RLS narrows it further to the user's own rows.
 | `transitions` | Focus block → move block handoff | create, edit, delete | `user_private` |
 | `groups` | Friend groups | create (insert-ignore), rename, delete | `user_owned`, `group_shared` |
 | `group_members` | Who is in which group | delete (leave only; removing someone is an RPC) | `group_shared` |
-| `sources` | Uploaded study material | create, edit, delete | `user_owned`, `group_shared` |
-| `source_files` | Files and photos of a source | create, edit, delete | `user_owned`, `group_shared` |
+| `sources` | Uploaded study material | create, edit, delete (the server keeps `status`; in Phase 2 the `study` function creates them) | `user_owned`, `group_shared` |
+| `source_files` | Files and photos of a source | create, edit, delete (the phone edits transcripts; the `study` function creates them) | `user_owned`, `group_shared` |
 | `source_chunks` | Embedded text chunks | nothing (server only) | never synced |
 | `study_plans` | Single or cumulative plans | create, edit, delete | `user_owned`, `group_shared` |
 | `plan_sources` | Which sources a plan uses | create, edit, delete | `plan_content` |
-| `topics` | A plan's outline | create, edit, delete | `plan_content` |
-| `cards` | Quiz cards | create, edit, delete | `plan_content` |
+| `topics` | A plan's outline (with its review status) | create, edit, delete | `plan_content` |
+| `cards` | Quiz cards | create, edit, delete (not `source_id`) | `plan_content` |
 | `card_links` | Concept map links | create, edit, delete | `plan_content` |
-| `card_states` | Current FSRS state per user per card | create, edit, delete | `user_private` |
+| `card_states` | Current FSRS state per user per card | create, edit, delete (the FSRS columns upload together) | `user_private` |
 | `reviews` | Append-only answer log | create (insert-ignore) | `user_private` |
-| `tracy_events` | Tracy job queue and audit log | set `accepted` only | `user_private` (light columns) |
+| `tracy_events` | Tracy job queue and audit log; the study pipeline's progress | set `accepted` only | `user_private` (light columns) |
 
 ---
 
@@ -262,11 +279,15 @@ Every table also has `id`, `created_at` and `updated_at`. A `?` marks a nullable
 **`profiles`**: `id` (= `auth.users.id`, no default), `display_name` text (≤ 80, default `''`),
 `unit_pref` text (`lb`/`kg`, default `lb`), `default_block_minutes` integer (10–50, default 25),
 `default_preset_id` uuid? → presets (set null), `default_setup_id` uuid? → equipment_setups (set null),
-`fsrs_params` jsonb? (null = ts-fsrs defaults).
+`fsrs_params` jsonb? (null = DualRep's defaults: ts-fsrs 5.4.2's defaults plus fuzz).
 - **Written by:** the `handle_new_user()` trigger when an auth user is created (name from
   `raw_user_meta_data.display_name`, else the email's local part); then the user.
 - **RLS:** read own row and group mates' rows (`shares_group_with`); insert and update own (`id` is
   you); no delete (deletion cascades from `auth.users`). **Grants:** select, insert, update.
+- `fsrs_params` (read by the phone from Phase 2): an object with any of `w`, `request_retention`
+  (0.7–0.99), `maximum_interval` (1–36500), `enable_fuzz`, `enable_short_term`, `learning_steps`,
+  `relearning_steps`, or a bare array of 17, 19 or 21 weights. Each invalid field is ignored on its
+  own, so a bad value never stops studying ([DECISIONS.md](DECISIONS.md) D43).
 - `default_preset_id` must be a system preset or your own, and `default_setup_id` your own setup.
   Group mates can read your profile, so it never names rows you can't see: any other value, or a
   deleted row, is stored as null (`clear_default_references`; see
@@ -404,6 +425,8 @@ copied by the phone when the set is logged), `set_index` integer (≥ 0), `reps`
   becomes unreadable (for example you left its group).
 - The Phase 0 **Sync Check** writes its probe rows here, with `focus_subject` starting
   `Sync check ` (see [SETUP.md](SETUP.md#12-run-the-sync-check-the-phase-0-gate)).
+- From Phase 2, a cycle started with a study plan writes `plan_id` (once, when the session is
+  created) and uses the plan's title as `focus_subject`.
 
 **`interval_blocks`**: `user_id` (copy of the session's owner), `study_session_id` → study_sessions
 (cascade), `planned_minutes` integer (1–120), `started_at` timestamptz?, `ended_at` timestamptz?,
@@ -432,7 +455,7 @@ milliseconds.
 
 | When | Table | What is written |
 |---|---|---|
-| First focus block of a cycle starts | `study_sessions` | INSERT: `focus_subject` (what you typed, or `''`), `plan_id` null |
+| First focus block of a cycle starts | `study_sessions` | INSERT: `focus_subject` (what you typed, the plan's title, or `''`), `plan_id` (the chosen study plan, or null for "Just a timer"; a value that isn't a UUID is left out) |
 | Every focus block starts | `interval_blocks` | INSERT: `study_session_id`, `planned_minutes` (10–50), `started_at`, `interrupted = false`, `mode = 'seated'` |
 | A focus block ends | `interval_blocks` | UPDATE `ended_at` and `interrupted` (true for **End block early**, or **Finish** before the time was up). `ended_at` is `started_at` plus the time actually focused, with pauses left out (there is no column for them), so `ended_at − started_at` is the block's focus time. For a block that ran out without a pause it is the timer's real end, even if the app only noticed later |
 | You rate the block (1–5) | `interval_blocks` | UPDATE `effort_rating` (again on each change) |
@@ -442,6 +465,7 @@ milliseconds.
 | … the workout's first set | `transitions` | UPDATE `accepted = true` |
 | The workout ends with sets logged | `workout_sessions` | UPDATE `duration_minutes`: from the handoff to the last logged set, rounded (time after the last set, such as a workout left open, isn't counted) |
 | The workout is skipped or ended with no set | `transitions`, `workout_sessions` | UPDATE `accepted = false` and `workout_session_id = null`; DELETE the empty workout |
+| Each card answered in a focus block (Phase 2) | `reviews`, `card_states` | One transaction: INSERT the review (with `interval_block_id`), then UPDATE the card's state or INSERT it under its derived id ([what a study block writes](#what-a-study-block-writes)) |
 
 - **Just train** (a workout without a focus block) writes no `study_sessions`, `interval_blocks` or
   `transitions` rows.
@@ -518,6 +542,15 @@ from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, made by `generate_invite_code()`).
 
 **`sources`**: `owner_id`, `group_id` uuid? → groups (set null), `kind` text (`pdf`, `doc`, `link`,
 `notes`), `title` text, `url` text?, `status` text (`pending`, `processing`, `ready`, `failed`).
+- **Written by** (Phase 2): the `study` Edge Function's `submit_source`, with the service role, after
+  the phone uploaded the files. The phone makes the id. The phone may still edit its sources (the
+  title, sharing) and delete them.
+- **`status` belongs to the server** (trigger `keep_server_status`, function
+  `keep_server_source_status`): `pending` → `processing` (the first job is queued) → `ready` (no
+  cards job left open) or `failed` (an extract or outline step failed or was cancelled; **Try again**
+  sets it back to `processing`). A client INSERT is stored as `pending` and a client UPDATE keeps
+  the stored status, whatever the phone sent. Ignored rather than refused, so an old app build or a
+  late upload never fails and never undoes the pipeline's progress.
 - **RLS:** read own and group-shared; write own. A `group_id` naming a group you are not a member of
   is stored as null (`clear_group_unless_member`): the source is kept, unshared.
 - Changing a source's owner or group carries its files and chunks along (trigger
@@ -527,14 +560,27 @@ from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, made by `generate_invite_code()`).
 **`source_files`**: `source_id` → sources (cascade), `owner_id` and `group_id` (**copied from the
 source by a trigger**; whatever the device sends is overwritten), `storage_path` text, `page`
 integer?, `transcript` text?, `confirmed` boolean (default false).
+- **Written by** (Phase 2): `submit_source` creates one row per uploaded file (ids derived from the
+  source and the file number). The worker writes each photo's `transcript`. The phone saves the
+  person's corrections to `transcript` as drafts (offline is fine), and `confirm_transcripts` sets
+  `confirmed = true` on every file of the source.
+- **`storage_path` must stay in its own source's folder** (CHECK
+  `source_files_storage_path_in_own_folder`): `<owner_id>/<source_id>/<file name>`, lowercase ids,
+  a plain file name of letters, digits, `.`, `_` and `-` (no further folders, no `..`). The app uses
+  `<n>.<ext>`, `n` = the file's number from 1, for example `…/1.pdf` or `…/3.jpg`. Anything else is
+  refused with 23514. Why: the worker reads files with the service role, which skips Storage's own
+  rules, so a path into someone else's folder would otherwise turn their file into your cards.
 - **RLS:** read by the copied owner/group; write only if you can edit the source.
 - Photos of handwritten notes keep `confirmed = false` until the user checks the transcription.
 
 **`source_chunks`** (server only): `source_id` → sources (cascade), `owner_id`, `group_id` (copied
 from the source), `page` integer?, `content` text, `embedding` `extensions.vector(1536)`?,
-`embed_model` text? (for example `gemini-embedding-2@1536`). HNSW index on `embedding`
-(`vector_cosine_ops`).
-- **Written by:** Edge Functions with the service role (Phase 2).
+`embed_model` text? (`gemini-embedding-2@1536#p1` when embeddings are on). HNSW index on
+`embedding` (`vector_cosine_ops`).
+- **Written by:** the `tracy-worker` (extracted and transcribed pages) and `confirm_transcripts`
+  (confirmed notes), with the service role. Each chunk's id is derived from its source, page and
+  position, so writing a page again replaces it instead of adding a copy. `embedding` stays null
+  unless a `GEMINI_API_KEY` is set ([DECISIONS.md](DECISIONS.md) D35).
 - **RLS:** read like sources (for retrieval through the API). **Grants:** select only.
 - **Never synced** to phones and not in the `powersync` publication: embeddings are large.
 
@@ -549,13 +595,29 @@ timestamptz; unique `(plan_id, source_id)`.
   update and delete only check the plan, so the owner can remove a link to a source that is no longer
   readable.
 
-**`topics`**: `plan_id` → study_plans (cascade), `title` text, `position` integer.
+**`topics`**: `plan_id` → study_plans (cascade), `title` text, `position` integer, `status` text
+(`draft`, `confirmed`, `ready`; default `ready`).
+- `status` (Phase 2): `draft` = proposed by the study builder's outline, waiting for the owner's
+  review (never studied); `confirmed` = kept, its cards are being made (its cards can be studied);
+  `ready` = its cards are in. A topic made by hand is `ready` at once. The worker makes cards only
+  for a `confirmed` topic that has none yet, so a topic set back by hand never gets cards twice.
+- **Written by:** the owner (by hand), the worker (draft topics, numbered after the plan's existing
+  ones; then `ready`) and `approve_outline` (renames, order, `confirmed`; cut drafts are deleted).
 - **RLS:** read with the plan; write as plan owner. Moving a topic to another plan moves its cards (and
   their outgoing links) too.
 
 **`cards`**: `topic_id` → topics (cascade), `plan_id` (**copied from the topic by a trigger**),
-`source_chunk_id` uuid? → source_chunks (set null), `page` integer?, `question` text, `answer` text,
-`card_type` text (`basic`, `cloze`, `why`, `write_from_memory`).
+`source_chunk_id` uuid? → source_chunks (set null), `source_id` uuid? → sources (set null; **worked
+out by a trigger**), `page` integer?, `question` text, `answer` text, `card_type` text (`basic`,
+`cloze`, `why`, `write_from_memory`).
+- **Written by:** the worker's cards step (ids derived, so a retried step never duplicates a card;
+  types `basic`, `cloze` and `why`) and the owner by hand (no source, no page).
+- `source_id` (Phase 2) is copied from the card's source chunk by the trigger `copy_source_id`
+  (function `copy_card_source_id`, security definer, since the chunk may be in a group mate's
+  source). The phone never receives chunks, so this is how it filters "newest source" and shows
+  "p. 12, Lecture 3". A writer may clear it but never point it at another source; a value the phone
+  sends is ignored, and the app never uploads it (`serverGenerated`). Cards made before Phase 2 keep
+  null.
 - **RLS:** read with the plan; write as plan owner.
 - `source_chunk_id` may point into a group member's source. It is judged when a write sets or
   changes it: a chunk whose source you can't read, or a deleted chunk, is stored as null
@@ -567,6 +629,8 @@ timestamptz; unique `(plan_id, source_id)`.
 - **RLS:** read with the plan. Anyone who can read the plan may link its cards to cards they can read.
   Each person edits and deletes only their own links (and an edit must still point at readable
   cards).
+- Links made by the card builder have `created_by` = the plan's owner, so the owner can remove them
+  like their own.
 
 **`card_states`**: `user_id`, `card_id` → cards (cascade), `state` smallint (0–3), `due` timestamptz,
 `stability`, `difficulty` (0–10) double precision, `scheduled_days`, `learning_steps`, `reps`,
@@ -585,7 +649,11 @@ names match ts-fsrs's `Card`, so a row can be passed to ts-fsrs directly.
   `uuid_generate_v5`; Supabase already has it.)
 - **Stale-write guard:** a BEFORE UPDATE trigger skips an update whose `last_review` is older than (or
   missing compared with) the stored one. The statement still succeeds, so the upload queue keeps
-  moving; the `reviews` log keeps both answers.
+  moving; the `reviews` log keeps both answers. Since Phase 2 a review's PATCH carries the whole FSRS
+  state ([columns uploaded together](#how-a-phone-write-reaches-postgres)), so the guard keeps or
+  skips whole states.
+- **Written by** the phone only, one transaction per answer
+  ([what a study block writes](#what-a-study-block-writes)), and by pausing a card (`suspended`).
 - **RLS:** own rows. Writes only check ownership, not that the card is still readable (see "Private
   study history" above); a state for a deleted card is skipped. The derived-id CHECK still stops
   anyone from taking another user's id.
@@ -601,19 +669,126 @@ smallint (state before), `elapsed_days` integer, then the state **after** the re
   is harmless.
 - `interval_block_id` must be your own interval block; any other value, or a deleted one, is stored
   as null (`clear_interval_block_reference`).
+- Phase 2 writes `answer_mode` `self_graded` (the rating buttons) or `typed` (a typed answer checked
+  on the phone); `spoken` and `handwritten` are for later.
 
 ### Tracy
 
 **`tracy_events`**: `user_id`, `job` text (`transition_planner`, `study_builder`, `answer_grader`,
 `analyst`, `handwriting`), `status` text (`queued`, `running`, `succeeded`, `failed`, `cancelled`),
 `input` jsonb, `output` jsonb?, `error` text?, `accepted` boolean?, `attempts` integer, `locked_at`
-timestamptz?, `model` text?, `usage` jsonb?.
-- **Written by:** Edge Functions with the service role (Phase 2/3). It is DualRep's job queue and the
-  audit log of every proposal and whether the user accepted it. See
-  [TRACY_INTEGRATION.md](TRACY_INTEGRATION.md#6-long-jobs-dualrep-owns-the-queue).
-- **Synced columns:** `id`, `user_id`, `job`, `status`, `error`, `accepted`, `created_at`,
-  `updated_at`. `input`, `output`, `attempts`, `locked_at`, `model` and `usage` stay on the server.
-- **RLS:** read own, update own. **Grants:** select, and `update (accepted)` only.
+timestamptz?, `model` text?, `usage` jsonb?, and since Phase 2 `stage` text?, `plan_id` uuid? →
+study_plans (set null), `source_id` uuid? → sources (set null), `cap_units` integer (default 0).
+- **Written by:** Edge Functions with the service role: the `study` function queues jobs, the
+  `tracy-worker` runs them. It is DualRep's job queue and the audit log of every proposal and whether
+  the user accepted it. See
+  [TRACY_INTEGRATION.md](TRACY_INTEGRATION.md#6-long-jobs-dualrep-owns-the-queue) and
+  [the study pipeline](#the-study-pipeline) below.
+- `stage` (Phase 2): the step of the study pipeline, `extract`, `transcribe`, `outline`, `cards` or
+  `embed`; null for other jobs. A CHECK (`tracy_events_stage_matches_job`) ties it to the job:
+  `study_builder` runs `extract`, `outline`, `cards` and `embed`; `handwriting` runs `transcribe`.
+- `plan_id`, `source_id` (Phase 2): what the job works on, so the phone can show each source's
+  progress and errors. Set to null when the plan or source is deleted; the job stays in the user's
+  history.
+- `cap_units` (Phase 2, **server only**): how much of the monthly cap the job used: 1 per source for
+  `extract`, 1 per photo or scanned page for `transcribe`, 0 when not counted. See
+  `enqueue_tracy_event` below.
+- `error` is always a short, fixed English sentence, never the person's material or a model's words.
+  The phone shows it next to **Try again**. A **succeeded** extract job may carry a note there (for
+  example "This month's page limit is used up, so the scanned pages weren't read.").
+- **Synced columns:** `id`, `user_id`, `job`, `stage`, `plan_id`, `source_id`, `status`, `error`,
+  `accepted`, `created_at`, `updated_at`. `input`, `output`, `attempts`, `locked_at`, `model`,
+  `usage` and `cap_units` stay on the server.
+- **RLS:** read own, update own. **Grants:** select, and `update (accepted)` only. So every column
+  above except `accepted` is written by the server alone.
+- **Indexes** (Phase 2): `plan_id`; `(source_id, created_at)` for "the jobs of a source"; running
+  jobs by `locked_at` for the stale-job check.
+
+### The `sources` Storage bucket
+
+Phase 2 keeps uploaded material in Supabase Storage, in a **private** bucket named `sources`, made
+by the study-engine migration.
+
+- **Limits:** 25 MiB per file (26,214,400 bytes); only `application/pdf`, Word
+  (`application/vnd.openxmlformats-officedocument.wordprocessingml.document`), `image/jpeg`,
+  `image/png` and `image/webp`. The app turns photos into JPEG first.
+- **Paths:** `<user_id>/<source_id>/<n>.<ext>`, the same as `source_files.storage_path`.
+- **Policies on `storage.objects`** (`dualrep sources: …`): a signed-in user may read, upload,
+  overwrite and delete only inside their own top-level folder (`<auth.uid()>/…`). Group members
+  can't read each other's files in Phase 2.
+- The worker reads files with the service role and hands Tracy **signed links that last 600 s**. It
+  also checks a file's path is inside its owner's and source's folder before signing it.
+- **Sweeping:** once a day, files that no `source_files` row points at any more (the source or the
+  account was deleted, or an upload was abandoned) and that are older than 3 days are removed through
+  the Storage API.
+
+### The study pipeline
+
+How a piece of material becomes cards ([DECISIONS.md](DECISIONS.md) D31–D38). Every step is a
+`tracy_events` row, worked by the `tracy-worker` Edge Function **one step per call**, each with at
+most one call to Tracy (up to 110 s).
+
+| Job / `stage` | Queued by | Input (server only) | When it succeeds |
+|---|---|---|---|
+| `study_builder` / `extract` | `submit_source` for a PDF, Word file or link (counted: 1 source) | `{source_id, plan_id, kind, cursor_page}` | Writes `source_chunks` (page and text). Pages without a text layer go to `transcribe` jobs of up to 4 pages. A long PDF re-queues itself for its next window of pages. The last of these jobs to finish queues the outline (and `embed` when embeddings are on) |
+| `handwriting` / `transcribe` | `submit_source` for notes (one job per photo, counted: 1 page each), or `extract` for scanned PDF pages (counted per page) | `{source_id, plan_id, source_file_id}` or `{source_id, plan_id, pdf_pages: […]}` | A photo: writes `source_files.transcript`, `confirmed` stays false, and the source waits for the person (`confirm_transcripts`). Scanned PDF pages: chunked straight away |
+| `study_builder` / `outline` | The last `extract`/`transcribe` job, or `confirm_transcripts` | `{source_id, plan_id}` | Writes new `topics` as `draft` (numbered after the plan's existing topics) and keeps the topic → chunk mapping in `output`. Waits for `approve_outline`, unless it only added to existing topics: then the worker approves it itself |
+| `study_builder` / `cards` | `approve_outline`: one per kept topic (at most 40 chunks each), plus one per existing topic the outline added material to | `{plan_id, source_id, topic_id, chunk_ids}` | Inserts `cards` and `card_links`; the topic becomes `ready`; when no cards job of the source is left open, `sources.status = 'ready'` |
+| `study_builder` / `embed` | After `extract` or `confirm_transcripts`, only with `GEMINI_API_KEY` | `{source_id, after_chunk_id}` | Fills `embedding` and `embed_model` in batches of 50; never blocks the outline |
+
+**How the phone follows it** (all synced rows, no polling;
+[`sourceProgress.ts`](../src/features/study/sourceProgress.ts)): `sources.status`, the light columns of
+`tracy_events` (`stage`, `status`, `error`, `source_id`), `source_files.transcript` and `confirmed`,
+`topics.status`, then the `cards` and `card_links` themselves. The plan screen turns them into one
+line per source: "Waiting to start", "Reading your material", "Check the transcription", "Making the
+outline", "Review the outline", "Making cards (2 of 5)", "Ready", or "Couldn't finish" with the
+`error` and **Try again**. Embedding jobs never show.
+
+**The queue functions** (security definer, `search_path = ''`, executable **only by
+`service_role`**):
+
+| Function | What it does |
+|---|---|
+| `claim_tracy_events(p_limit integer default 1)` | First reaps jobs still `running` 5 minutes after they were locked (back to `queued`, or `failed` after the third attempt with "This step took too long. Try again."). Then claims the oldest queued jobs (at most 10) with `FOR UPDATE SKIP LOCKED`: `running`, `locked_at = now()`, `attempts + 1`. The returned `attempts` is the fencing token |
+| `release_tracy_event(p_id uuid, p_attempts integer)` | Puts a claimed job back in the queue **without** counting the attempt (Tracy was asleep). Only if `attempts` still matches. Returns whether it did |
+| `enqueue_tracy_event(p_user_id, p_job, p_stage, p_input, p_plan_id = null, p_source_id = null, p_free_limit = null, p_paid_limit = null, p_units = 1)` | Queues a job and enforces the monthly cap for its stage (called with named arguments). Limits are passed only for counted stages; the tier comes from `has_paid_access()`. Usage = the sum of `cap_units` of the user's jobs of that stage since the start of the month (UTC); a job cancelled before it ever ran gives its units back. Over the cap: P0001 with hint `dualrep_cap_reached` and detail `{stage, used, limit, resets_at}`, which the `study` function turns into 429 `cap_reached`. An advisory lock per user and stage makes the check atomic. A negative `p_units` is 22023 |
+| `orphaned_source_objects(p_limit integer default 100)` | Files in the `sources` bucket older than 3 days that no `source_files.storage_path` names (at most 1,000), for the daily sweep |
+
+**The schedule** (pg_cron, times in UTC). `private.kick_tracy_worker(p_reason)` lives in a schema no
+API role can use. It reads the worker's address (`dualrep_project_url`) and shared secret
+(`dualrep_worker_secret`) from **Vault** on every run, and POSTs `{"reason": …}` to
+`/functions/v1/tracy-worker` with the header `x-dualrep-worker-secret`, through pg_net. It posts
+**only when there is work**; until the Deploy backend workflow has written the two Vault values it
+raises a WARNING and does nothing.
+
+| Cron job | When | What |
+|---|---|---|
+| `dualrep-tracy-worker` | every minute | `kick_tracy_worker('jobs')`: only if a job is queued or a running one is stale |
+| `dualrep-storage-sweep` | daily 04:23 | `kick_tracy_worker('sweep')`: only if an orphaned file exists |
+| `dualrep-cron-history-cleanup` | daily 03:17 | Deletes `cron.job_run_details` rows older than 7 days (pg_cron never does; this covers every cron job in the project) |
+
+The worker itself answers 202 at once and works in the background, then calls itself again while
+work is queued (at most 20 times in a row). The cron job is the safety net.
+
+### What a study block writes
+
+Phase 2's study panel ([`studyRepo.ts`](../src/features/study/studyRepo.ts), `answerCard`) writes
+only to the phone's database, one local transaction per answer, so it works offline:
+
+1. If a `reviews` row with this answer's id exists, stop (a repeated tap or a retry writes nothing).
+2. Read the card's `card_states` row, if any.
+3. Work out the new state with ts-fsrs. The review time is `max(now, last_review)`.
+4. INSERT `reviews`: `rating` (1 Again, 2 Hard, 3 Good, 4 Easy), `answer_mode`, `reviewed_at`,
+   `interval_block_id` (the running focus block), `duration_ms` (from showing the card, at most 10
+   minutes), `prev_state`, `elapsed_days` (whole UTC days, worked out on the phone), and the state
+   **after** the review.
+5. UPDATE the `card_states` row, or INSERT it under its derived id (UUIDv5 of `user_id:card_id`).
+
+On upload, the `card_states` PATCH carries all 9 FSRS columns
+([columns uploaded together](#how-a-phone-write-reaches-postgres)). Pausing a card is a separate
+UPDATE of `suspended`. Plans, hand-made topics, cards and links are ordinary owner writes, and
+deleting a plan on the phone also deletes its topics, cards and links, and the user's sources that
+no other plan uses.
 
 ---
 
@@ -642,12 +817,19 @@ RPCs (`security definer`; only `authenticated` may call them, not `anon` or `ser
 | `regenerate_invite_code(p_group_id)` | Owner only: give the group a new code; returns it |
 | `remove_group_member(p_group_id, p_user_id)` | Owner only: remove a member and rotate the code in one transaction; returns the new code |
 
+Job queue functions (Phase 2; `security definer`; only `service_role` may call them, so only the
+Edge Functions can): `claim_tracy_events`, `release_tracy_event`, `enqueue_tracy_event` and
+`orphaned_source_objects` ([the study pipeline](#the-study-pipeline)). `private.kick_tracy_worker`
+is called only by pg_cron; no API role may execute it or use the `private` schema.
+
 Triggers: `set_updated_at` (every table); `handle_new_user` (new auth user → profile + free
 entitlement); `add_group_owner_membership`; `enforce_group_member_limit` (8);
 `unshare_after_leaving_group` (a membership deleted → that person's content in the group is
 unshared); `copy_source_ownership` and `propagate_source_ownership` (source_files, source_chunks);
 `copy_card_plan_id`, `propagate_topic_plan_id`, `copy_card_link_plan_id`, `propagate_card_plan_id`;
-`skip_stale_card_state`; and the eight normalizing functions in
+`skip_stale_card_state`; since Phase 2 `copy_card_source_id` (`cards.source_id` from its chunk) and
+`keep_server_source_status` (`sources.status` belongs to the server); and the eight normalizing
+functions in
 [normalized writes](#writes-the-server-normalizes-instead-of-refusing) (`clear_unreadable_plan`,
 `clear_unreadable_exercise`, `clear_unreadable_source_chunk`, `clear_foreign_workout_refs`,
 `clear_foreign_profile_defaults`, `clear_foreign_workout_session`, `clear_foreign_interval_block`,
@@ -680,6 +862,7 @@ differences and why.
 | `tracy_events (id, user_id, job, status, input, output, accepted, created_at)` | Adds `error`, `attempts`, `locked_at`, `model`, `usage`; fixed `job` and `status` values; only light columns sync | DualRep owns the job queue ([TRACY_INTEGRATION.md](TRACY_INTEGRATION.md)). The large JSON stays on the server; the phone may only set `accepted`. |
 | `source_chunks.embedding` (pgvector, size not stated) | `vector(1536)` plus `embed_model`; HNSW cosine index; never synced | pgvector indexes stop at 2,000 dimensions and Gemini's default is 3072, so the size is pinned. `embed_model` says which rows to re-embed after a model change. |
 | Smaller additions | `profiles.fsrs_params`; `presets.kind`; `sources.status`; `study_plans.title`; `cards.page`; `card_links.created_by`; `workout_sessions.duration_minutes`; `created_at`/`updated_at` everywhere | Per-user FSRS settings; a stable name for each system preset; upload processing state; a plan name; "every card stores the page it came from"; who may edit a link; walk minutes. |
+| Study builder, outline review (Phase 2) | `topics.status` (`draft`, `confirmed`, `ready`); `cards.source_id` derived by a trigger; `tracy_events.stage`, `plan_id`, `source_id` (synced) and `cap_units` (server only); `sources.status` owned by the server; a `storage_path` CHECK; the private `sources` Storage bucket; the queue functions and a pg_cron schedule | The phone shows the outline review, each source's progress and "p. 12, Lecture 3" from synced rows only (it never receives chunks); the monthly caps count sources and pages, not rows; a phone can't point the worker at someone else's file ([DECISIONS.md](DECISIONS.md) D36–D40). |
 | Postgres conventions (not stated) | `text` + CHECK instead of enums; `on delete cascade` from `auth.users`, `on delete set null` (never restrict) for links that can point at other people's rows; explicit grants; optional references and sharing normalized instead of refused | Easy to extend; Play's account-deletion rule (a delete never depends on anyone else's data); Supabase's 2026 grant change; offline writes are never dropped because of what others did. |
 
 ---
@@ -700,8 +883,11 @@ differences and why.
 4. Add pgTAP tests in `supabase/tests/`.
 5. Run `npm run db:test` (this regenerates `supabase/schema.snapshot.json`), then `npm run check`.
    The registry-drift test fails if `tables.ts`, the snapshot and the publication disagree.
-6. Apply it to the hosted project with `npx supabase db push` (or paste it into the SQL Editor, as
-   for the first two), and redeploy the sync config if it changed (see [SETUP.md](SETUP.md)).
+6. Merge it into `main` and apply it with the **Deploy backend** workflow (a dry run first;
+   [SETUP §17 step 5](SETUP.md#step-5-deploy-the-backend-a-dry-run-then-for-real)). Then redeploy
+   the sync config if it changed ([step 6](SETUP.md#step-6-update-the-powersync-sync-config)), and
+   only then ship the app build that uses it. New migrations need timestamps after
+   `20261009120000`.
 
 **Seed data changes too.** The starter library is a migration. To change it, edit
 [`starterLibraryData.ts`](../src/features/training/starterLibraryData.ts), point `MIGRATION` in

@@ -17,6 +17,7 @@
 import { TABLE } from '@/db/constants';
 import { db } from '@/db/database';
 import type { LoggedSet, SetType } from '@/features/training/spotter';
+import { isUuid } from '@/features/study/uuidv5';
 import type { Circuit, WorkoutKind } from '@/features/training/types';
 import { isoTimestamp } from '@/lib/time';
 
@@ -55,6 +56,11 @@ export type StartFocusBlockInput = {
   createSession: boolean;
   /** What the user is studying ('' when not given). */
   focusSubject: string;
+  /**
+   * The study plan the session quizzes from (study_plans.id), written to study_sessions.plan_id when
+   * the session is created. Absent (or null) for timer-only focus.
+   */
+  planId?: string | null;
   blockId: string;
   /** 1–120 (the app offers 10–50). */
   plannedMinutes: number;
@@ -62,15 +68,26 @@ export type StartFocusBlockInput = {
   startedAt: number;
 };
 
-/** Starts a focus block: the study session (first block only) and the interval_blocks row. */
+/**
+ * Starts a focus block: the study session (first block only, with its study plan if any) and the
+ * interval_blocks row. A plan id that is not a UUID is left out rather than refused: the block must
+ * be recorded whatever happened to the plan, and the server clears a plan the user cannot read.
+ */
 export async function startFocusBlock(input: StartFocusBlockInput): Promise<void> {
   const plannedMinutes = wholeInRange('planned_minutes', input.plannedMinutes, 1, 120);
   const at = isoTimestamp(input.startedAt);
   const subject = input.focusSubject.trim().slice(0, MAX_FOCUS_SUBJECT);
+  const planId = isUuid(input.planId) ? input.planId : null;
   await db.writeTransaction(async (tx) => {
     if (input.createSession) {
       const session = await tx.getOptional(`SELECT id FROM ${T.study_sessions} WHERE id = ?`, [input.sessionId]);
-      if (!session) {
+      if (!session && planId) {
+        await tx.execute(
+          `INSERT INTO ${T.study_sessions} (id, user_id, plan_id, focus_subject, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          [input.sessionId, input.userId, planId, subject, at, at],
+        );
+      } else if (!session) {
+        // Timer-only: plan_id stays null (the column is left out, as before Phase 2).
         await tx.execute(
           `INSERT INTO ${T.study_sessions} (id, user_id, focus_subject, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
           [input.sessionId, input.userId, subject, at, at],

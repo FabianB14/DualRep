@@ -11,8 +11,8 @@
  * - `id` is never listed; it is implicit (TEXT on the device, uuid in Postgres).
  * - Column kinds mirror the Postgres types (see SPEC "Postgres → device types"); `json` is jsonb,
  *   `timestamp` is timestamptz, `real` is double precision, `integer` covers smallint and integer.
- * - `writes` must agree with the grants and RLS policies in the first migration. A write the server
- *   would reject anyway is refused before upload (see `planOperation`), so it lands in the local
+ * - `writes` must agree with the grants, RLS policies and triggers in supabase/migrations. A write the
+ *   server would reject anyway is refused before upload (see `planOperation`), so it lands in the local
  *   `upload_failures` log instead of being sent.
  *
  * This file must stay free of imports and of non-erasable TypeScript syntax (no enums, namespaces or
@@ -36,14 +36,27 @@ export type WritePolicy = {
   patch: boolean | readonly string[];
   delete: boolean;
   /**
-   * Columns the server always fills in itself and the client has no privilege to write (e.g.
+   * Columns the server always fills in itself: either the client has no privilege to write them (e.g.
    * groups.invite_code, made by the column default and changed only by regenerate_invite_code() and
-   * remove_group_member()).
+   * remove_group_member()), or a server trigger always replaces what the client sends (cards.source_id,
+   * derived from the card's source chunk).
    * They sync down like any other column but are never uploaded: `planOperation` strips them from
    * every PUT (a locally created row may hold null or a placeholder there), and refuses a PATCH that
    * changes one (DUALREP_WRITE_NOT_ALLOWED), because no device code should ever do that.
    */
   serverGenerated?: readonly string[];
+  /**
+   * Columns that only make sense together (card_states: one FSRS state). A PATCH that changes any of
+   * them uploads all of them, with their values after the local update, instead of only the changed
+   * ones. Why: the server keeps or skips a card_states write as a whole (skip_stale_card_state compares
+   * last_review), and a PATCH of only the changed columns could land on top of another device's newer
+   * state and leave a mix of both (stability from one review, due from the other).
+   * The values come from the operation itself: `schema.ts` turns on PowerSync's `trackPrevious` for
+   * these columns, so each queued PATCH carries the row's values before the update (`previousValues`),
+   * and the values after it are those plus the changed ones. A PATCH queued by an app version that did
+   * not track them yet has no `previousValues` and uploads only the changed columns, as before.
+   */
+  patchTogether?: readonly string[];
 };
 
 export type TableDefinition = {
@@ -264,6 +277,9 @@ export const TABLES = {
       kind: 'text',
       title: 'text',
       url: 'text',
+      // pending -> processing -> ready | failed, moved on by the study pipeline (the `study` Edge
+      // Function and the tracy-worker). The server ignores what the device sends here (a new source is
+      // stored as pending, an update keeps the stored status), so the device never needs to write it.
       status: 'text',
       ...TIMESTAMPS,
     },
@@ -316,6 +332,9 @@ export const TABLES = {
       plan_id: 'uuid',
       title: 'text',
       position: 'integer',
+      // draft (proposed by the study builder, waiting for the outline review) -> confirmed (kept; its
+      // cards are being made) -> ready. A topic made by hand is ready (the server default).
+      status: 'text',
       ...TIMESTAMPS,
     },
     writes: OWNER_WRITES,
@@ -328,14 +347,17 @@ export const TABLES = {
       // Copied from the topic by a server trigger (denormalized so cards sync in one bucket per plan).
       plan_id: 'uuid',
       source_chunk_id: 'uuid',
+      // The card's source, derived by the server from source_chunk_id (source_chunks never sync), for
+      // the "newest source" filter and the "p. 12 of Lecture 3" citation. Null for a hand-made card.
+      source_id: 'uuid',
       page: 'integer',
       question: 'text',
       answer: 'text',
       card_type: 'text',
       ...TIMESTAMPS,
     },
-    writes: OWNER_WRITES,
-    indexes: { by_topic: ['topic_id'], by_plan: ['plan_id'] },
+    writes: { ...OWNER_WRITES, serverGenerated: ['source_id'] },
+    indexes: { by_topic: ['topic_id'], by_plan: ['plan_id'], by_source: ['plan_id', 'source_id'] },
   },
 
   card_links: {
@@ -371,7 +393,22 @@ export const TABLES = {
       suspended: 'boolean',
       ...TIMESTAMPS,
     },
-    writes: OWNER_WRITES,
+    // A review changes the FSRS state; it uploads as one whole state (see patchTogether). `suspended`
+    // is the user's own switch and uploads on its own.
+    writes: {
+      ...OWNER_WRITES,
+      patchTogether: [
+        'state',
+        'due',
+        'stability',
+        'difficulty',
+        'scheduled_days',
+        'learning_steps',
+        'reps',
+        'lapses',
+        'last_review',
+      ],
+    },
     // The due list is `WHERE user_id = ? AND due <= ? ORDER BY due`.
     indexes: { user_due: ['user_id', 'due'], by_card: ['card_id'] },
   },
@@ -403,18 +440,25 @@ export const TABLES = {
 
   tracy_events: {
     // Light columns only: the sync config selects exactly these, so the large input/output/usage
-    // JSON and the worker bookkeeping (attempts, locked_at, model) stay on the server.
+    // JSON and the worker bookkeeping (attempts, locked_at, model, cap_units) stay on the server.
     columns: {
       user_id: 'uuid',
       job: 'text',
+      // The pipeline step: extract, transcribe, outline, cards or embed (null outside the study pipeline).
+      stage: 'text',
+      // What the job works on, for per-source progress and errors; null once the plan or source is gone.
+      plan_id: 'uuid',
+      source_id: 'uuid',
       status: 'text',
+      // Short and content-free; shown next to "Try again".
       error: 'text',
       accepted: 'boolean',
       ...TIMESTAMPS,
     },
-    // Rows are created by Edge Functions; the user may only accept or reject a result.
+    // Rows are created and worked by Edge Functions (every column above is server-written); the user
+    // may only accept or reject a result.
     writes: { put: false, patch: ['accepted'], delete: false },
-    indexes: { by_user_created: ['user_id', 'created_at'] },
+    indexes: { by_user_created: ['user_id', 'created_at'], by_source: ['source_id', 'created_at'] },
   },
 } as const satisfies Record<string, TableDefinition>;
 
@@ -428,7 +472,7 @@ export const TABLE_NAMES = Object.keys(TABLES) as TableName[];
  * test requires every other Postgres column of a synced table to be in the registry.
  */
 export const SERVER_ONLY_COLUMNS: Readonly<Partial<Record<TableName, readonly string[]>>> = {
-  tracy_events: ['input', 'output', 'attempts', 'locked_at', 'model', 'usage'],
+  tracy_events: ['input', 'output', 'attempts', 'locked_at', 'model', 'usage', 'cap_units'],
 };
 
 /** Tables that exist in Postgres but must never be synced (pgvector embeddings stay on the server). */

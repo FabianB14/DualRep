@@ -2,7 +2,7 @@ import { describe, expect, it, jest } from '@jest/globals';
 import { ColumnType } from '@powersync/react-native';
 
 import { AppSchema } from '../schema';
-import { TABLE_NAMES, TABLES } from '../tables';
+import { TABLE_NAMES, TABLES, type WritePolicy } from '../tables';
 
 // The runtime SDK loads native modules (and ESM jest cannot transform); @powersync/common
 // exports the same classes and enums. babel-jest hoists this above the imports.
@@ -42,6 +42,19 @@ describe('AppSchema', () => {
     expect(columns).not.toHaveProperty('id');
   });
 
+  it('tracks the values before each update only where upload.ts needs them (card_states FSRS state)', () => {
+    for (const name of TABLE_NAMES) {
+      const writes: WritePolicy = TABLES[name].writes;
+      const together = writes.patchTogether;
+      const tracked = byName.get(name)!.trackPrevious;
+      if (together === undefined) expect(tracked).toBe(false);
+      else expect(tracked).toEqual({ columns: [...together] });
+    }
+    expect(byName.get('card_states')!.trackPrevious).toEqual({
+      columns: expect.arrayContaining(['stability', 'difficulty', 'last_review', 'due', 'state', 'reps']),
+    });
+  });
+
   it('has the indexes the hot queries need', () => {
     const indexes = (name: string) =>
       Object.fromEntries(byName.get(name)!.indexes.map((i) => [i.name, i.columns.map((c) => c.name)]));
@@ -49,5 +62,7 @@ describe('AppSchema', () => {
     expect(Object.values(indexes('reviews'))).toContainEqual(['card_id', 'reviewed_at']);
     expect(Object.values(indexes('exercise_sets'))).toContainEqual(['workout_session_id', 'set_index']);
     expect(Object.values(indexes('study_sessions'))).toContainEqual(['user_id', 'created_at']);
+    expect(Object.values(indexes('cards'))).toContainEqual(['plan_id', 'source_id']);
+    expect(Object.values(indexes('tracy_events'))).toContainEqual(['source_id', 'created_at']);
   });
 });

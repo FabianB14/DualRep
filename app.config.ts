@@ -1,4 +1,5 @@
 import type { ConfigContext, ExpoConfig } from 'expo/config';
+import { withAndroidManifest, type ConfigPlugin } from 'expo/config-plugins';
 
 /**
  * DualRep app config (Expo SDK 57). One codebase, three installable variants chosen by APP_VARIANT
@@ -53,11 +54,34 @@ const LAUNCHER_BADGE_PERMISSIONS = [
   'me.everything.badger.permission.BADGE_COUNT_WRITE',
 ];
 
+// Hardware features Google Play would otherwise treat as required because the app declares CAMERA
+// (from expo-image-picker's library manifest): the <uses-feature> page's "permissions that imply
+// features" table maps CAMERA to both. Taking a photo is optional in DualRep (the gallery and files
+// work everywhere), so tablets and Chromebooks without a rear or autofocus camera can still install it.
+const OPTIONAL_CAMERA_FEATURES = ['android.hardware.camera', 'android.hardware.camera.autofocus'] as const;
+
+/**
+ * Declares the camera features as `android:required="false"` (docs/ANDROID.md 2.7). A tiny inline
+ * plugin rather than a package: it only touches <uses-feature>, and an entry that is already there
+ * (from another plugin) is switched to not required instead of duplicated.
+ */
+const withOptionalCamera: ConfigPlugin = (config) =>
+  withAndroidManifest(config, (mod) => {
+    const manifest = mod.modResults.manifest;
+    const features = (manifest['uses-feature'] ??= []);
+    for (const feature of OPTIONAL_CAMERA_FEATURES) {
+      const existing = features.find((entry) => entry.$['android:name'] === feature);
+      if (existing) existing.$['android:required'] = 'false';
+      else features.push({ $: { 'android:name': feature, 'android:required': 'false' } });
+    }
+    return mod;
+  });
+
 const { name, scheme, idSuffix } = IDENTITY[variant];
 const projectId = process.env.EAS_PROJECT_ID;
 const owner = process.env.EXPO_OWNER;
 
-export default ({ config }: ConfigContext): ExpoConfig => ({
+const buildConfig = ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name,
   slug: 'dualrep',
@@ -87,9 +111,21 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // `permissions` can only add; `blockedPermissions` writes tools:node="remove" so permissions
     // merged in by the template or libraries never reach the manifest.
     blockedPermissions: [
+      // Also asked for by expo-image-picker and expo-file-system (up to API 32). Photos come from the
+      // system Photo Picker and documents from the system file picker, neither of which needs them.
+      // One effect: below Android 10 (API 29) expo-image-picker's camera also asks for
+      // WRITE_EXTERNAL_STORAGE, so the app hides "Take a photo" there (src/features/study/upload.ts).
       'android.permission.READ_EXTERNAL_STORAGE',
       'android.permission.WRITE_EXTERNAL_STORAGE',
+      // Blocked here, not with expo-image-picker's `microphonePermission: false` (which would block it
+      // from the plugin, out of sight): audio study mode (Phase 2B) unblocks it by deleting this line.
       'android.permission.RECORD_AUDIO',
+      // Phase 2: never broad photo or video access (Google Play's Photo and Video Permissions policy),
+      // whatever a future library declares. The Photo Picker and the camera app need none of these.
+      'android.permission.READ_MEDIA_IMAGES',
+      'android.permission.READ_MEDIA_VIDEO',
+      'android.permission.READ_MEDIA_VISUAL_USER_SELECTED',
+      'android.permission.ACCESS_MEDIA_LOCATION',
       // expo-secure-store declares these for biometric-protected items; DualRep never uses them.
       'android.permission.USE_BIOMETRIC',
       'android.permission.USE_FINGERPRINT',
@@ -142,8 +178,23 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         color: '#3A55A4',
       },
     ],
+    [
+      // Phase 2: photos of handwritten notes (docs/ANDROID.md 2.7). Its library manifest adds CAMERA,
+      // which "Take a photo" asks for in context, the only permission Phase 2 adds; picking from the
+      // gallery uses the system Photo Picker and needs none. This plugin would run even unlisted (an
+      // Expo "legacy" plugin); listing it keeps its options in one visible place. Its default adds
+      // RECORD_AUDIO, which blockedPermissions above removes. The strings are iOS-only.
+      'expo-image-picker',
+      {
+        photosPermission: 'DualRep opens your photos when you add pictures of your notes.',
+        cameraPermission: 'DualRep uses the camera when you photograph your notes.',
+      },
+    ],
+    // expo-document-picker (PDF and Word files) needs no entry: it asks for no permission, and its
+    // plugin (iOS iCloud only) runs automatically. expo-image-manipulator and expo-file-system need
+    // none either.
     // No expo-audio plugin yet: its defaults add a media foreground service and microphone access
-    // (docs/ANDROID.md 2.2). It comes with audio study mode in Phase 2.
+    // (docs/ANDROID.md 2.2). It comes with audio study mode (Phase 2B).
   ],
   experiments: {
     typedRoutes: true,
@@ -154,3 +205,5 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ...(projectId ? { eas: { projectId } } : {}),
   },
 });
+
+export default (context: ConfigContext): ExpoConfig => withOptionalCamera(buildConfig(context));

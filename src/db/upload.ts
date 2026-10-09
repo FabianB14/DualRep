@@ -29,8 +29,11 @@ export type PlannedOperation =
   /** Nothing left to send (e.g. a PATCH that only touched server-maintained columns). */
   | { method: 'skip'; table: TableName; id: string; reason: string };
 
-/** The fields of a CrudEntry that planning needs (lets tests build plain objects). */
-export type QueuedOperation = Pick<CrudEntry, 'id' | 'op' | 'opData' | 'table'>;
+/**
+ * The fields of a CrudEntry that planning needs (lets tests build plain objects). `previousValues` is
+ * only present for the columns a table tracks (see `patchTogether` in tables.ts).
+ */
+export type QueuedOperation = Pick<CrudEntry, 'id' | 'op' | 'opData' | 'table' | 'previousValues'>;
 
 /**
  * Codes for writes refused on the device before upload. They are deterministic — retrying can never
@@ -118,6 +121,28 @@ export function toPostgresRow(table: string, data: Readonly<Record<string, unkno
   return row;
 }
 
+/**
+ * The columns a PATCH uploads, in their local (SQLite) form: the changed columns, plus, when the change
+ * touches a `patchTogether` group, every column of that group with its value after the update (the
+ * tracked value from before the update unless this update changed it). Without tracked values (a PATCH
+ * queued before the table tracked them) only the changed columns are sent, as before.
+ */
+function patchData(
+  op: QueuedOperation,
+  writes: TableDefinition['writes'],
+): Readonly<Record<string, unknown>> | undefined {
+  const together: readonly string[] = writes.patchTogether ?? [];
+  const changed = op.opData;
+  const before = op.previousValues;
+  if (together.length === 0 || !changed || !before) return changed;
+  if (!together.some((name) => name in changed)) return changed;
+  const data: Record<string, unknown> = { ...changed };
+  for (const name of together) {
+    if (!(name in data) && name in before) data[name] = before[name];
+  }
+  return data;
+}
+
 /** Turns one queued local write into the supabase-js call that applies it, enforcing the table's WritePolicy. */
 export function planOperation(op: QueuedOperation): PlannedOperation {
   const def = definitionOf(op.table);
@@ -147,7 +172,7 @@ export function planOperation(op: QueuedOperation): PlannedOperation {
       if (writes.patch === false) {
         throw new UploadPlanError('DUALREP_WRITE_NOT_ALLOWED', `The device may not update rows in ${table}`);
       }
-      const values = toPostgresRow(table, op.opData);
+      const values = toPostgresRow(table, patchData(op, writes));
       for (const name of SERVER_MAINTAINED_ON_PATCH) delete values[name];
       const generated = serverGenerated.filter((name) => name in values).map((name) => `${table}.${name}`);
       if (generated.length > 0) {

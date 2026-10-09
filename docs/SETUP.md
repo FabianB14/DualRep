@@ -1,4 +1,4 @@
-# Setup: from zero to the Phase 0 and Phase 1 gates
+# Setup: from zero to the Phase 0, 1 and 2 gates
 
 This guide takes you from a fresh Windows PC and an Android phone to the Phase 0 gate passing:
 
@@ -15,9 +15,16 @@ Plan on an afternoon for sections 1–8 and an hour or two for the first build.
 lift → study cycle in airplane mode. Those steps are in
 [section 16](#16-phase-1-the-core-loop-on-your-phone).
 
+**Phase 2 (the study engine)** adds settings on Render and GitHub, a **Deploy backend** workflow
+that sets up the database and the server functions for you, a new app build, and a new gate: a
+course PDF and handwritten notes become one plan, then a week of reviews. Those steps are in
+[section 17](#17-phase-2-the-study-engine-on-your-phone).
+
 ## What it costs
 
-Everything in Phase 0 and Phase 1 runs on free tiers.
+Everything in Phase 0 and Phase 1 runs on free tiers. Phase 2 adds pay-per-use AI calls (about
+$1–3 for the gate on the default model): see
+[What Phase 2 costs each month](#what-phase-2-costs-each-month).
 
 | Service | What you use it for | Phase 0 cost | Notes |
 |---|---|---|---|
@@ -29,8 +36,9 @@ Everything in Phase 0 and Phase 1 runs on free tiers.
 | Google Play Console | Publishing (later) | One-time fee (**verify** the amount) | Not needed for the Phase 0 gate |
 
 Keep these in a password manager (Bitwarden's free plan is fine): the Supabase database password,
-the PowerSync role password, and later the Play service-account key. **None of them ever goes into
-git or into the app.**
+the PowerSync role password, from Phase 2 the Tracy secret
+([§17](#before-you-start-the-secrets-in-this-phase)), and later the Play service-account key. **None
+of them ever goes into git, into the app, or into a chat.**
 
 ---
 
@@ -239,7 +247,7 @@ git clone https://github.com/FabianB14/DualRep.git ~/dualrep   # add -b claude/b
 cd ~/dualrep
 npm run db:test
 ```
-It ends with `db-test: all 14 test files passed (542 tests)`.
+It ends with `db-test: all 15 test files passed (626 tests)`.
 
 **Line endings on Windows.** Git for Windows' default setting checks files out with Windows line
 endings, which breaks shell scripts in Linux. The repo's `.gitattributes` keeps `.sh`, `.sql`, `.mjs`,
@@ -327,8 +335,10 @@ It lists `20261008000000_initial_schema.sql` (and, from Phase 1 on,
   select name from public.presets where owner_id is null order by id;             -- the 6 system presets
   ```
 
-`npx supabase migration list --linked` shows which migrations the hosted project has. Later
-migrations go out the same way, with `npx supabase db push`.
+`npx supabase migration list --linked` shows which migrations the hosted project has. **From Phase 2
+on, migrations go out through the Deploy backend workflow on GitHub** (no PC tools, no database
+password; [§17 step 5](#step-5-deploy-the-backend-a-dry-run-then-for-real)). `npx supabase db push`
+still works if you prefer the command line.
 
 ### Copy the API settings for the app
 Project Settings → **API Keys** (and **Data API** for the URL):
@@ -1163,7 +1173,7 @@ How it works and how to review rows:
 [`scripts/exercise-import/README.md`](../scripts/exercise-import/README.md).
 
 ### Step 8: Put the Phase 1 code on `main`
-When you are happy with the gate, merge it the same way as Phase 0
+**Done on 2026-10-08** (pull request #3). For the record, how it went: when you are happy with the gate, merge it the same way as Phase 0
 ([section 4](#first-put-the-phase-0-code-on-main)): **Pull requests → New pull request**, base
 `main`, compare `claude/bold-fermi-oglgch`, **Create pull request**, wait for the checks, then
 **Merge pull request**.
@@ -1182,3 +1192,588 @@ GitHub's download limit, not the code: open the run and click **Re-run failed jo
 | The next focus block didn't start after the workout | It starts when the 30-second countdown ends, even with the screen off or another app open; DualRep shows it the moment you open it, and its alert rings at its end. If you only come back more than 5 minutes after that block would have ended, the cycle finishes instead and shows its summary. |
 | Timer check: "No alert could be scheduled" | Notifications aren't allowed yet: do step 6.1 first. |
 | `linked` is false in step 5 | The sets uploaded before the step 1 migration. Nothing to fix; apply the migration before the next run. |
+
+---
+
+## 17. Phase 2: the study engine on your phone
+
+Phase 2 turns your own course material into quiz cards and puts them inside the focus block. This
+section sets up the server side, gets the new app onto your phone, and runs the gate:
+
+> **A real course PDF and a page of handwritten notes become one cumulative plan, and a week of
+> reviews runs correctly.**
+
+You need Phases 0 and 1 working (the hosted Supabase project, PowerSync, the phone signed in), and
+access to Tracy's service on Render. Plan on about **an hour for steps 1–7**, **an hour or two for
+day 1 of the gate** (most of it waiting for the server), then **about 10 minutes a day for a week**.
+
+What is new, in one paragraph: when you add material, the phone uploads it to a private folder in
+Supabase Storage and asks a new Supabase **Edge Function** (`study`) to start. A second Edge Function
+(`tracy-worker`) then works through the steps one at a time in the background, asking **Tracy** to
+read pages, transcribe handwriting, propose an outline and write cards. The phone follows along
+through sync. Studying the cards happens entirely on the phone and works offline. How it all fits
+together: [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline) and
+[DECISIONS.md](DECISIONS.md) D31–D49.
+
+**Do the steps in this order.** Tracy has to be ready before the backend calls it, the database
+before PowerSync, and PowerSync before the new app.
+
+### Before you start: the secrets in this phase
+
+A **secret** is a password one computer uses to talk to another. Each one below lives in exactly the
+places listed, and nowhere else.
+
+| Secret | What it is | Where it comes from | Where it goes |
+|---|---|---|---|
+| **Tracy secret** | The password DualRep's server uses when it calls Tracy. Tracy refuses any call without it. | You make it ([step 2](#step-2-make-the-tracy-secret)) | Your password manager; Render, as `SERVICE_SECRET_DUALREP` ([step 3](#step-3-set-up-tracy-on-render-then-merge-its-pull-request)); GitHub, as the secret `TRACY_SERVICE_SECRET` ([step 4](#step-4-add-the-github-secrets-and-variables)). The same value in both places. The Deploy backend workflow copies it from GitHub into Supabase's Edge Function secrets. |
+| **Supabase access token** | Lets the **Deploy backend** workflow act as you on your Supabase account: it can change **every** project you own, so treat it like your Supabase password. | Supabase → Account → Access Tokens ([step 4](#step-4-add-the-github-secrets-and-variables)) | GitHub only, as the secret `SUPABASE_ACCESS_TOKEN` |
+| **Worker secret** | Lets the database's every-minute schedule wake the worker. | Made for you by the Deploy backend workflow. You never see it. | Supabase only: an Edge Function secret (`DUALREP_WORKER_SECRET`) and a copy in Supabase Vault (`dualrep_worker_secret`) |
+| **Gemini API key** (optional, not needed for the gate) | Lets the worker make search data (embeddings) for later features. | Google AI Studio, in a Google Cloud project **with billing turned on** | GitHub, as the secret `GEMINI_API_KEY`; the workflow copies it into Supabase's Edge Function secrets |
+
+The other new names in this section are **settings, not secrets**: Tracy's web address
+(`TRACY_URL`), your Supabase host name (`DUALREP_STORAGE_HOSTS`), the model name
+(`TRACY_TASK_MODEL_STRONG`) and the Node version (`NODE_VERSION`). They are fine to see on screen.
+
+Rules for every secret:
+
+- **Never paste a secret into a chat** (with a person or an AI assistant), an email, a GitHub issue,
+  a screenshot, `.env`, or any file in the repo. If you need help, share the error message, never
+  the secret.
+- **None of them ever goes into the app.** The phone only has the three public `EXPO_PUBLIC_…`
+  values from Phase 0.
+- GitHub and Render never show a secret again after you save it. That is normal: your password
+  manager holds the Tracy secret if you need it again.
+- **If one leaks:** make a new one and replace it everywhere it goes. For the Tracy secret: Render
+  and GitHub, then run **Deploy backend** again ([step 5](#step-5-deploy-the-backend-a-dry-run-then-for-real)).
+  For the Supabase token: delete it in Supabase (Account → Access Tokens) and make a new one. For the
+  worker secret: run Deploy backend with **Make a new cron -> tracy-worker secret** ticked.
+
+### Step 1: Check that Tracy is awake
+
+Tracy runs on Render. Its address looks like `https://<name>.onrender.com`: Render shows it at the
+top of the Tracy service's page (https://dashboard.render.com → the Tracy service). Write it down;
+it is `TRACY_URL` in step 4.
+
+1. In a browser, open `https://<name>.onrender.com/health`.
+2. On Render's free plan Tracy sleeps after 15 minutes without visitors. The first visit wakes it,
+   which can take **about a minute**: wait, then reload.
+
+**Success:** the page shows a short line starting `{"ok":true,"assistant":"Tracy"`. If it never
+loads, check the service's **Logs** on Render before going on.
+
+### Step 2: Make the Tracy secret
+
+You need one long random secret. Two ways; use either.
+
+- **Your password manager's generator** (simplest): create a new item named "DualRep Tracy secret"
+  and generate a password of **64 characters, letters and numbers only** (no symbols).
+- **PowerShell:** this makes 64 random characters (digits and the letters a–f) and copies them to
+  the clipboard without showing them:
+  ```powershell
+  $b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); -join ($b | ForEach-Object { $_.ToString('x2') }) | Set-Clipboard
+  ```
+  Then paste it (Ctrl+V) into a new password-manager item named "DualRep Tracy secret". (Copy
+  something else afterwards, so the secret doesn't stay on the clipboard.)
+
+**Success:** the password manager holds the "DualRep Tracy secret". The secret is in no file and no
+chat.
+
+(Phase 2 has a second secret, the worker secret, but the Deploy backend workflow makes it for you in
+step 5.)
+
+### Step 3: Set up Tracy on Render, then merge its pull request
+
+**3a. The four Render settings.** Changing them restarts Tracy (a few minutes; nothing else changes).
+
+1. Open https://dashboard.render.com and click the **Tracy** web service.
+2. In the left menu click **Environment**.
+3. Add each of these with **Add Environment Variable** (**verify** the button's name): type the
+   **Key**, then the **Value**.
+
+   | Key | Value | What it does |
+   |---|---|---|
+   | `SERVICE_SECRET_DUALREP` | The Tracy secret from step 2 (paste it from your password manager) | Lets DualRep in, and only to DualRep's own tasks |
+   | `DUALREP_STORAGE_HOSTS` | `<project-ref>.supabase.co`: your `EXPO_PUBLIC_SUPABASE_URL` **without** `https://` and without a slash at the end | The only place Tracy may download your files from. Without it, every PDF, Word file and photo is refused |
+   | `TRACY_TASK_MODEL_STRONG` | `claude-sonnet-5-5` (the default, best quality), or `claude-haiku-5-5` to save money ([costs](#what-phase-2-costs-each-month)) | The Claude model that reads your material and writes the cards |
+   | `NODE_VERSION` | `22` | Tracy's PDF reader needs Node 22 |
+
+   If the list already has `SERVICE_SECRET` (Interverse's secret), leave it alone. It must be
+   **different** from `SERVICE_SECRET_DUALREP`; if they were equal, Tracy would refuse DualRep. Leave
+   every other variable as it is.
+
+   **About the safety fallback** (`claude-sonnet-5-5` only): Tracy also asks Anthropic for its
+   fallback. If Anthropic's safety checks decline a request (course material about computer security
+   or AI can trigger this), Anthropic re-runs it on another Claude model in the same call. Nothing to
+   do. To turn it off, add a fifth variable, `TRACY_TASK_FALLBACKS`, with the value `off`.
+   `claude-haiku-5-5` has no such fallback.
+4. Click **Save** (Render may offer **Save, rebuild, and deploy**, **Save and deploy** or **Save
+   only**: any of them keeps the values; **verify** the labels).
+
+**3b. Merge the tracy-ai pull request.** Render runs Tracy from the `main` branch, so the new
+DualRep lane goes live when its pull request is merged.
+
+1. Open https://github.com/FabianB14/tracy-ai → **Pull requests**. Open the Phase 2 pull request
+   from `claude/bold-fermi-oglgch`. (No pull request yet? **New pull request**, set **base** to
+   `main` and **compare** to `claude/bold-fermi-oglgch`, then **Create pull request** twice.)
+2. Click **Merge pull request** → **Confirm merge**.
+3. On Render, the Tracy service's **Events** list shows a new deploy. Wait until it says the deploy
+   is live (a few minutes). If no deploy starts, use **Manual Deploy → Deploy latest commit**
+   (**verify** the menu name).
+
+**3c. Check it.** Open `https://<name>.onrender.com/diag` in the browser. Near the end there is a
+`dualrepLane` part. It shows only yes/no and the model name, never a secret.
+
+**Success:**
+```json
+"dualrepLane": { "configured": true, "storageHostsSet": true, "strongModel": "claude-sonnet-5-5" }
+```
+(`strongModel` shows the model you chose.) `configured: false` means `SERVICE_SECRET_DUALREP` is
+missing; `storageHostsSet: false` means `DUALREP_STORAGE_HOSTS` is missing. No `dualrepLane` at all
+means the new Tracy isn't deployed yet. `storageHostsSet` only says the setting is there, not that
+it is right: double-check it is exactly `<project-ref>.supabase.co`.
+
+### Step 4: Add the GitHub secrets and variables
+
+**4a. Make the Supabase access token.**
+
+1. Open https://supabase.com/dashboard/account/tokens (or: click your account icon in the Supabase
+   dashboard → **Account preferences** → **Access Tokens**; **verify** the menu names).
+2. Click **Generate new token**. Name it `DualRep GitHub deploy`. If Supabase asks for an expiry
+   date, a long one is easiest; when it expires, the workflow fails until you add a new one.
+3. Copy the token (it starts with `sbp_`). Supabase shows it only once. Go straight to 4b.
+
+**4b. The secrets.** Open https://github.com/FabianB14/DualRep → **Settings** → **Secrets and
+variables** → **Actions**. On the **Secrets** tab, click **New repository secret** for each:
+
+| Name | Secret |
+|---|---|
+| `SUPABASE_ACCESS_TOKEN` | The token from 4a |
+| `TRACY_SERVICE_SECRET` | The Tracy secret from step 2: **exactly** the value you gave Render as `SERVICE_SECRET_DUALREP` |
+| `GEMINI_API_KEY` | **Skip for the gate.** Optional, and only from a Google Cloud project with billing turned on: on Google's free tier, what is sent may be used to improve Google's products and read by reviewers. Without it, embeddings are simply off ([DECISIONS.md](DECISIONS.md) D35) |
+
+**4c. The variables.** Same page, **Variables** tab, **New repository variable**:
+
+| Name | Value |
+|---|---|
+| `TRACY_URL` | Tracy's address from step 1, for example `https://tracy-xxxx.onrender.com` (no `/health`, no slash at the end) |
+| `EXPO_PUBLIC_SUPABASE_URL` | **Already there** from Phase 0 ([section 10](#10-optional-the-github-actions-apk)). The workflow reads your project ref from it, so check it is `https://<project-ref>.supabase.co` |
+
+`TRACY_URL` is a variable, not a secret: it is an address, not a password. Optional variables you
+can leave out for now:
+
+- `DUALREP_CAP_SOURCES_FREE`, `DUALREP_CAP_SOURCES_PAID`, `DUALREP_CAP_PAGES_FREE`,
+  `DUALREP_CAP_PAGES_PAID`: the monthly limits per person. Unset means 5 sources and 20 pages of
+  notes a month on the free tier, 30 and 200 with a subscription or beta access. `none` means no
+  limit ([DECISIONS.md](DECISIONS.md) D36).
+- `SUPABASE_PROJECT_REF`: only if `EXPO_PUBLIC_SUPABASE_URL` is a custom domain.
+
+**Success:** the Secrets tab lists `SUPABASE_ACCESS_TOKEN` and `TRACY_SERVICE_SECRET`. The
+Variables tab lists the three `EXPO_PUBLIC_…` variables and `TRACY_URL`.
+
+### Step 5: Deploy the backend: a dry run, then for real
+
+The **Deploy backend** workflow does everything on the Supabase side, from GitHub's computers: it
+applies the new database migration, stores the Edge Functions' settings, makes the worker secret,
+deploys the two Edge Functions, and tests them. You don't paste anything into the SQL Editor this
+time.
+
+**5a. First, put the Phase 2 code on `main`.** GitHub shows the **Run workflow** button only once the
+workflow is on `main`, and a real deploy runs only from `main`. So this time the pull request is
+merged **before** the gate. (If the gate finds a problem, the fix comes as a new pull request.)
+
+1. https://github.com/FabianB14/DualRep → **Pull requests**. Open the Phase 2 pull request from
+   `claude/bold-fermi-oglgch`. (None yet? **New pull request**, **base** `main`, **compare**
+   `claude/bold-fermi-oglgch`, **Create pull request** twice.)
+2. Wait for the checks: CI (including **Edge Functions (Deno check, lint, tests)** and the database
+   tests) takes a few minutes, the Android APK build about 15.
+3. When they are green: **Merge pull request** → **Confirm merge**.
+
+If a check fails with "Failed to resolve latest Supabase CLI release: rate limit exceeded", that is
+GitHub's download limit, not the code: open the run and click **Re-run failed jobs**.
+
+**5b. The dry run.** It only shows what would change.
+
+1. **Actions** → **Deploy backend** (in the list on the left) → **Run workflow** (on the right).
+2. **Use workflow from:** `main`. Leave **Dry run (only show what would change)** ticked and **Make a
+   new cron -> tracy-worker secret** unticked. Click **Run workflow**.
+3. It takes about 2 minutes. Click the run when it appears, and read the summary at the top.
+
+**Success:** a green check, and a summary like this:
+
+- `Deploy backend (dry run)` and `Project:` your 20-letter project ref.
+- `Schema found with an empty history: record 20261008000000 20261008120000 as applied`. This is
+  the one-time fix for the two migrations you pasted by hand in Phases 0 and 1. (If you never ran
+  the starter library's 7 parts, it names only `20261008000000`; then the real run applies the
+  starter library too, which is safe.)
+- `Function secrets to set: TRACY_URL TRACY_SERVICE_SECRET; to remove: none`.
+- `Worker secret: create (Vault has it: 0, functions have it: 0); Vault project URL: https://…`.
+
+In the run's log, the **Database migrations** step lists the migration files it would apply. On the
+dry run this list still includes the two old ones (the dry run records nothing); the real run
+records them first, so only `20261009120000_study_engine.sql` is applied. The **Edge Functions**
+step ends with `Would deploy: study tracy-worker`.
+
+A red X instead: open the failed step and find its message in
+[If something goes wrong in Phase 2](#if-something-goes-wrong-in-phase-2).
+
+**5c. The real run.** Same as 5b, but **untick Dry run**. It takes about 3–5 minutes (the last
+step waits up to 90 s for Tracy to answer).
+
+**Success:** a green check, and a summary that adds:
+
+- `Migrations pushed`
+- `Function secrets to set: TRACY_URL TRACY_SERVICE_SECRET; …` (and `GEMINI_API_KEY` if you set it)
+- `Worker secret: create …`
+- `Functions deployed: study, tracy-worker`
+- `Tracy /health: OK` (a warning instead only means Tracy was slow to wake; check it in a browser)
+- `Smoke test passed`
+
+**5d. Optional: look in the Supabase dashboard.**
+
+- **Edge Functions** lists `study` and `tracy-worker`.
+- **Storage** lists a bucket named `sources`, marked private.
+- In the **SQL Editor**:
+  ```sql
+  select jobname, schedule from cron.job order by jobname;
+  -- dualrep-cron-history-cleanup | 17 3 * * *
+  -- dualrep-storage-sweep        | 23 4 * * *
+  -- dualrep-tracy-worker         | * * * * *
+  select name from vault.secrets order by name;
+  -- dualrep_project_url, dualrep_worker_secret (names only: never select the secret values)
+  ```
+
+Later deploys work the same way: merge the change into `main`, then run **Deploy backend** (a dry
+run first if you like). Running it again with nothing new is harmless.
+
+### Step 6: Update the PowerSync sync config
+
+The sync config decides what reaches the phone. Phase 2 changed it: job rows (`tracy_events`) now
+send three more columns, so the phone can show each source's progress. It must go **after** step 5:
+PowerSync checks that the columns exist.
+
+1. On GitHub, open
+   [`powersync/sync-config.yaml`](../powersync/sync-config.yaml) on `main` and click **Copy raw file**
+   (two overlapping squares, top right).
+2. https://dashboard.powersync.com → your DualRep project → the `dualrep-dev` instance → the sync
+   config editor (the tab is called **Sync Streams** or **Sync Config**; **verify**).
+3. Select everything in the editor (Ctrl+A), paste (Ctrl+V), click **Validate**, then **Deploy**.
+4. Wait until the deploy has finished (a minute or two).
+
+(Set up with the command line in [8B](#8b-with-the-powersync-cli-config-as-code)? Then
+`npx powersync deploy sync-config` in `C:\dev\dualrep`, after `git pull` on `main`, does the same.)
+
+**Success:** validation shows no errors, and the instance's status is healthy. An error that names
+`stage`, `plan_id` or `source_id` means step 5's real run hasn't finished: do that first.
+
+### Step 7: Build and install the Phase 2 app
+
+1. GitHub → **Actions** → **Android APK** → **Run workflow**. **Use workflow from:** `main`, variant
+   `preview`. It takes 10–15 minutes.
+2. Open the run when it has a green check. In its summary, **APK permissions (preview)** should name
+   exactly these, in any order: the app's own
+   `com.interverse.dualrep.preview.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, then `INTERNET`,
+   `VIBRATE`, `RECEIVE_BOOT_COMPLETED`, `POST_NOTIFICATIONS`, `ACCESS_NETWORK_STATE`, `WAKE_LOCK`
+   (all as in Phase 1) and **`CAMERA`**, the only new one. `RECORD_AUDIO`, anything with `READ_MEDIA`,
+   `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE` or `FOREGROUND_SERVICE` must **not** appear
+   ([ANDROID.md](ANDROID.md#permission-ledger)). If one does, the app still works for testing, but
+   tell whoever maintains the code before going further.
+3. Download **`dualrep-preview-arm64-apk`** at the bottom, unzip it, and install `app-release.apk`
+   **over** the old app, as in Phase 1 ([§16 step 2](#step-2-build-and-install-the-phase-1-app)). You
+   stay signed in.
+4. Open DualRep **online**. Settings → **Sync**: wait for **Connected: Yes**.
+
+**Success:** Today has a **Study** group with a **Study plans** row ("Turn your course material
+into cards"), and Settings has **Answering cards** and **Daily review reminder**.
+
+Optional: to try more than 5 sources or 20 pages of notes this month, give yourself beta access
+([section 14](#14-give-yourself-beta-access-for-testing)); the higher limits (30 and 200) then apply.
+
+### Step 8: The gate, day 1: one plan from a PDF and a page of notes
+
+You need a **real course PDF** on the phone (in Downloads, or in Google Drive), up to 25 MB and
+without a password, and **one page of handwritten notes** on paper. The phone must be **online**
+for this day's building steps. Everything that happens on the server carries on if you switch to
+another app or lock the phone; the plan screen updates when you come back.
+
+**How long things take.** These are estimates: nothing has been timed on the real services yet.
+Please write down what you see.
+
+| Step on the plan screen | Roughly |
+|---|---|
+| "Waiting to start" | Under a minute; up to 2 minutes if Tracy was asleep |
+| "Reading your material" (a 100-page PDF with a text layer) | 1–3 minutes. Scanned pages take longer: about 1–2 minutes per 4 pages |
+| "Reading your material" (one photo of notes) | About a minute |
+| "Making the outline" | 1–2 minutes |
+| "Making cards (n of m)" | About 1–2 minutes per topic; a 15-topic course takes 15–30 minutes |
+
+**8.1 Turn on the reminder** (for the week ahead). Settings → **Daily review reminder** → turn on
+**Remind me when cards are due**, and pick a **Reminder time**. If Android asks whether DualRep may
+send notifications, tap **Allow**.
+
+**8.2 Make the plan.** Today → **Study plans** → **New plan**.
+- **Name:** the course, for example "Biology 101".
+- **What will you add?** **Growing course** ("Add each lecture as it comes; reviews mix everything
+  so far"). The gate needs this kind.
+- **Goal** and **Exam or deadline** are optional. An exam date makes new cards come a little
+  sooner.
+- Tap **Create plan**. The plan's screen opens: **0** due today, **0** new, **0** cards, "Nothing
+  here yet…", and the button **Add material**. (Making a plan works offline; adding material doesn't.)
+
+**8.3 Add the PDF.** Tap **Add material** → **File** → **Choose a file**, and pick the course PDF.
+The **Name** is optional (it is shown next to each card's page). Tap **Add to plan**. The screen
+shows "Getting the file ready…", "Uploading the file (40%)…", "Starting to read it…", then goes back
+to the plan. **Stop** cancels ("Stopped. Nothing was added; tap Add to plan to start again.").
+Trying again never adds the same material twice.
+
+**8.4 Watch it work.** Under **Material**, the PDF shows a status that moves from "Waiting to start"
+to "Reading your material" to "Making the outline". At the bottom: "Getting your
+material ready. It carries on while you do something else."
+
+**8.5 Review the outline.** When the PDF says **Review the outline** ("6 new topics"), tap the
+**Review the outline** button at the bottom. For each topic under **New topics**:
+- **Keep** or **Cut** it;
+- change its **Name** if you like (once you do, the original suggestion shows under it);
+- **Move up** / **Move down** to put the topics in your order.
+
+Then tap **Save and make cards**. (Cutting every topic asks first.) Back on the plan, the PDF shows
+"Making cards (0 of 6)" and counts up. Right after saving, the button may still say **Review the
+outline** for a few seconds until the phone syncs; tapping it again is harmless.
+
+**8.6 Add the page of notes** (you don't need to wait for the cards). **Add material** →
+**Photos**:
+- **Take a photo**: the first time, Android asks to allow the camera: allow it. Photograph the page
+  flat, in good light. (On Android 9 or older there is no camera button: take the photo with the
+  camera app, then use the gallery.)
+- or **Choose photos from the gallery** (it says **Add photos from the gallery** once you have one).
+
+Each page can be moved up or down or removed. Tap **Add to plan** ("Uploading photo 1 of 1…").
+
+**8.7 Check the transcription.** When the notes show **Check the transcription** ("1 page to
+check"), tap that button. You see your photo and the text Tracy read from it ("Fix anything that
+was misread, then confirm. Cards are made only from this text."). Correct any misread words; a
+drawing shows as a `[Diagram: …]` line you can edit or delete. Your edits are kept on the phone as
+you go. Tap **Confirm** (this needs the internet).
+
+Then the notes go to "Making the outline", and either:
+- **Review the outline** again, if the notes bring new topics: review them as in 8.5. Topics already
+  in the plan are shown greyed under **Already in this plan**; or
+- straight to **Making cards**, if the notes only add to topics you already have. The app approves
+  that kind of outline by itself, because there is nothing new to decide.
+
+**8.8 Look around.** When every source says **Ready**, the numbers at the top show your cards.
+- **All cards** lists them by topic, each with when it comes back and where it came from ("p. 12,
+  Lecture 3", or "Made by hand").
+- Tap a card, then **See it on the concept map**: the card sits in the middle with its linked cards
+  around it. Tap one to move it to the middle; **Link another card** adds a link.
+
+**8.9 Study one block.** On the plan screen tap **Study now**. The start screen opens with your
+plan picked under **What are you studying?** (the other choice is **Just a timer**). With two or more
+sources, **Cards** offers **Everything so far** or **Newest source**: keep **Everything so far**.
+Pick a block length (10 minutes is fine) and tap **Start focus block**.
+
+The focus screen now has a small ring at the top and your cards below it:
+- **Recall** cards (due reviews) come first: the question, **Show answer**, then **Missed it** or
+  **Got it**. Under each button it says when the card comes back ("Back in 10 min", "Back in 3
+  days").
+- **New card**: the question and the answer together ("Read it, then test yourself"), then **Quiz
+  me** hides the answer and asks you.
+- In the last 2–5 minutes, a **Self-test** of this block's new and missed cards.
+- If nothing is due for a moment: "Next card in 0:42" with **Ask now**; when everything is done:
+  "All caught up".
+
+When the timer ends, the workout appears as in Phase 1. Then **Finish**.
+
+**Success for day 1:** one **Growing course** plan with two sources, the PDF and the notes, both
+**Ready**; cards from both (open **All cards** and look for a card from your notes); and one study
+block with answers.
+
+### Step 9: The gate, days 2 to 7: a week of reviews
+
+Once a day for the next six days (any time, any length of block):
+
+1. If the reminder is on, it rings at your time on days with cards due: "Cards to review: 12 cards
+   are due…". It shows only the count, never a card.
+2. Today → the **Study plans** row says "12 cards due today". **Start a study block** (or **Study
+   now** on the plan), with your plan picked.
+3. Answer the **Recall** cards honestly, learn a few **New cards**, and do the **Self-test**.
+4. Once during the week, do a block in **airplane mode** (like Phase 1), then go back online and
+   check Settings → **Sync** reaches **Waiting to upload: 0**.
+
+Write down each day: the date, how many cards were due, and anything odd.
+
+**What "runs correctly" means:**
+- On each day with cards due, the block starts with **Recall** cards.
+- A card you get right comes back later each time (tomorrow, then a few days, then about a week).
+  A card you miss comes back within minutes: later in the same block, or in the next one.
+- The count on Today, on the plan and in the reminder agree on the same day.
+- The reminder rings only on days with cards due (if it is on).
+- No "Couldn't save that answer on this phone" message stays on screen, and Today → **More** → **Sync
+  check** shows no **Upload problems** card.
+
+### Step 10: Check the rows in Postgres
+
+At the end of the week, online, with **Waiting to upload: 0**, run these in the Supabase **SQL
+Editor**, one at a time. They show only counts, statuses and short error sentences, not your
+material.
+
+```sql
+-- 1. Every job the pipeline ran, oldest first. Expect extract, transcribe, outline and cards jobs,
+--    all succeeded (embed jobs only if you set GEMINI_API_KEY).
+select created_at, job, stage, status, error
+from public.tracy_events
+order by created_at;
+
+-- 2. Your sources: both ready, each with cards
+select s.kind, s.status,
+       (select count(*) from public.cards c where c.source_id = s.id) as cards
+from public.sources s
+order by s.created_at;
+
+-- 3. A week of answers, per day (UTC days, so a late evening may count on the next day)
+select (reviewed_at at time zone 'UTC')::date as day,
+       count(*) as answers,
+       count(*) filter (where rating = 1) as missed,
+       count(*) filter (where prev_state = 0) as first_time
+from public.reviews
+where reviewed_at > now() - interval '8 days'
+group by 1
+order by 1;
+
+-- 4. Where your cards stand: 0 new, 1 learning, 2 review, 3 relearning
+select state, count(*) as cards, min(due) as next_due, max(reps) as most_reviews
+from public.card_states
+group by state
+order by state;
+```
+
+**Success:** query 2 shows a `pdf` source and a `notes` source, both `ready` with cards; query 3
+has a row for (nearly) every day of the week; query 4 has most cards in state 2, with `next_due`
+dates spread out over the coming days and weeks. **The Phase 2 gate has passed.** Tick it in
+[ROADMAP.md](ROADMAP.md#your-manual-steps-for-the-phase-2-gate-in-order), with your notes on how
+long the steps took.
+
+### If something goes wrong in Phase 2
+
+**In the Deploy backend workflow** (open the failed step; the message is in red):
+
+| Message | What to do |
+|---|---|
+| "Secret SUPABASE_ACCESS_TOKEN is missing (Supabase -> Account -> Access Tokens)." | Step 4a and 4b. |
+| "A real deploy runs from main only (this is …). Use a dry run here." | Choose `main` under **Use workflow from**. |
+| "Can't tell the project ref. Set the variable EXPO_PUBLIC_SUPABASE_URL to https://<ref>.supabase.co, or SUPABASE_PROJECT_REF to the 20-letter ref." | Check the `EXPO_PUBLIC_SUPABASE_URL` variable (step 4c). |
+| "Missing variable TRACY_URL (https://…): the study builder can't reach Tracy without it." (or "Missing secret TRACY_SERVICE_SECRET") | Add it (step 4b or 4c). The dry run only warns; the real run stops. |
+| "Could not read the remote migration history; nothing was recorded." | Run it again in a few minutes. If it repeats, get help (send the log, which holds no secrets). |
+| An error mentioning "Unauthorized" or the access token | The token is wrong or expired: make a new one (step 4a) and replace the secret. |
+| An error about `relation … already exists` in **Database migrations** | The hand-applied migrations weren't recorded. Don't run it again; get help with the log. |
+| "Vault does not hold the new worker secret." | Run it again with **Make a new cron -> tracy-worker secret** ticked. |
+| "tracy-worker should answer 403 (got …)." or "study should answer its own 401." | The functions didn't deploy properly. Run it again; if it repeats, get help with the log. |
+| Warning: "Tracy's /health did not answer in 90 s." | Only a warning. Open Tracy's `/health` in a browser (step 1). |
+
+**On Render and Tracy:**
+
+| What you see | What to do |
+|---|---|
+| `/diag` has no `dualrepLane` | The tracy-ai pull request isn't merged or deployed yet (step 3b). |
+| `configured: false` / `storageHostsSet: false` | Add `SERVICE_SECRET_DUALREP` / `DUALREP_STORAGE_HOSTS` (step 3a). |
+| Tracy's log says "SERVICE_SECRET_DUALREP equals SERVICE_SECRET…" | The two must differ: make a new Tracy secret (step 2), then update Render and GitHub and run Deploy backend. |
+| Tracy keeps restarting, or reading big PDFs is very slow | Render's free plan has little memory and CPU. Try a smaller PDF first. If it persists: on Render, set `EXTRACT_MAX_PAGES` to `40`, or move Tracy to a paid plan. |
+
+**Adding material** (the "Not added" box on Add material, or "That didn't work" on the plan):
+
+| The app says | What to do |
+|---|---|
+| "No internet connection. Adding and preparing material needs the internet; studying doesn't." | Go online and tap the button again. What you picked is kept. |
+| "Adding material isn't set up on the server yet. Try again later." | The `study` function isn't deployed: step 5c. |
+| "Your session has expired. Sign in again, then try again." | Sign out and in again (online, after **Waiting to upload: 0**). |
+| "You've used all 5 sources for this month. More can be added from November 1." (or "… pages of notes …") | The monthly limit. For testing: beta access ([section 14](#14-give-yourself-beta-access-for-testing)), or a higher `DUALREP_CAP_…` variable (step 4c) and Deploy backend again. |
+| "This plan isn't on the server yet. Wait a moment for it to sync, then try again." | A plan made offline hasn't uploaded. Settings → **Sync** must say **Connected: Yes** and **Waiting to upload: 0**. |
+| "… is larger than 25 MB." / "Only PDF and Word (.docx) files can be added." / "Up to 20 photos per set of notes…" | The limits. Split a big PDF, or save an old `.doc` as `.docx`. |
+| "Use a web address that starts with https://." | Links must be public `https://` pages. |
+| "Camera access is off" | **Open system settings** and allow the camera, or use the gallery. |
+
+**A source's status says "Couldn't finish"** (with **Try again** next to it):
+
+| The reason under it | What it means | What to do |
+|---|---|---|
+| "The study builder isn't set up yet. Try again later." | Tracy refused the worker: the tracy-ai pull request isn't live, `TRACY_SERVICE_SECRET` (GitHub) differs from `SERVICE_SECRET_DUALREP` (Render), or `DUALREP_STORAGE_HOSTS` isn't exactly `<project-ref>.supabase.co` | Check `/diag` (step 3c) and both secrets. After changing the GitHub secret, run Deploy backend again. Then **Try again**. |
+| "Tracy couldn't finish this step. Try again." / "Tracy didn't answer in time. Try again." | Three attempts failed (Tracy down, slow or restarting) | Open Tracy's `/health`, then **Try again**. If the very first job fails like this while Tracy is awake, the safety fallback may not mix with Tracy's request format (not yet tested live): add `TRACY_TASK_FALLBACKS` = `off` on Render (step 3a), wait for the restart, then **Try again**. |
+| "This step took too long. Try again." | A step was cut off three times | **Try again**. If it repeats on a big PDF, see "Tracy keeps restarting" above. |
+| "Tracy declined to work on this material." | Anthropic's safety checks refused it (possible with some biology, medicine, chemistry or security material) | Try a different part of the course. If proper course material keeps being refused, you can set `TRACY_TASK_MODEL_STRONG` to `claude-haiku-4-5` on Render for it, tap **Try again**, and switch back afterwards. |
+| "This PDF is password-protected. Upload a copy without a password." / "This PDF couldn't be read." / "No readable text was found." | The file itself | Use another copy of the file. |
+| "Tracy's answer didn't pass the checks. Try again." / "This part was too long to process. Try again." | The model's answer was rejected or cut off three times | **Try again**. |
+| "This month's page limit is used up, so the scanned pages weren't read." | A scanned PDF needed more pages than the monthly limit | Beta access or a higher `DUALREP_CAP_PAGES_…` (above). |
+| Any reason, on a page of notes or a scanned page, with **Skip this page** below it | That page's transcription failed | **Try again**, or **Skip this page** to go on without it. |
+
+**A source stays on "Waiting to start" for more than 5 minutes:** the worker isn't being woken. In
+the SQL Editor:
+```sql
+select start_time, status, return_message from cron.job_run_details
+where command like '%kick_tracy_worker%' order by start_time desc limit 5;
+select status_code, created from net._http_response order by created desc limit 5;
+```
+No rows in the first: the schedule isn't there (step 5c didn't finish). Status `403` in the second:
+the worker secret doesn't match: run Deploy backend with **Make a new cron -> tracy-worker secret**
+ticked. Supabase dashboard → **Edge Functions** → `tracy-worker` → **Logs** shows one line per step
+(no material in it).
+
+**Checking the transcription or the outline** (the "Not confirmed" or "Not saved" box):
+
+| The app says | What to do |
+|---|---|
+| "Some pages are still being transcribed." | Wait until every page shows its text. |
+| "A page could not be transcribed. Try it again or skip it first." | On the plan, **Try again** or **Skip this page** for that page. |
+| "There is nothing to study in these pages yet. Type the notes into the transcript first." | Every page is empty: type the notes in, then **Confirm**. |
+| "There is no outline to review yet." / "No outline to review" | It was already saved, or the outline isn't made yet. Go back to the plan. |
+
+**Studying and the reminder:**
+
+| What you see | What to do |
+|---|---|
+| The start screen shows only the "What are you studying?" text box | No study plan is on this phone yet: make one under **Study plans**. |
+| "Your material is being prepared." in the focus block | Its cards aren't made yet; the block runs as a plain timer. |
+| "Couldn't save that answer on this phone. Try again." | Tap the answer again; the same answer is never saved twice. If it stays, take a screenshot and get help. |
+| The reminder didn't ring | Settings → **Daily review reminder** must be on, and notifications allowed ("Notifications are off for DualRep…" shows if not). It rings only on days with cards due. |
+| **Take a photo** is missing | The phone runs Android 9 or older: use the gallery. |
+
+### What Phase 2 costs each month
+
+Everything except the AI calls stays on free plans. Prices are from the Phase 2 research
+(2026-10-09); the AI costs are **estimates, not measurements**. After the gate, the real numbers are
+in Anthropic's console (**Usage**).
+
+| Service | Cost | Notes |
+|---|---|---|
+| Supabase | $0 (Free plan) | Limits that matter now: 500 MB database, 1 GB of file storage, 500,000 Edge Function calls a month (the every-minute schedule only calls the worker when there is work), 5 GB of downloads. A free project is paused after a week with little activity (**verify** the rule); restoring it is a click. |
+| PowerSync | $0 (Free plan) | As in Phase 0. |
+| Render (Tracy) | $0 (free plan) | Sleeps after 15 idle minutes and takes about a minute to wake; the worker copes with that by itself. A paid instance never sleeps and reads PDFs faster (**verify** the price on render.com). |
+| GitHub Actions | $0 | Each Deploy backend run uses a few minutes of the monthly allowance. |
+| Gemini (embeddings) | $0 (off) | If you turn it on, with billing: about $0.012 per 100-page PDF. |
+| **Anthropic (through Tracy)** | **pay per use** | See below. Studying costs nothing: reviews happen on the phone. |
+
+**Anthropic, per piece of material** (`TRACY_TASK_MODEL_STRONG`):
+
+| | `claude-sonnet-5-5` (default) | `claude-haiku-5-5` |
+|---|---|---|
+| Price per million tokens, in / out | $2 / $10 | $0.10 / $0.50 (prompts up to 100,000 tokens) |
+| A 100-page course PDF (outline and cards; reading a text PDF is free) | about **$1.10** (likely $0.80–$1.80) | about **$0.06** |
+| One handwritten page | about **$0.03** | about **$0.002** |
+| Safety fallback on another model ([step 3a](#step-3-set-up-tracy-on-render-then-merge-its-pull-request)) | Yes | No |
+
+(For comparison, `claude-haiku-4-5`: about $0.34 per 100-page PDF and $0.006 per handwritten page,
+and it reads photos at a lower resolution.)
+
+**Per month, roughly:**
+
+| Who | Sonnet 5.5 | Haiku 5.5 |
+|---|---|---|
+| You, running the gate (one 100-page PDF, a page of notes, a retry or two) | about $1–3 | under $0.20 |
+| A free user at the limit, with short lectures (5 PDFs of about 30 pages, 20 pages of notes) | about $2.40 | about $0.15 |
+| A free user at the limit, worst case (5 PDFs of 100 pages, 20 pages of notes) | about $6 | about $0.35 |
+| A subscriber at the limit, worst case (30 PDFs of 100 pages, 200 pages of notes) | about $39 | about $2.20 |
+
+Choosing: the gate is a good time to see Sonnet 5.5's cards. Haiku 5.5 is about 20 times cheaper,
+but nobody has compared its cards on DualRep's material yet. To compare, change
+`TRACY_TASK_MODEL_STRONG` on Render (step 3a) and add the same PDF to a second test plan; only
+material added after the change uses the new model. Whatever you choose, these Anthropic costs share
+Tracy's account and its monthly spend limit: setting a monthly limit in Anthropic's console
+(**Settings → Limits**, **verify**) protects you from surprises.

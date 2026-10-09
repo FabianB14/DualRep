@@ -9,6 +9,7 @@ import { useLocalState } from '@/features/cycle/localState';
 import { useTodaySummary } from '@/features/history/useHistory';
 import { formatMinutes } from '@/features/settings/profile';
 import { useTrainingDefaults } from '@/features/settings/useTrainingDefaults';
+import { useDueCount, usePlans } from '@/features/study/hooks';
 import { useTheme } from '@/theme';
 
 /** What the primary button says while a cycle is running, by phase. */
@@ -29,16 +30,26 @@ const LINKS: readonly { title: string; subtitle: string; href: Href }[] = [
   { title: 'Timer check', subtitle: 'Measure how late the end-of-block alert rings', href: '/timer-check' },
 ];
 
+/** The line under "Study plans": what is due, or what a plan is for when there is none yet. */
+function studySubtitle(due: number, plans: number): string {
+  if (plans === 0) return 'Turn your course material into cards';
+  if (due === 0) return 'Nothing due today';
+  return `${due} ${due === 1 ? 'card' : 'cards'} due today`;
+}
+
 /**
  * Home ("Today"): the one thing to do next — start a study block — with "Just train" beside it, the
- * defaults the next cycle will use (each opens the screen that changes it), today's numbers, and the
- * other screens. Everything is read from the phone, so it works offline and before the first sync.
+ * study plans with the cards due, the defaults the next cycle will use (each opens the screen that
+ * changes it), today's numbers, and the other screens. Everything is read from the phone, so it works
+ * offline and before the first sync.
  */
 export default function HomeScreen() {
   const { user } = useAuth();
   const { space } = useTheme();
   const defaults = useTrainingDefaults();
   const today = useTodaySummary();
+  const due = useDueCount();
+  const { plans } = usePlans();
   const { value: savedCycle } = useLocalState<unknown>(CYCLE_STATE_KEY);
   const phase = useMemo(() => parseCycleState(savedCycle, user?.id ?? null).phase, [savedCycle, user?.id]);
   const running = phase !== 'idle';
@@ -82,6 +93,16 @@ export default function HomeScreen() {
           { value: today.sets, label: today.sets === 1 ? 'set' : 'sets' },
         ]}
       />
+
+      <ListGroup title="Study">
+        <ListRow
+          title="Study plans"
+          subtitle={studySubtitle(due.count, plans.length)}
+          value={due.count > 0 ? `${due.count} due` : undefined}
+          accessibilityLabel={`Study plans, ${studySubtitle(due.count, plans.length)}`}
+          onPress={() => router.push('/plans')}
+        />
+      </ListGroup>
 
       <ListGroup title="Next cycle" description="Tap one to change it.">
         <ListRow
