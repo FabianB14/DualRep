@@ -91,7 +91,7 @@ Without them the app opens on a "Setup needed" screen instead of crashing.
 | `npm test` | App tests (jest-expo), including a full study → move → study cycle played offline |
 | `npm run test:scripts` | Tests for the Node scripts in `scripts/` (the exercise import), with Node's built-in test runner |
 | `npm run validate:sync` | Compiles `powersync/sync-config.yaml` with PowerSync's compiler against the schema snapshot and checks it against the app's table registry |
-| `npm run check:library` | Fails if the starter-library migration is out of date with the app's list (`src/features/training/starterLibraryData.ts`) |
+| `npm run check:library` | Fails if the starter-library migration, or its 7 SQL Editor parts in `supabase/sql-editor/starter-library/`, is out of date with the app's list (`src/features/training/starterLibraryData.ts`) |
 | `node scripts/library/starter-library-sql.mjs` | Rewrites the starter-library migration from that list (after changing it; see [DECISIONS.md](docs/DECISIONS.md) D21) |
 | `npm run db:test` | Applies the migrations to a throwaway Postgres 16 and runs the pgTAP tests (14 files); rewrites `supabase/schema.snapshot.json` (Linux or WSL, with pgvector and pgTAP; CI runs it) |
 
@@ -105,7 +105,7 @@ Without them the app opens on a "Setup needed" screen instead of crashing.
 | `src/features/` | Feature code: the study → move → study cycle (`cycle/`), the timer and its alerts (`timer/`), training (starter library, circuits, spotter, units, swaps), setups, presets, the user's own exercises, history, settings, sync status, the Sync Check, "Setup needed" |
 | `src/components/`, `src/theme/` | Shared UI and design tokens |
 | `src/lib/` | Configuration, the Supabase client, secure session storage, ids, timestamps |
-| `supabase/` | Migrations (the schema, then the starter library), pgTAP tests, email templates, local CLI config, schema snapshot |
+| `supabase/` | Migrations (the schema, then the starter library), the same starter library split into parts for the SQL Editor (`sql-editor/`), pgTAP tests, email templates, local CLI config, schema snapshot |
 | `powersync/` | Sync Streams config and PowerSync instance config |
 | `scripts/` | The database test harness, the sync-config validator, the 16 KB page-size check for APKs (`check-16kb.sh`), the starter-library generator (`library/`) and the exercise dataset import (`exercise-import/`) |
 | `.github/workflows/` | CI (`ci.yml`), the installable APK build (`android.yml`) and the exercise import SQL (`exercise-import.yml`, run by hand) |

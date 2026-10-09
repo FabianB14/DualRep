@@ -974,20 +974,28 @@ them too: when a logged set uploads, the server checks that its exercise exists.
 the set is still saved, but its link to the exercise is stored as empty (the name is kept), and that
 can't be fixed later. So apply this first.
 
-1. On GitHub, open the file
-   ([`supabase/migrations/20261008120000_starter_library.sql`](../supabase/migrations/20261008120000_starter_library.sql)).
-   Until the Phase 1 pull request is merged, switch the branch picker at the top left to
-   `claude/bold-fermi-oglgch`. Click **Copy raw file** (two overlapping squares, top right of the
-   file).
-2. In the Supabase dashboard, open your project, then **SQL Editor** (left sidebar) → **New query**.
-   Paste (Ctrl+V) and click **Run**. After a few seconds it says "Success. No rows returned".
-3. Check it. In a new query, run:
+The whole file is about 640 lines, more than the SQL Editor takes in one paste (it stopped at about
+150 lines). So the same SQL is also split into **7 parts** of under 120 lines each, in the folder
+[`supabase/sql-editor/starter-library/`](../supabase/sql-editor/starter-library/). Each part is complete
+on its own; together they do exactly what the full file does.
+
+1. On GitHub, open the folder
+   [`supabase/sql-editor/starter-library/`](../supabase/sql-editor/starter-library/). Until the Phase 1
+   pull request is merged, switch the branch picker at the top left to `claude/bold-fermi-oglgch`.
+2. Click `part-1-of-7.sql`, then **Copy raw file** (two overlapping squares, top right of the file).
+3. In the Supabase dashboard, open your project, then **SQL Editor** (left sidebar) → **New query**.
+   Paste (Ctrl+V) and click **Run**. It says "Success. No rows returned".
+4. Do the same for parts 2 to 7: copy the part, then in the SQL Editor select everything in the editor
+   (Ctrl+A), paste over it and click **Run**. The order doesn't matter, and running a part twice is
+   harmless.
+5. Check it. Replace the editor's text with this and click **Run**:
    ```sql
    select count(*) from public.exercises where origin = 'interverse' and reviewed;   -- 90
    ```
+   If it shows less than 90, one part was missed: run all 7 again.
 
-Unlike the first migration, running this one twice is harmless: it rewrites the same 90 rows. If it
-shows an error, take a screenshot of the message and get help.
+Unlike the first migration, running these twice is harmless: they rewrite the same 90 rows. If a
+part shows an error, take a screenshot of the message and get help.
 
 **PowerSync: nothing to do.** The sync config already sends every reviewed library exercise to every
 phone, so the 90 rows reach the phone by themselves at the next sync. No redeploy.

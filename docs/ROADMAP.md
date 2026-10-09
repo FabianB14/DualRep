@@ -203,7 +203,9 @@ home setups, rules-based spotter, default micro circuits, zero-tap handoff.
 Details for each step are in [SETUP §16](SETUP.md#16-phase-1-the-core-loop-on-your-phone).
 
 1. [ ] **Apply the new migration** `20261008120000_starter_library.sql`: Supabase dashboard → **SQL
-       Editor** → **New query** → paste the file → **Run** ([SETUP §16 step 1](SETUP.md#step-1-add-the-starter-library-to-the-database)).
+       Editor** → **New query** → paste and **Run** each of the 7 parts in
+       `supabase/sql-editor/starter-library/` (the whole file is too long for one paste), then check
+       the count is 90 ([SETUP §16 step 1](SETUP.md#step-1-add-the-starter-library-to-the-database)).
        Do this **before** the gate, so the sets you log can link to their exercises on the server
 2. [ ] **PowerSync: nothing to do.** The sync config already sends reviewed library exercises to every
        phone, so the 90 new rows arrive by themselves. No redeploy
