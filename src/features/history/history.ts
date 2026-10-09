@@ -10,8 +10,10 @@
  *   server). Sets are grouped by that name within a workout, in the order they were done.
  * - Timed sets keep their seconds in `reps` / `target_reps` (exercise_sets has no seconds column; see
  *   cycleRepo.ts); the exercise's measure says how to read them.
- * - A focus block's minutes are the time from start to end, capped at its planned length (a paused
- *   block took longer on the clock than it was focused). Blocks without an end are "not finished".
+ * - A focus block's minutes are the time from start to end, capped at its planned length. The loop
+ *   records a block's end as its start plus the time actually focused (pauses left out; see
+ *   cycleMachine.ts), so this is focus time, the same as the cycle's own summary; the cap only
+ *   guards rows written some other way. Blocks without an end are "not finished".
  * - "Today" is the phone's local calendar day; stored timestamps are UTC ISO strings, which compare
  *   correctly as text because every one has the same format (DATA_MODEL.md).
  */

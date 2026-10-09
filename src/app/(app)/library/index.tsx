@@ -4,7 +4,7 @@ import { FlatList, KeyboardAvoidingView, ScrollView, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/auth/AuthProvider';
-import { Button, Chip, ListRow, Notice, Text, TextField } from '@/components';
+import { Button, Chip, ListRow, Notice, Text, TextField, useWindowTop } from '@/components';
 import { useTrainingDefaults } from '@/features/settings/useTrainingDefaults';
 import { describeEquipment } from '@/features/training/equipment';
 import { filterLibrary, MOVEMENT_PATTERN_LABELS, MOVEMENT_PATTERNS } from '@/features/training/library';
@@ -25,6 +25,8 @@ function exerciseSubtitle(exercise: LibraryExercise): string {
  */
 export default function LibraryScreen() {
   const { colors, space } = useTheme();
+  // Under the navigation header: the keyboard padding needs the frame's place in the window (see Screen).
+  const { ref: frameRef, onLayout: measureFrame, top: windowTop } = useWindowTop();
   const { user } = useAuth();
   const { exercises, isLoading } = useLibrary();
   const { setup } = useTrainingDefaults();
@@ -86,57 +88,59 @@ export default function LibraryScreen() {
 
   return (
     <SafeAreaView edges={['bottom', 'left', 'right']} style={{ flex: 1, backgroundColor: colors.background }}>
-      <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
-        {header}
-        <FlatList
-          data={results}
-          keyExtractor={(exercise) => exercise.id}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          contentContainerStyle={{ paddingHorizontal: space[5], paddingBottom: space[4] }}
-          ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: colors.border, marginLeft: space[4] }} />}
-          renderItem={({ item }) => (
-            <View style={{ backgroundColor: colors.surface }}>
-              <ListRow
-                title={item.name}
-                subtitle={exerciseSubtitle(item)}
-                badge={item.origin !== 'user' ? undefined : item.ownerId === user?.id ? 'Yours' : 'Shared'}
-                onPress={() => router.push({ pathname: '/library/[id]', params: { id: item.id } })}
-              />
-            </View>
-          )}
-          ListEmptyComponent={
-            isLoading ? null : (
-              <View style={{ gap: space[3], paddingTop: space[4] }}>
-                <Notice title="No exercises match" message="Try fewer words, or clear the filters." />
-                {filtered ? (
-                  <Button
-                    label="Clear filters"
-                    variant="secondary"
-                    onPress={() => {
-                      setQuery('');
-                      setPattern(null);
-                      setFitsOnly(false);
-                    }}
-                  />
-                ) : null}
+      <View ref={frameRef} onLayout={measureFrame} collapsable={false} style={{ flex: 1 }}>
+        <KeyboardAvoidingView behavior="padding" keyboardVerticalOffset={windowTop} style={{ flex: 1 }}>
+          {header}
+          <FlatList
+            data={results}
+            keyExtractor={(exercise) => exercise.id}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            contentContainerStyle={{ paddingHorizontal: space[5], paddingBottom: space[4] }}
+            ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: colors.border, marginLeft: space[4] }} />}
+            renderItem={({ item }) => (
+              <View style={{ backgroundColor: colors.surface }}>
+                <ListRow
+                  title={item.name}
+                  subtitle={exerciseSubtitle(item)}
+                  badge={item.origin !== 'user' ? undefined : item.ownerId === user?.id ? 'Yours' : 'Shared'}
+                  onPress={() => router.push({ pathname: '/library/[id]', params: { id: item.id } })}
+                />
               </View>
-            )
-          }
-        />
-        <View
-          style={{
-            paddingHorizontal: space[5],
-            paddingTop: space[3],
-            paddingBottom: space[4],
-            borderTopWidth: 1,
-            borderTopColor: colors.border,
-            backgroundColor: colors.background,
-          }}
-        >
-          <Button label="Add an exercise" size="comfortable" onPress={() => router.push('/library/new')} />
-        </View>
-      </KeyboardAvoidingView>
+            )}
+            ListEmptyComponent={
+              isLoading ? null : (
+                <View style={{ gap: space[3], paddingTop: space[4] }}>
+                  <Notice title="No exercises match" message="Try fewer words, or clear the filters." />
+                  {filtered ? (
+                    <Button
+                      label="Clear filters"
+                      variant="secondary"
+                      onPress={() => {
+                        setQuery('');
+                        setPattern(null);
+                        setFitsOnly(false);
+                      }}
+                    />
+                  ) : null}
+                </View>
+              )
+            }
+          />
+          <View
+            style={{
+              paddingHorizontal: space[5],
+              paddingTop: space[3],
+              paddingBottom: space[4],
+              borderTopWidth: 1,
+              borderTopColor: colors.border,
+              backgroundColor: colors.background,
+            }}
+          >
+            <Button label="Add an exercise" size="comfortable" onPress={() => router.push('/library/new')} />
+          </View>
+        </KeyboardAvoidingView>
+      </View>
     </SafeAreaView>
   );
 }

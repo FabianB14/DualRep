@@ -50,7 +50,7 @@ export function describeAlertTest(result: AlertTestResult, nowMs: number): Alert
     case 'missed':
       return {
         headline: 'Result lost',
-        detail: 'The alert was swiped away before its time could be read. Run the test again, and open DualRep before clearing the alert.',
+        detail: 'The alert was cleared from your notifications before DualRep could read its time. Run the test again, and tap the alert when it rings instead of swiping it away.',
         tone: 'danger',
       };
     case 'fired': {

@@ -238,7 +238,7 @@ describe('saving before writing (crash safety)', () => {
     await settle();
     // Each effect runs only after a save that still lists it, and is acknowledged by a later save.
     expectSavedBeforeEachWrite(io.log);
-    expect(io.log.filter((entry) => !entry.startsWith('save'))).toEqual(['startFocusBlock:id-2', 'schedule:block-end-id-2']);
+    expect(io.log.filter((entry) => !entry.startsWith('save'))).toEqual(['startFocusBlock:id-2', 'schedule:block-end-id-1-1']);
     expect(io.log.at(-1)).toBe('save:focus:[]');
     expect(repo.startFocusBlock).toHaveBeenCalledWith({
       userId: USER,
@@ -316,7 +316,7 @@ describe('effects', () => {
     await settle();
     expect(io.log.filter((entry) => !entry.startsWith('save'))).toEqual([
       'endFocusBlock:id-2',
-      'cancel:block-end-id-2',
+      'cancel:block-end-id-1-1',
       'startMoveBlock:id-3',
     ]);
     expect(deps.haptic).toHaveBeenCalledWith('success');
@@ -345,6 +345,46 @@ describe('effects', () => {
     expect(store.getSnapshot().error).toBeNull();
   });
 
+  it('a failed save of a change with no write behind it: the warning goes once the retry has saved it', async () => {
+    const { store, io, deps } = await inMove();
+    store.logSet();
+    await settle();
+    expect((state(store) as MoveState).rest).not.toBeNull();
+    // "Skip rest" queues no write: only the state itself is saved, and that save fails once.
+    deps.writeState.mockRejectedValueOnce(new Error('database is locked'));
+    store.skipRest();
+    await settle();
+    expect(store.getSnapshot().error).toBe(CYCLE_SAVE_ERROR);
+    expect(io.timers.at(-1)?.ms).toBe(1000);
+    io.timers.at(-1)?.callback();
+    await settle();
+    expect((io.saved as MoveState).rest).toBeNull();
+    expect(store.getSnapshot().error).toBeNull();
+    // The backoff starts over: the next failure is retried after 1 s again.
+    deps.writeState.mockRejectedValueOnce(new Error('database is locked'));
+    io.clock += 5 * SEC;
+    store.logSet();
+    await settle();
+    expect(io.timers.at(-1)?.ms).toBe(1000);
+  });
+
+  it('a save that goes through does not hide a write still failing', async () => {
+    const { store, io, repo } = await inMove();
+    repo.logSet.mockRejectedValueOnce(new Error('locked')).mockRejectedValueOnce(new Error('locked'));
+    store.logSet();
+    await settle();
+    expect(store.getSnapshot().error).toBe(CYCLE_SAVE_ERROR);
+    // Another change is saved fine meanwhile, but the set's write (tried again with it) still fails.
+    store.skipRest();
+    await settle();
+    expect(repo.logSet).toHaveBeenCalledTimes(2);
+    expect(store.getSnapshot().error).toBe(CYCLE_SAVE_ERROR);
+    io.timers.at(-1)?.callback();
+    await settle();
+    expect(repo.logSet).toHaveBeenCalledTimes(3);
+    expect(store.getSnapshot().error).toBeNull();
+  });
+
   it('a write the repo refuses as invalid is dropped and reported, so the loop goes on', async () => {
     const { store, repo } = await inMove();
     repo.rateBlock.mockRejectedValueOnce(new RangeError('effort_rating must be a whole number from 1 to 5'));
@@ -366,6 +406,51 @@ describe('effects', () => {
     expect(repo.logSet).not.toHaveBeenCalled();
     expect(deps.writeState.mock.calls.length).toBe(saves);
     expect(store.isDisposed).toBe(true);
+  });
+
+  it('finishAndStop() (sign-out) closes a running workout on the phone first, then stops', async () => {
+    const { store, io, repo } = await inMove();
+    const move = state(store) as MoveState;
+    store.logSet();
+    await settle();
+    io.clock += 2 * MIN;
+    await store.finishAndStop();
+    expect(repo.finishMoveBlock).toHaveBeenCalledWith(move.workoutId, expect.any(Number), T0 + 27 * MIN);
+    expect((io.saved as CycleState).phase).toBe('idle');
+    expect((io.saved as CycleState).pending).toEqual([]);
+    expect(store.isDisposed).toBe(true);
+  });
+
+  it('finishAndStop() loads a cycle saved on the phone and ends its focus block (interrupted)', async () => {
+    const focus = cycleReducer(initialCycleState(USER), {
+      type: 'start',
+      at: T0 - 10 * MIN,
+      userId: USER,
+      plan: PLAN,
+      ids: { sessionId: 's', blockId: 'b', workoutId: 'w', transitionId: 't' },
+    }) as FocusState;
+    const fake = fakeIo(roundTrip({ ...focus, pending: [] }));
+    const store = new CycleStore(USER, fake.deps);
+    await store.finishAndStop();
+    expect(fake.repo.endFocusBlock).toHaveBeenCalledWith('b', T0, true, T0);
+    expect(fake.deps.cancelScheduled).toHaveBeenCalledWith('block-end-s-1');
+    expect(fake.repo.startMoveBlock).not.toHaveBeenCalled();
+    expect(store.isDisposed).toBe(true);
+  });
+
+  it('finishAndStop() writes nothing when no cycle runs, and gives up (does not hang) when a write fails', async () => {
+    const idle = await loaded();
+    const saves = idle.deps.writeState.mock.calls.length;
+    await idle.store.finishAndStop();
+    expect(idle.deps.writeState.mock.calls.length).toBe(saves);
+    expect(idle.store.isDisposed).toBe(true);
+
+    const failing = await loaded();
+    failing.store.start(PLAN);
+    await settle();
+    failing.repo.endFocusBlock.mockRejectedValue(new Error('locked'));
+    await failing.store.finishAndStop();
+    expect(failing.store.isDisposed).toBe(true);
   });
 
   it('stop() resolves only after the save in progress, and nothing runs after it (sign-out)', async () => {
@@ -415,6 +500,26 @@ describe('actions', () => {
     expect((state(store) as MoveState).lastAdvice?.advice.action).toBe('cut_set');
   });
 
+  it('a block started while alerts were off gets its alert once they are allowed (rescheduleAlert)', async () => {
+    const { store, io, deps } = await loaded();
+    // Notifications denied: scheduleBlockEnd schedules nothing.
+    deps.scheduleBlockEnd.mockResolvedValueOnce(null);
+    store.start(PLAN);
+    await settle();
+    expect(deps.scheduleBlockEnd).toHaveBeenCalledTimes(1);
+    // The user turns them on and comes back: the screen asks for the alert again.
+    io.clock = T0 + 4 * MIN;
+    store.rescheduleAlert();
+    await settle();
+    expect(deps.scheduleBlockEnd).toHaveBeenCalledTimes(2);
+    expect(deps.scheduleBlockEnd).toHaveBeenLastCalledWith(T0 + 25 * MIN, {
+      title: 'Focus block done',
+      body: 'Time to move: your 5-minute circuit is ready.',
+      identifier: 'block-end-id-1-1',
+    });
+    expect(state(store).pending).toEqual([]);
+  });
+
   it('pause and resume withdraw and re-schedule the alert', async () => {
     const { store, io, deps } = await loaded();
     store.start(PLAN);
@@ -422,14 +527,14 @@ describe('actions', () => {
     io.clock = T0 + 5 * MIN;
     store.pause();
     await settle();
-    expect(deps.cancelScheduled).toHaveBeenCalledWith('block-end-id-2');
+    expect(deps.cancelScheduled).toHaveBeenCalledWith('block-end-id-1-1');
     io.clock = T0 + 15 * MIN;
     store.resume();
     await settle();
     expect(deps.scheduleBlockEnd).toHaveBeenLastCalledWith(T0 + 35 * MIN, {
       title: 'Focus block done',
       body: 'Time to move: your 5-minute circuit is ready.',
-      identifier: 'block-end-id-2',
+      identifier: 'block-end-id-1-1',
     });
   });
 

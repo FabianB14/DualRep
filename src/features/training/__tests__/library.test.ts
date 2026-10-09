@@ -366,6 +366,23 @@ describe('mergeLibrary', () => {
   it('is just the starter library before the first sync', () => {
     const merged = mergeLibrary([]);
     expect(new Set(merged.map((entry) => entry.id))).toEqual(new Set(STARTER_LIBRARY.map((entry) => entry.id)));
+    expect(merged.every((entry) => entry.reviewed)).toBe(true);
+  });
+
+  it('once the server’s starter rows have synced, a bundled one it no longer sends is kept but withdrawn', () => {
+    // A curator set reviewed = false on Chair squat (or deleted it): the library stream stops sending it.
+    const chairSquat = STARTER_LIBRARY.find((entry) => entry.name === 'Chair squat');
+    if (!chairSquat) throw new Error('Chair squat is missing from the starter library');
+    const fromServer = STARTER_EXERCISES.filter((entry) => entry.id !== chairSquat.id).map((entry) =>
+      exerciseFromRow(starterRow(entry)),
+    );
+    const merged = mergeLibrary(fromServer);
+    expect(merged).toHaveLength(STARTER_LIBRARY.length);
+    // Still there for its name and measure in history, but no longer reviewed.
+    expect(merged.find((entry) => entry.id === chairSquat.id)).toEqual({ ...chairSquat, reviewed: false });
+    expect(merged.filter((entry) => !entry.reviewed).map((entry) => entry.id)).toEqual([chairSquat.id]);
+    // Dataset rows alone do not say anything about the starter list.
+    expect(mergeLibrary(synced).every((entry) => entry.reviewed)).toBe(true);
   });
 });
 
@@ -404,7 +421,8 @@ describe('libraryView', () => {
     row({ id: 'd0000000-0000-4000-8000-000000000002', name: 'Unreviewed curl', reviewed: 0 }),
     row({ id: 'u1', name: 'My band squat', origin: 'user', owner_id: ME, reviewed: 0, dataset_id: null }),
     row({ id: 'u2', name: 'Friend squat', origin: 'user', owner_id: FRIEND, reviewed: 0, dataset_id: null }),
-    starterRow(STARTER_EXERCISES[0]),
+    // The library stream sends the whole starter list at once.
+    ...STARTER_EXERCISES.map(starterRow),
   ];
 
   it('merges the rows with the starter library and indexes them', () => {
@@ -421,6 +439,17 @@ describe('libraryView', () => {
     expect(pool).not.toContain('u2');
     expect(pool).not.toContain('d0000000-0000-4000-8000-000000000002');
     expect(pool).toHaveLength(STARTER_LIBRARY.length + 2);
+  });
+
+  it('stops offering a starter exercise the server withdrew, in circuits and swaps, but still knows it by id', () => {
+    const withdrawn = STARTER_EXERCISES[0].id;
+    const view = libraryView(
+      rows.filter((entry) => entry.id !== withdrawn),
+      ME,
+    );
+    expect(view.circuitPool.map((entry) => entry.id)).not.toContain(withdrawn);
+    expect(view.circuitPool).toHaveLength(STARTER_LIBRARY.length + 1);
+    expect(view.byId.get(withdrawn)).toMatchObject({ name: STARTER_EXERCISES[0].name, reviewed: false });
   });
 });
 

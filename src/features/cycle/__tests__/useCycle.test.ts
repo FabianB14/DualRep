@@ -5,8 +5,15 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { STARTER_LIBRARY, STARTER_LIBRARY_BY_ID } from '@/features/training/starterLibrary';
 
-import type { CyclePlanInput } from '../cycleMachine';
-import { cycleStoreFor, resetCycleStore, stopCycleForSignOut, useCycle, type UseCycleResult } from '../useCycle';
+import { cycleReducer, initialCycleState, type CyclePlanInput, type FocusState } from '../cycleMachine';
+import {
+  cycleStoreFor,
+  rescheduleCycleAlert,
+  resetCycleStore,
+  stopCycleForSignOut,
+  useCycle,
+  type UseCycleResult,
+} from '../useCycle';
 
 const USER = '11111111-1111-4111-8111-111111111111';
 const T0 = 1_760_000_000_000;
@@ -35,6 +42,7 @@ jest.mock('../cycleRepo', () => ({
 jest.mock('../localState', () => ({ readLocalState: jest.fn(async () => null), writeLocalState: jest.fn(async () => undefined) }));
 const mockRelease = jest.fn();
 jest.mock('../../timer/notifications', () => ({
+  getNotificationPermission: jest.fn(async () => 'granted'),
   scheduleBlockEnd: jest.fn(async () => 'id'),
   cancelScheduled: jest.fn(async () => undefined),
   cancelAllAlerts: jest.fn(async () => undefined),
@@ -178,7 +186,7 @@ describe('useCycle', () => {
     expect(seen.a).not.toBeNull();
   });
 
-  it('sign-out stops the store whether or not the screen is open, after its write in progress, then withdraws every alert', async () => {
+  it('sign-out finishes the running cycle whether or not the screen is open, waits for its writes, then withdraws every alert', async () => {
     const { seen, renderer } = mountTwo();
     await settle();
     act(() => seen.a?.start(PLAN));
@@ -193,16 +201,73 @@ describe('useCycle', () => {
     expect(repo.endFocusBlock).toHaveBeenCalledTimes(1);
 
     let stopped = false;
-    const stopping = stopCycleForSignOut().then(() => (stopped = true));
+    const stopping = stopCycleForSignOut(USER).then(() => (stopped = true));
     await settle();
     // Waits for the write in progress, so it cannot land after the local data is cleared.
     expect(stopped).toBe(false);
-    expect(store.isDisposed).toBe(true);
     finishWrite();
     await stopping;
+    // The workout the handoff opened is closed as skipped (no set), so nothing is left open on the server.
+    expect(repo.skipMoveBlock).toHaveBeenCalledTimes(1);
+    expect(store.isDisposed).toBe(true);
     expect(notifications.cancelAllAlerts).toHaveBeenCalledTimes(1);
-    // Nothing after it: the move block the handoff queued is never started.
-    expect(repo.startMoveBlock).not.toHaveBeenCalled();
+    // Nothing after it.
+    const saves = local.writeLocalState.mock.calls.length;
+    await settle();
+    expect(local.writeLocalState.mock.calls.length).toBe(saves);
     expect(cycleStoreFor(USER)).not.toBe(store);
+  });
+
+  it('sign-out closes a cycle saved on the phone even if its screen was never opened since launch', async () => {
+    const focus = cycleReducer(initialCycleState(USER), {
+      type: 'start',
+      at: T0 - 5 * MIN,
+      userId: USER,
+      plan: PLAN,
+      ids: { sessionId: 's', blockId: 'b', workoutId: 'w', transitionId: 't' },
+    }) as FocusState;
+    local.readLocalState.mockResolvedValueOnce(JSON.parse(JSON.stringify({ ...focus, pending: [] })));
+    await stopCycleForSignOut(USER);
+    expect(repo.endFocusBlock).toHaveBeenCalledWith('b', T0, true, T0);
+    expect(notifications.cancelAllAlerts).toHaveBeenCalledTimes(1);
+  });
+
+  it('schedules the running block’s alert again when the app comes back and notifications are allowed', async () => {
+    notifications.getNotificationPermission.mockResolvedValue('denied');
+    const { seen } = mountTwo();
+    await settle();
+    act(() => seen.a?.start(PLAN));
+    await settle();
+    expect(notifications.scheduleBlockEnd).toHaveBeenCalledTimes(1);
+    // Still not allowed: coming back schedules nothing new.
+    act(() => setAppState('background'));
+    act(() => setAppState('active'));
+    await settle();
+    expect(notifications.scheduleBlockEnd).toHaveBeenCalledTimes(1);
+    // Turned on in system settings (or Settings → Turn on alerts), then back to the app.
+    notifications.getNotificationPermission.mockResolvedValue('granted');
+    act(() => setAppState('background'));
+    jest.setSystemTime(T0 + 2 * MIN);
+    act(() => setAppState('active'));
+    await settle();
+    expect(notifications.scheduleBlockEnd.mock.calls.length).toBeGreaterThan(1);
+    expect(notifications.scheduleBlockEnd).toHaveBeenLastCalledWith(T0 + 10 * MIN, expect.objectContaining({ identifier: expect.stringMatching(/^block-end-/) }));
+    expect(seen.a?.state?.phase).toBe('focus');
+  });
+
+  it('Settings turning alerts on schedules a running block’s alert, even with the cycle screen closed', async () => {
+    const focus = cycleReducer(initialCycleState(USER), {
+      type: 'start',
+      at: T0 - 5 * MIN,
+      userId: USER,
+      plan: PLAN,
+      ids: { sessionId: 's', blockId: 'b', workoutId: 'w', transitionId: 't' },
+    }) as FocusState;
+    local.readLocalState.mockResolvedValueOnce(JSON.parse(JSON.stringify({ ...focus, pending: [] })));
+    await rescheduleCycleAlert(USER);
+    await settle();
+    expect(notifications.scheduleBlockEnd).toHaveBeenCalledWith(T0 + 5 * MIN, expect.objectContaining({ identifier: 'block-end-s-1' }));
+    await rescheduleCycleAlert(null);
+    expect(notifications.scheduleBlockEnd).toHaveBeenCalledTimes(1);
   });
 });

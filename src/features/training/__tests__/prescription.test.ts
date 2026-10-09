@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { defaultTargets, demandOf, PRESCRIPTION, workSeconds } from '../prescription';
+import { defaultTargets, demandOf, MICRO_LIMITS, microRestSeconds, PRESCRIPTION, workSeconds } from '../prescription';
 import { STARTER_LIBRARY } from '../starterLibrary';
 import type { DemandLevel, Measure, WorkoutKind } from '../types';
 
@@ -123,5 +123,24 @@ describe('helpers', () => {
     expect(workSeconds({ targetReps: 12, targetSeconds: null })).toBe(36);
     expect(workSeconds({ targetReps: 5, targetSeconds: null })).toBe(5 * PRESCRIPTION.secondsPerRep);
     expect(workSeconds({ targetReps: null, targetSeconds: null })).toBe(0);
+  });
+
+  it('MICRO_LIMITS: the most work a 50 s station holds, after the shortest change-over', () => {
+    expect(MICRO_LIMITS).toEqual({ seconds: 40, reps: 13 });
+    expect(MICRO_LIMITS.reps * PRESCRIPTION.secondsPerRep).toBeLessThanOrEqual(MICRO_LIMITS.seconds);
+  });
+
+  it.each([
+    // [reps, seconds, change-over]: the rest of the 50 s slot, to 5 s, at least 10 s
+    [10, null, 20],
+    [12, null, 15],
+    [13, null, 10],
+    [15, null, 10],
+    [null, 30, 20],
+    [null, 35, 15],
+    [null, 40, 10],
+    [null, 45, 10],
+  ])('microRestSeconds: %p reps / %p s → %p s', (targetReps, targetSeconds, rest) => {
+    expect(microRestSeconds({ targetReps, targetSeconds })).toBe(rest);
   });
 });

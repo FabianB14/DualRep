@@ -1,5 +1,6 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import type { ReactElement } from 'react';
+import { KeyboardAvoidingView, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -12,6 +13,7 @@ import { Notice } from '../Notice';
 import { NumberedSteps } from '../NumberedSteps';
 import { StatCard, statsSentence } from '../StatCard';
 import { clampProgress, dashOffset, ProgressRing, ringGeometry } from '../ProgressRing';
+import { Screen } from '../Screen';
 import { Section } from '../Section';
 import { SegmentedControl } from '../SegmentedControl';
 import { Stepper, stepValue } from '../Stepper';
@@ -377,5 +379,33 @@ describe('Notice, Section and Glyph', () => {
     const renderer = render(<Glyph name="check" color="#000000" />);
     const svg = renderer.root.find((node) => node.props.accessibilityElementsHidden === true);
     expect(svg.props.importantForAccessibility).toBe('no-hide-descendants');
+  });
+});
+
+describe('Screen', () => {
+  it('offsets the keyboard padding by where it starts in the window, so a footer under a header clears the keyboard', () => {
+    // Under a navigation header 88 dp tall: React Native compares the keyboard's top (window
+    // coordinates) with the frame relative to its parent, which starts at 0 here.
+    const HEADER = 88;
+    const renderer = render(
+      <Screen edges={['bottom', 'left', 'right']} footer={<View />}>
+        <View />
+      </Screen>,
+    );
+    const avoiding = () => renderer.root.findByType(KeyboardAvoidingView);
+    expect(avoiding().props.keyboardVerticalOffset).toBe(0);
+    // The frame the hook measures: the View holding the KeyboardAvoidingView (jest's View has a
+    // measureInWindow that answers nothing, so it is told where it is).
+    const [frame] = renderer.root.findAll(
+      (node) =>
+        node.props.collapsable === false &&
+        typeof node.props.onLayout === 'function' &&
+        typeof (node.instance as { measureInWindow?: unknown } | null)?.measureInWindow === 'function',
+    );
+    (frame.instance as { measureInWindow: (callback: (...box: number[]) => void) => void }).measureInWindow = (callback) =>
+      callback(0, HEADER, 390, 700);
+    act(() => frame.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } }));
+    expect(avoiding().props.keyboardVerticalOffset).toBe(HEADER);
+    expect(avoiding().props.behavior).toBe('padding');
   });
 });

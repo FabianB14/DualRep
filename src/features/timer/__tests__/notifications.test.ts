@@ -8,6 +8,7 @@ import {
   configureNotifications,
   getNotificationPermission,
   readAlertTestResult,
+  recordAlertTestFired,
   registerVisibleTimer,
   requestNotificationPermission,
   resetNotificationsForTests,
@@ -211,7 +212,7 @@ describe('cancelAllAlerts (sign-out)', () => {
 describe('the timer check (D8 alert delay)', () => {
   const TEST: AlertTest = { id: `alert-test-${NOW}`, minutes: 25, scheduledAt: NOW, dueAt: NOW + 25 * 60_000, firedAt: null };
 
-  it('schedules a test alert that opens the timer check, and remembers when it is due', async () => {
+  it('schedules a test alert that opens the timer check and stays in the shade when tapped, and remembers when it is due', async () => {
     store.readLocalState.mockResolvedValueOnce({ ...TEST, id: 'alert-test-old' });
     const test = await scheduleAlertTest(25, NOW);
     expect(test).toEqual(TEST);
@@ -223,6 +224,8 @@ describe('the timer check (D8 alert delay)', () => {
         body: 'This is the test alert. Open DualRep to see how late it came.',
         data: { url: '/timer-check', kind: 'alert-test' },
         sound: 'default',
+        // Android's default (autoDismiss true) removes a tapped alert before the screen can read it.
+        autoDismiss: false,
       },
       trigger: { type: 'date', date: NOW + 25 * 60_000, channelId: 'timers-v1' },
     });
@@ -260,6 +263,8 @@ describe('the timer check (D8 alert delay)', () => {
     const saved = { ...TEST, firedAt: TEST.dueAt + 95_000 };
     expect(result).toEqual({ status: 'fired', test: saved, firedAt: TEST.dueAt + 95_000, delayMs: 95_000 });
     expect(store.writeLocalState).toHaveBeenCalledWith(ALERT_TEST_STATE_KEY, saved);
+    // Once its time is saved, the alert (kept in the shade when tapped) is cleared.
+    expect(N.dismissNotificationAsync).toHaveBeenCalledWith(TEST.id);
 
     // Later reads use the saved time, even after the alert was swiped away.
     store.readLocalState.mockResolvedValue(saved);
@@ -279,6 +284,45 @@ describe('the timer check (D8 alert delay)', () => {
     await expect(readAlertTestResult(TEST.dueAt + 120_000)).resolves.toEqual({ status: 'delayed', test: TEST, lateByMs: 120_000 });
     N.getAllScheduledNotificationsAsync.mockResolvedValueOnce([]);
     await expect(readAlertTestResult(TEST.dueAt + 120_000)).resolves.toEqual({ status: 'missed', test: TEST });
+  });
+
+  it('keeps the alert in the shade when its time could not be saved, so the next read can try again', async () => {
+    store.readLocalState.mockResolvedValue(TEST);
+    store.writeLocalState.mockRejectedValueOnce(new Error('locked'));
+    N.getPresentedNotificationsAsync.mockResolvedValue([{ date: TEST.dueAt + 2000, request: { identifier: TEST.id } }]);
+    await expect(readAlertTestResult(TEST.dueAt + 60_000)).resolves.toMatchObject({ status: 'fired', delayMs: 2000 });
+    expect(N.dismissNotificationAsync).not.toHaveBeenCalled();
+  });
+
+  it('a tap on the alert saves its posting time, so the result holds even with the alert gone from the shade', async () => {
+    store.readLocalState.mockResolvedValue(TEST);
+    await recordAlertTestFired(TEST.id, TEST.dueAt + 40_000);
+    const saved = { ...TEST, firedAt: TEST.dueAt + 40_000 };
+    expect(store.writeLocalState).toHaveBeenCalledWith(ALERT_TEST_STATE_KEY, saved);
+    expect(N.dismissNotificationAsync).toHaveBeenCalledWith(TEST.id);
+    // The screen it opens: nothing in the shade, nothing scheduled, and still the measured delay.
+    store.readLocalState.mockResolvedValue(saved);
+    await expect(readAlertTestResult(TEST.dueAt + 41_000)).resolves.toEqual({
+      status: 'fired',
+      test: saved,
+      firedAt: TEST.dueAt + 40_000,
+      delayMs: 40_000,
+    });
+  });
+
+  it('a tap saves nothing for another test, a test already measured, or a bad time; never throws', async () => {
+    store.readLocalState.mockResolvedValue(TEST);
+    await recordAlertTestFired('alert-test-old', TEST.dueAt + 1000);
+    await recordAlertTestFired(TEST.id, Number.NaN);
+    store.readLocalState.mockResolvedValue({ ...TEST, firedAt: TEST.dueAt + 5000 });
+    await recordAlertTestFired(TEST.id, TEST.dueAt + 9000);
+    expect(store.writeLocalState).not.toHaveBeenCalled();
+    store.readLocalState.mockRejectedValueOnce(new Error('closed'));
+    await expect(recordAlertTestFired(TEST.id, TEST.dueAt)).resolves.toBeUndefined();
+    // A time in seconds is read as such.
+    store.readLocalState.mockResolvedValue(TEST);
+    await recordAlertTestFired(TEST.id, (TEST.dueAt + 3000) / 1000);
+    expect(store.writeLocalState).toHaveBeenCalledWith(ALERT_TEST_STATE_KEY, { ...TEST, firedAt: TEST.dueAt + 3000 });
   });
 
   it('treats an unreadable record as no test', async () => {

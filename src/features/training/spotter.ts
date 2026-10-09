@@ -15,11 +15,14 @@
  *   (40 s target: 36 s done is on target, 35 s is 1 short, 30 s is 2 short). The 25% and 50% checks
  *   compare the seconds themselves. (So a timed target under 10 s can never be 2 short; the default
  *   targets are 20 s and up.)
- * - Load: the weight used on the set (else its target weight), in pounds. No load (none, or 0) means a
- *   bodyweight set.
+ * - Load: the weight used on the set, in pounds. No weight (none, or 0) means a bodyweight set, even
+ *   when the set had a target weight: the set logger records the weight actually used (an untouched
+ *   weight is the target's), so "None" is the user's choice and the spotter goes by it.
  * - Effort: RPE 1–10 (the effort chips are Easy = 6, Solid = 8, All out = 10), or unknown.
  * - Eased set: a set the spotter already made easier this session: a drop set, a rest-pause set, or a
- *   set whose target or target load is below the session's first set.
+ *   set whose target is below the session's first set (rule 6 lowered it). Only what the spotter did
+ *   counts: a lighter weight the user picked is not easing (the spotter's own load drops are always
+ *   drop sets), so a miss after it gets the usual drop, not a cut.
  * - Real weight: a weight on the equipment's grid of steps (units.ts: 5 lb; 2.5 kg, 2 kg for dumbbells;
  *   4 kg kettlebells). One step is the lightest load the spotter will suggest.
  *
@@ -47,6 +50,13 @@
  *    - With no load, or a load already at one step: lower the target to what was done (at least 1).
  * The spotter never raises the load within a session.
  *
+ * IN A MICRO CIRCUIT the stations go round-robin, so while other stations are still open, the next set
+ * of an exercise comes a round later (input `roundRobin`). The round is its rest, so rule 5 asks for
+ * no extra rest there: it continues with the same target ("Same again next round"), and the other
+ * messages say "Next round" instead of "Next set". The numbers are the same as above. A rest-pause set
+ * still comes straight after its set, and once the other stations are done the sets follow on directly
+ * and the rules read as written.
+ *
  * THE NEXT SESSION (adviseNextSession), from the last session's sets of this exercise:
  * - Working sets are the normal and drop sets (rest-pause mini-sets don't count). Last load is the
  *   lowest load used on a normal set; last target is the first normal set's target. With no normal set
@@ -60,9 +70,12 @@
  *      5% (20 lb dumbbells: 5 lb is 25%), add reps instead (double progression): +2 reps from a target
  *      of 10 or more, +1 below 10, up to 15 reps. At 15 reps, move up one step and reset the reps to the
  *      most that keep the estimated strength the set needs (Epley: load × (1 + reps / 30)) within 5% of
- *      last time; if that is fewer than 5 reps, the step is too big for one session, so hold.
+ *      last time (and within the range); if that is fewer than 5 reps, the step is too big for one
+ *      session, so hold.
  *    - Reps with no load: +2 / +1 reps the same way, up to 15, then hold.
  *    - Timed sets: the load goes up 5% when a real weight fits; else +5 s up to 60 s; then hold.
+ *    A caller can lower the top of the range (15 reps, 60 s): a micro circuit does, so that a set
+ *    still fits its 50-second station (circuitPrep.ts); beyond it the load goes up, as above.
  * 3. Otherwise hold: same load and target.
  *
  * THE CAP (the plan's guardrail: "load increases are capped per session, starting at 5 percent").
@@ -99,7 +112,7 @@ export type LoggedSet = {
   done: number;
   /** The load aimed for, in pounds; null for bodyweight. */
   targetWeightLbs: number | null;
-  /** The load used, in pounds; null = the target load (bodyweight when that is null too). */
+  /** The load used, in pounds; null (or 0) = none, a bodyweight set, whatever the target load was. */
   weightLbs: number | null;
   /** Effort, RPE 1–10, or null when not rated. */
   rpe: number | null;
@@ -130,6 +143,11 @@ export type NextSetInput = {
   last: LoggedSet;
   /** The sets of this exercise logged earlier in this session, oldest first (not including `last`). */
   earlier: readonly LoggedSet[];
+  /**
+   * True when the next set of this exercise comes a round later, after the other stations of a micro
+   * circuit, rather than straight after a rest (see IN A MICRO CIRCUIT in the header). Default false.
+   */
+  roundRobin?: boolean;
 };
 
 export type SpotterAdvice = {
@@ -148,6 +166,10 @@ export type NextSessionContext = {
   measure: Measure;
   unit: Unit;
   equipment: EquipmentInput;
+  /** The most reps a target may rise to (default SPOTTER_RULES.topReps); a micro circuit passes fewer. */
+  topReps?: number;
+  /** The most seconds a timed target may rise to (default SPOTTER_RULES.topSeconds). */
+  topSeconds?: number;
 };
 
 export type NextSessionAdvice = SetTargets & {
@@ -202,14 +224,9 @@ function doneOf(set: LoggedSet): number {
   return Math.max(0, finite(set.done) ?? 0);
 }
 
-/** The load of a set in pounds, or null for a bodyweight set. */
+/** The load used on a set in pounds, or null for a bodyweight set (no weight, or 0). */
 function loadOf(set: LoggedSet): number | null {
-  const load = finite(set.weightLbs) ?? finite(set.targetWeightLbs);
-  return load !== null && load > 0 ? load : null;
-}
-
-function targetLoadOf(set: LoggedSet): number | null {
-  const load = finite(set.targetWeightLbs);
+  const load = finite(set.weightLbs);
   return load !== null && load > 0 ? load : null;
 }
 
@@ -220,15 +237,18 @@ function repsShort(target: number, done: number, measure: Measure): number {
   return measure === 'time' ? Math.floor(short / R.secondsPerRep + EPSILON) : Math.ceil(short - EPSILON);
 }
 
-/** True when the set was already made easier this session (see "Eased set" in the header). */
+/**
+ * True when the spotter already made this set easier this session (see "Eased set" in the header): a
+ * drop or rest-pause set, or a target it lowered. Targets come only from the plan and the spotter, so a
+ * lower target is the spotter's doing; target loads are not compared, because after an on-target set
+ * the next target load is the weight the user chose.
+ */
 function wasEased(last: LoggedSet, earlier: readonly LoggedSet[]): boolean {
   if (last.setType !== 'normal') return true;
   const first = earlier[0];
   if (!first) return false;
   const [firstTarget, lastTarget] = [targetOf(first), targetOf(last)];
-  if (firstTarget !== null && lastTarget !== null && lastTarget < firstTarget - EPSILON) return true;
-  const [firstLoad, lastLoad] = [targetLoadOf(first), targetLoadOf(last)];
-  return firstLoad !== null && lastLoad !== null && lastLoad < firstLoad - EPSILON;
+  return firstTarget !== null && lastTarget !== null && lastTarget < firstTarget - EPSILON;
 }
 
 function targets(measure: Measure, amount: number | null, loadLbs: number | null): SetTargets {
@@ -275,6 +295,9 @@ export function adviseNextSet(input: NextSetInput): SpotterAdvice {
   const planDone = last.setType === 'rest_pause' || setsDone >= plannedSets;
   // A set after a drop stays at the dropped load, so it is still a drop set.
   const sameType: SetType = last.setType === 'drop' ? 'drop' : 'normal';
+  // Micro circuits: the next set of this exercise comes after the other stations (see the header).
+  const roundRobin = input.roundRobin === true;
+  const nextSet = roundRobin ? 'Next round' : 'Next set';
 
   /** Advice for one more set aiming at `amount` with `loadLbs`. */
   const another = (
@@ -314,7 +337,8 @@ export function adviseNextSet(input: NextSetInput): SpotterAdvice {
       return over('continue', `Made up the missing ${measure === 'time' ? 'time' : 'reps'}. That one is done.`);
     }
     if (planDone) return over('continue', `On target. ${allDone}`);
-    return another('continue', target, load, { message: `On target. Same again: ${sameAim}.` });
+    const again = roundRobin ? `Next round: ${sameAim}` : `Same again: ${sameAim}`;
+    return another('continue', target, load, { message: `On target. ${again}.` });
   }
 
   // Rule 2: cut.
@@ -345,7 +369,10 @@ export function adviseNextSet(input: NextSetInput): SpotterAdvice {
     return over('continue', `${shortText} on the last set. That one is done.`);
   }
 
-  // Rule 5: 1 short.
+  // Rule 5: 1 short. In a round-robin circuit the round is the rest, so no extra rest is promised.
+  if (short === 1 && roundRobin) {
+    return another('continue', target, load, { message: `${shortText}. Same again next round: ${sameAim}.` });
+  }
   if (short === 1) {
     const taken = Math.max(0, finite(last.restSeconds) ?? 0);
     const extended = Math.min(R.maxExtendedRestSeconds, Math.max(plannedRest, taken) + R.extraRestSeconds);
@@ -364,12 +391,12 @@ export function adviseNextSet(input: NextSetInput): SpotterAdvice {
     );
     if (dropped < load - EPSILON) {
       const aim = aimText(target, measure, dropped, unit);
-      return another('drop_weight', target, dropped, { setType: 'drop', message: `${shortText}. Next set: ${aim}.` });
+      return another('drop_weight', target, dropped, { setType: 'drop', message: `${shortText}. ${nextSet}: ${aim}.` });
     }
   }
   const lowered = Math.max(1, Math.floor(done + EPSILON));
   const aim = aimText(lowered, measure, load, unit);
-  return another('lower_target', lowered, load, { message: `${shortText}. Next set: aim for ${aim}.` });
+  return another('lower_target', lowered, load, { message: `${shortText}. ${nextSet}: aim for ${aim}.` });
 }
 
 /** Epley's estimate of the one-rep max a set needs: load × (1 + reps / 30). */
@@ -388,8 +415,14 @@ function lowerTarget(target: number, measure: Measure): number {
 }
 
 /** Reps added in one session: +2 from 10 reps up, +1 below, never past the top of the range. */
-function addReps(target: number): number {
-  return Math.min(R.topReps, target + (target >= 10 ? 2 : 1));
+function addReps(target: number, topReps: number): number {
+  return Math.min(topReps, target + (target >= 10 ? 2 : 1));
+}
+
+/** A caller's top of the range when it is a usable number (at least 1), else the default. */
+function topOf(value: number | undefined, fallback: number): number {
+  const top = finite(value);
+  return top !== null && top >= 1 ? top : fallback;
 }
 
 /**
@@ -401,6 +434,8 @@ export function adviseNextSession(
   ctx: NextSessionContext,
 ): NextSessionAdvice | null {
   const { measure, unit, equipment } = ctx;
+  const topReps = topOf(ctx.topReps, R.topReps);
+  const topSeconds = topOf(ctx.topSeconds, R.topSeconds);
   const working = lastSessionSets.filter((set) => set.setType !== 'rest_pause' && targetOf(set) !== null);
   const normal = working.filter((set) => set.setType === 'normal');
   const target = normal.length > 0 ? targetOf(normal[0]) : null;
@@ -452,15 +487,15 @@ export function adviseNextSession(
   }
 
   if (measure === 'time') {
-    if (target < R.topSeconds) {
-      const longer = Math.min(R.topSeconds, target + R.timeStepSeconds);
+    if (target < topSeconds) {
+      const longer = Math.min(topSeconds, target + R.timeStepSeconds);
       return advise('raise', longer, load, `Next time: ${aimText(longer, measure, load, unit)}. A little longer.`);
     }
     return advise('hold', target, load, `Next time: ${same} again. That's the top of the range.`);
   }
 
-  if (target < R.topReps) {
-    const more = addReps(target);
+  if (target < topReps) {
+    const more = addReps(target, topReps);
     return advise('raise', more, load, `Next time: ${aimText(more, measure, load, unit)}. ${more - target} more.`);
   }
 
@@ -468,7 +503,7 @@ export function adviseNextSession(
     // Double progression: at the top of the range, one step heavier with the reps reset under the cap.
     const heavier = stepWeight(load, unit, equipment, 1);
     const allowed = (1 + R.sessionLoadCap) * estimatedMax(load, target);
-    const reps = Math.min(target, Math.floor(30 * (allowed / heavier - 1) + EPSILON));
+    const reps = Math.min(target, topReps, Math.floor(30 * (allowed / heavier - 1) + EPSILON));
     if (reps >= R.minResetReps) {
       return advise(
         'raise',

@@ -16,8 +16,9 @@
  * is never uploaded before the block it points to.
  *
  * A failed write is retried with backoff (1 s, 2 s, 4 s … 30 s) and reported in `error`; later
- * effects wait behind it so the order holds. A write the repo refuses as invalid (RangeError) can
- * never succeed, so it is dropped and reported instead of blocking the loop.
+ * effects wait behind it so the order holds. The report clears once a retry has gone through: an
+ * effect performed, or a save with nothing left to write or perform. A write the repo refuses as
+ * invalid (RangeError) can never succeed, so it is dropped and reported instead of blocking the loop.
  */
 import type { LoggedSet } from '@/features/training/spotter';
 import { replaceItem } from '@/features/training/swap';
@@ -176,6 +177,27 @@ export class CycleStore {
   async stop(): Promise<void> {
     this.dispose();
     await Promise.all([this.effectsRun.catch(() => undefined), this.writing?.catch(() => undefined)]);
+  }
+
+  /**
+   * Sign-out: finishes a running cycle the way "Finish" does, so its rows are closed (the focus block's
+   * end, the workout's length, or its skip) instead of staying open on the server for good once this
+   * phone's copy is cleared; waits for those writes to land on the phone; then stop(). A write that
+   * fails is not retried here (sign-out goes ahead). Never rejects.
+   */
+  async finishAndStop(): Promise<void> {
+    try {
+      await this.load();
+      if (!this.disposed && this.state && this.state.phase !== 'idle') {
+        this.finish();
+        this.kick();
+        // Runs every pending effect in order, and returns early only when one fails.
+        await this.effectsRun;
+      }
+    } catch {
+      // Nothing to finish, or it could not be read: sign-out goes ahead.
+    }
+    await this.stop();
   }
 
   setContext(context: CycleContext): void {
@@ -361,6 +383,15 @@ export class CycleStore {
     this.dispatch({ type: 'finish', at: this.deps.now() });
   }
 
+  /**
+   * Schedules the coming block-end alert again (call when notifications are allowed): a block started
+   * while they were not allowed gets its alert now, and one Android dropped comes back. It keeps its
+   * id, so this never adds a second alert.
+   */
+  rescheduleAlert(): void {
+    this.dispatch({ type: 'reschedule_alert', at: this.deps.now() });
+  }
+
   dismissSummary(): void {
     this.dispatch({ type: 'dismiss_summary' });
   }
@@ -433,6 +464,7 @@ export class CycleStore {
       this.writing = this.deps.writeState(snapshot).then(
         () => {
           this.writing = null;
+          this.savedOk();
         },
         (error: unknown) => {
           this.writing = null;
@@ -441,6 +473,13 @@ export class CycleStore {
         },
       );
     }
+  }
+
+  /** A save went through: with nothing left to save or perform, a save problem shown earlier is over. */
+  private savedOk(): void {
+    if (this.dirty || (this.state?.pending.length ?? 0) > 0) return;
+    this.failures = 0;
+    if (this.error === CYCLE_SAVE_ERROR) this.setError(null);
   }
 
   private kick(): void {

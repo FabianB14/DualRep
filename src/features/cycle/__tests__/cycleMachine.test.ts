@@ -246,7 +246,7 @@ describe('idle → focus (start)', () => {
       blockNumber: 1,
       workoutId: 'workout-1',
       transitionId: 'transition-1',
-      notificationId: 'block-end-block-1',
+      notificationId: 'block-end-session-1-1',
       circuit: null,
       endedAt: null,
       interrupted: false,
@@ -278,7 +278,7 @@ describe('idle → focus (start)', () => {
         id: 2,
         at: T0,
         kind: 'schedule_block_end',
-        notificationId: 'block-end-block-1',
+        notificationId: 'block-end-session-1-1',
         endsAt: T0 + 25 * MIN,
         title: 'Focus block done',
         body: 'Time to move: your 10-minute circuit is ready.',
@@ -348,7 +348,7 @@ describe('focus → move: the zero-tap handoff', () => {
     });
     expect(move.pending.map(({ id, ...rest }) => rest)).toEqual([
       { at: T0 + 25 * MIN + 400, kind: 'end_focus_block', blockId: 'block-1', endedAt: T0 + 25 * MIN, interrupted: false },
-      { at: T0 + 25 * MIN + 400, kind: 'cancel_notification', notificationId: 'block-end-block-1' },
+      { at: T0 + 25 * MIN + 400, kind: 'cancel_notification', notificationId: 'block-end-session-1-1' },
       {
         at: T0 + 25 * MIN + 400,
         kind: 'start_move_block',
@@ -402,7 +402,8 @@ describe('focus → move: the zero-tap handoff', () => {
     const focus = cleared(withCircuit(started(), circuit('micro', [])));
     const back = cycleReducer(focus, { type: 'tick', at: T0 + 25 * MIN });
     expectPhase(back, 'return');
-    expect(kinds(back)).toEqual(['end_focus_block', 'cancel_notification']);
+    // The next block's alert is scheduled as the countdown starts (see the return tests).
+    expect(kinds(back)).toEqual(['end_focus_block', 'cancel_notification', 'schedule_block_end']);
     expect(back.countdown).toEqual({ durationMs: 30 * SEC, endsAt: T0 + 25 * MIN + 30 * SEC, pausedRemainingMs: null });
   });
 });
@@ -413,7 +414,7 @@ describe('focus: pause and resume', () => {
     const paused = cycleReducer(focus, { type: 'pause', at: T0 + 5 * MIN });
     expectPhase(paused, 'focus');
     expect(paused.timer).toEqual({ durationMs: 25 * MIN, endsAt: null, pausedRemainingMs: 20 * MIN });
-    expect(paused.pending).toEqual([{ id: 3, at: T0 + 5 * MIN, kind: 'cancel_notification', notificationId: 'block-end-block-1' }]);
+    expect(paused.pending).toEqual([{ id: 3, at: T0 + 5 * MIN, kind: 'cancel_notification', notificationId: 'block-end-session-1-1' }]);
     expect(cycleReducer(paused, { type: 'tick', at: T0 + 2 * 60 * MIN })).toBe(paused);
     expect(cycleReducer(paused, { type: 'pause', at: T0 + 6 * MIN })).toBe(paused);
   });
@@ -425,13 +426,36 @@ describe('focus: pause and resume', () => {
     expectPhase(resumed, 'focus');
     expect(resumed.timer.endsAt).toBe(resumeAt + 20 * MIN);
     expect(kinds(resumed)).toEqual(['schedule_block_end']);
-    expect(effect(resumed, 'schedule_block_end')).toMatchObject({ notificationId: 'block-end-block-1', endsAt: resumeAt + 20 * MIN });
+    expect(effect(resumed, 'schedule_block_end')).toMatchObject({ notificationId: 'block-end-session-1-1', endsAt: resumeAt + 20 * MIN });
     expect(cycleReducer(resumed, { type: 'resume', at: resumeAt + MIN })).toBe(resumed);
     expect(cycleReducer(resumed, { type: 'tick', at: resumeAt + 20 * MIN - 1 })).toBe(resumed);
     const move = cycleReducer(resumed, { type: 'tick', at: resumeAt + 20 * MIN });
     expectPhase(move, 'move');
     expect(move.stats.focusMs).toBe(25 * MIN);
-    expect(effect(move, 'end_focus_block').endedAt).toBe(resumeAt + 20 * MIN);
+    // Recorded as the start plus the 25 minutes focused: the paused hour and a half is not focus time.
+    expect(effect(move, 'end_focus_block').endedAt).toBe(T0 + 25 * MIN);
+  });
+
+  it('"reschedule_alert" schedules a running block’s alert again under the same id (notifications were just allowed)', () => {
+    const focus = cleared(withCircuit(started()));
+    const again = cycleReducer(focus, { type: 'reschedule_alert', at: T0 + 3 * MIN });
+    expectPhase(again, 'focus');
+    expect(again.pending.map(({ id, ...rest }) => rest)).toEqual([
+      {
+        at: T0 + 3 * MIN,
+        kind: 'schedule_block_end',
+        notificationId: 'block-end-session-1-1',
+        endsAt: T0 + 25 * MIN,
+        title: 'Focus block done',
+        body: 'Time to move: your 10-minute circuit is ready.',
+      },
+    ]);
+    // Paused (no alert while paused), ended, or already due: nothing to schedule.
+    const paused = cleared(cycleReducer(focus, { type: 'pause', at: T0 + MIN }) as FocusState);
+    expect(cycleReducer(paused, { type: 'reschedule_alert', at: T0 + 3 * MIN })).toBe(paused);
+    expect(cycleReducer(focus, { type: 'reschedule_alert', at: T0 + 25 * MIN })).toBe(focus);
+    const waiting = cleared(cycleReducer(started(), { type: 'tick', at: T0 + 25 * MIN }) as FocusState);
+    expect(cycleReducer(waiting, { type: 'reschedule_alert', at: T0 + 26 * MIN })).toBe(waiting);
   });
 
   it('a pause that arrives after the end hands off instead', () => {
@@ -452,12 +476,28 @@ describe('focus: ending early and finishing', () => {
     expect(move.startedAt).toBe(T0 + 12 * MIN);
   });
 
-  it('ending a paused block counts only the time before the pause', () => {
+  it('ending a paused block counts only the time before the pause, in the stats and in the row', () => {
     const paused = cycleReducer(withCircuit(started()), { type: 'pause', at: T0 + 8 * MIN });
     const move = cycleReducer(paused, { type: 'end_block', at: T0 + 40 * MIN });
     expectPhase(move, 'move');
     expect(move.stats.focusMs).toBe(8 * MIN);
-    expect(effect(move, 'end_focus_block')).toMatchObject({ endedAt: T0 + 40 * MIN, interrupted: true });
+    // ended_at − started_at is what History and Today count, so it is the 8 minutes focused, not 40.
+    expect(effect(move, 'end_focus_block')).toMatchObject({ endedAt: T0 + 8 * MIN, interrupted: true });
+  });
+
+  it('pause, resume, then end early: the row counts both stretches of focus and neither pause', () => {
+    let state = cycleReducer(withCircuit(started()), { type: 'pause', at: T0 + 5 * MIN });
+    state = cycleReducer(state, { type: 'resume', at: T0 + 20 * MIN });
+    const move = cycleReducer(cleared(state), { type: 'end_block', at: T0 + 25 * MIN });
+    expectPhase(move, 'move');
+    expect(move.stats.focusMs).toBe(10 * MIN);
+    expect(effect(move, 'end_focus_block')).toMatchObject({ endedAt: T0 + 10 * MIN, interrupted: true });
+    // "Finish" while paused: the same rule.
+    const finished = cycleReducer(cleared(cycleReducer(withCircuit(started()), { type: 'pause', at: T0 + 2 * MIN })), {
+      type: 'finish',
+      at: T0 + 30 * MIN,
+    });
+    expect(effect(finished, 'end_focus_block')).toMatchObject({ endedAt: T0 + 2 * MIN, interrupted: true });
   });
 
   it('"End block" after the timer ran out is a normal end', () => {
@@ -505,7 +545,7 @@ describe('move: micro circuits go round-robin', () => {
     const sets = state.pending.filter((entry) => entry.kind === 'log_set').map((entry) => (entry as Extract<CycleEffect, { kind: 'log_set' }>).input);
     expect(sets.map((set) => set.setIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
     expect(sets.map((set) => set.exerciseId)).toEqual(['a', 'b', 'c', 'a', 'b', 'c', 'a', 'b', 'c']);
-    expect(kinds(state).slice(-1)).toEqual(['finish_move_block']);
+    expect(kinds(state).slice(-2)).toEqual(['finish_move_block', 'schedule_block_end']);
     expect(effect(state, 'finish_move_block')).toMatchObject({ workoutId: 'workout-1', durationMinutes: 13 });
   });
 
@@ -569,6 +609,40 @@ describe('move: micro circuits go round-robin', () => {
     state = logMany(state, 2, T0 + 29 * MIN);
     state = log(cleared(state as MoveState), T0 + 31 * MIN);
     expect(effect(state, 'log_set').input).toMatchObject({ exerciseId: 'c', setType: 'drop', targetWeightLbs: 20, weightLbs: 20 });
+  });
+
+  it('1 rep short moves on to the next station: the advice is for the next round, with no extra rest', () => {
+    let state: CycleState = logMany(moving(), 2, T0 + 26 * MIN);
+    state = log(state, T0 + 28 * MIN, { done: 9 });
+    expectPhase(state, 'move');
+    // The screen shows station a with the change-over of station c; the note must not contradict it.
+    expect(position(state)).toEqual([2, 0]);
+    expect(state.rest?.durationMs).toBe(15 * SEC);
+    expect(state.lastAdvice).toMatchObject({
+      exerciseName: 'Exercise c',
+      advice: { action: 'continue', restSeconds: 15, message: '1 rep short. Same again next round: 10 reps at 25 lb.' },
+    });
+    expect(state.items[2]).toMatchObject({ next: { targetReps: 10, targetWeightLbs: 25 }, nextSetType: 'normal' });
+  });
+
+  it('once the other stations are done, the next set follows straight on, with the spotter’s longer rest', () => {
+    let state: CycleState = moving();
+    state = cycleReducer(state, { type: 'skip_exercise', at: T0 + 26 * MIN, itemIndex: 0 });
+    state = cycleReducer(state, { type: 'skip_exercise', at: T0 + 27 * MIN, itemIndex: 1 });
+    state = log(state, T0 + 28 * MIN, { done: 9 });
+    expectPhase(state, 'move');
+    expect(position(state)).toEqual([2, 2]);
+    expect(state.lastAdvice?.advice).toMatchObject({ action: 'extend_rest', restSeconds: 45 });
+    expect(state.rest?.durationMs).toBe(45 * SEC);
+    expect(state.lastAdvice?.advice.message).toBe('1 rep short. Rest 45 s, then same again: 10 reps at 25 lb.');
+  });
+
+  it('a set done with no weight ("None") is read as bodyweight, not at the target weight', () => {
+    let state: CycleState = cleared(logMany(moving(), 2, T0 + 26 * MIN));
+    state = log(state, T0 + 28 * MIN, { done: 8, weightLbs: null });
+    expectPhase(state, 'move');
+    expect(effect(state, 'log_set').input).toMatchObject({ weightLbs: null, targetWeightLbs: 25, reps: 8 });
+    expect(state.lastAdvice?.advice).toMatchObject({ action: 'lower_target', next: { targetReps: 8, targetWeightLbs: null } });
   });
 
   it('a set with a quarter of the target or less cuts the station: later rounds skip it', () => {
@@ -693,7 +767,7 @@ describe('move: rest timer', () => {
     expect((cycleReducer(resting, { type: 'tick', at: T0 + 26 * MIN + 20 * SEC }) as MoveState).rest).toBeNull();
     const notResting = moving();
     expect(cycleReducer(notResting, { type: 'skip_rest', at: T0 })).toBe(notResting);
-    expect(cycleReducer(notResting, { type: 'tick', at: T0 + 99 * MIN })).toBe(notResting);
+    expect(cycleReducer(notResting, { type: 'tick', at: T0 + 25 * MIN + CYCLE_RULES.moveStaleMs })).toBe(notResting);
   });
 });
 
@@ -718,6 +792,13 @@ describe('move: skip and swap', () => {
     expectPhase(state, 'return');
     expect(state.pending.map(({ id, at, ...rest }) => rest)).toEqual([
       { kind: 'skip_move_block', workoutId: 'workout-1', transitionId: 'transition-1' },
+      {
+        kind: 'schedule_block_end',
+        notificationId: 'block-end-session-1-2',
+        endsAt: T0 + 28 * MIN + 30 * SEC + 25 * MIN,
+        title: 'Focus block done',
+        body: 'Time to move: your 10-minute circuit is ready.',
+      },
     ]);
     expect(state.stats.moveBlocks).toBe(0);
   });
@@ -790,23 +871,54 @@ describe('move and return: rating the focus block', () => {
 });
 
 describe('move → return: ending the move block', () => {
-  it('"Finish move" after sets closes the workout with its length', () => {
-    const state = log(moving(), T0 + 26 * MIN);
+  it('"Finish move" after sets closes the workout with its length: from its start to its last set', () => {
+    const state = log(log(moving(), T0 + 26 * MIN), T0 + 33 * MIN + 10 * SEC);
     const back = cycleReducer(cleared(state as MoveState), { type: 'finish_move', at: T0 + 33 * MIN + 40 * SEC });
     expectPhase(back, 'return');
     expect(back.pending.map(({ id, ...rest }) => rest)).toEqual([
-      { at: T0 + 33 * MIN + 40 * SEC, kind: 'finish_move_block', workoutId: 'workout-1', durationMinutes: 9 },
+      { at: T0 + 33 * MIN + 40 * SEC, kind: 'finish_move_block', workoutId: 'workout-1', durationMinutes: 8 },
+      {
+        at: T0 + 33 * MIN + 40 * SEC,
+        kind: 'schedule_block_end',
+        notificationId: 'block-end-session-1-2',
+        endsAt: T0 + 34 * MIN + 10 * SEC + 25 * MIN,
+        title: 'Focus block done',
+        body: 'Time to move: your 10-minute circuit is ready.',
+      },
     ]);
     expect(back.countdown).toEqual({ durationMs: 30 * SEC, endsAt: T0 + 34 * MIN + 10 * SEC, pausedRemainingMs: null });
-    expect(back).toMatchObject({ blockId: 'block-1', blockNumber: 1, stats: { blocks: 1, sets: 1, moveBlocks: 1 } });
+    expect(back).toMatchObject({ blockId: 'block-1', blockNumber: 1, stats: { blocks: 1, sets: 2, moveBlocks: 1 } });
+  });
+
+  it('a workout left open is not counted as hours long when it is finally ended', () => {
+    const state = cleared(log(log(moving(), T0 + 26 * MIN), T0 + 27 * MIN) as MoveState);
+    // The app was closed mid-circuit; "End workout" is tapped 40 minutes later (still within MOVE_STALE).
+    const back = cycleReducer(state, { type: 'finish_move', at: T0 + 67 * MIN });
+    expect(effect(back, 'finish_move_block').durationMinutes).toBe(2);
+    expect(effect(cycleReducer(state, { type: 'finish', at: T0 + 67 * MIN }), 'finish_move_block').durationMinutes).toBe(2);
+  });
+
+  it('a workout untouched for MOVE_STALE is closed at its last set and the cycle finishes, not resumed', () => {
+    const state = cleared(log(log(moving(), T0 + 26 * MIN), T0 + 27 * MIN) as MoveState);
+    expectPhase(cycleReducer(state, { type: 'tick', at: T0 + 27 * MIN + CYCLE_RULES.moveStaleMs }), 'move');
+    const idle = cycleReducer(state, { type: 'tick', at: T0 + 27 * MIN + 14 * 60 * MIN, ids: IDS2 });
+    expectPhase(idle, 'idle');
+    expect(idle.pending.map(({ id, ...rest }) => rest)).toEqual([
+      { at: T0 + 27 * MIN + 14 * 60 * MIN, kind: 'finish_move_block', workoutId: 'workout-1', durationMinutes: 2 },
+    ]);
+    expect(idle.summary).toMatchObject({ blocks: 1, sets: 2, moveBlocks: 1, finishedAt: T0 + 27 * MIN });
+    // With no set at all it is skipped, as "Skip workout" would.
+    const empty = cycleReducer(moving(), { type: 'tick', at: T0 + 26 * MIN + CYCLE_RULES.moveStaleMs });
+    expectPhase(empty, 'idle');
+    expect(kinds(empty)).toEqual(['skip_move_block']);
   });
 
   it('"Skip" with no sets refuses the transition; after sets it is the same as finishing', () => {
     const skipped = cycleReducer(moving(), { type: 'skip_move', at: T0 + 26 * MIN });
-    expect(kinds(skipped)).toEqual(['skip_move_block']);
+    expect(kinds(skipped)).toEqual(['skip_move_block', 'schedule_block_end']);
     expect(effect(skipped, 'skip_move_block')).toMatchObject({ workoutId: 'workout-1', transitionId: 'transition-1' });
     const afterSets = cycleReducer(cleared(log(moving(), T0 + 26 * MIN) as MoveState), { type: 'skip_move', at: T0 + 30 * MIN });
-    expect(kinds(afterSets)).toEqual(['finish_move_block']);
+    expect(kinds(afterSets)).toEqual(['finish_move_block', 'schedule_block_end']);
   });
 
   it('"Finish" in the move block closes it and the cycle', () => {
@@ -841,7 +953,7 @@ describe('return → focus: the countdown starts the next block on its own', () 
       sessionId: 'session-1',
       workoutId: 'workout-2',
       transitionId: 'transition-2',
-      notificationId: blockEndNotificationId('block-2'),
+      notificationId: blockEndNotificationId('session-1', 2),
       circuit: null,
       cycleStartedAt: T0,
       stats: { blocks: 1, sets: 1, moveBlocks: 1 },
@@ -864,7 +976,7 @@ describe('return → focus: the countdown starts the next block on its own', () 
       {
         at: END,
         kind: 'schedule_block_end',
-        notificationId: 'block-end-block-2',
+        notificationId: 'block-end-session-1-2',
         endsAt: END + 25 * MIN,
         title: 'Focus block done',
         body: 'Time to move: your 10-minute circuit is ready.',
@@ -872,27 +984,67 @@ describe('return → focus: the countdown starts the next block on its own', () 
     ]);
   });
 
-  it('a countdown that ran out while the app was away starts the block from now', () => {
+  it('the next block’s alert is scheduled as soon as the countdown starts, so it rings with the screen off', () => {
+    const back = cycleReducer(log(moving(), T0 + 26 * MIN), { type: 'finish_move', at: T0 + 35 * MIN });
+    expectPhase(back, 'return');
+    expect(effect(back, 'schedule_block_end')).toMatchObject({
+      at: T0 + 35 * MIN,
+      notificationId: blockEndNotificationId('session-1', 2),
+      endsAt: END + 25 * MIN,
+      title: 'Focus block done',
+    });
+    // Scheduled again when asked (notifications were just allowed), while that block's end is ahead.
+    const again = cycleReducer(cleared(back), { type: 'reschedule_alert', at: END + MIN });
+    expect(kinds(again)).toEqual(['schedule_block_end']);
+    expect(effect(again, 'schedule_block_end').endsAt).toBe(END + 25 * MIN);
+    expect(cycleReducer(cleared(back), { type: 'reschedule_alert', at: END + 25 * MIN })).toEqual(cleared(back));
+  });
+
+  it('a countdown that ran out while nobody was looking (screen off, app away) started the block when it ended', () => {
     const at = END + 3 * MIN;
     const focus = cycleReducer(returning(), { type: 'tick', at, ids: IDS2 });
     expectPhase(focus, 'focus');
-    expect(focus.timer.endsAt).toBe(at + 25 * MIN);
+    // The same end as the alert scheduled at the countdown's start: it is replaced by an identical one.
+    expect(focus.timer.endsAt).toBe(END + 25 * MIN);
+    expect(effect(focus, 'start_focus_block').input.startedAt).toBe(END);
+    expect(effect(focus, 'schedule_block_end')).toMatchObject({ notificationId: 'block-end-session-1-2', endsAt: END + 25 * MIN });
   });
 
-  it('a countdown abandoned for more than 5 minutes finishes the cycle instead', () => {
-    const idle = cycleReducer(returning(), { type: 'tick', at: END + CYCLE_RULES.returnStaleMs + 1 });
+  it('back only after that block’s time was up (its alert rang): the block counts in full and the workout follows', () => {
+    const at = END + 27 * MIN;
+    const ended = cycleReducer(returning(), { type: 'tick', at, ids: IDS2 });
+    expectPhase(ended, 'focus');
+    expect(ended.endedAt).toBe(END + 25 * MIN);
+    expect(kinds(ended)).toEqual(['start_focus_block', 'schedule_block_end', 'end_focus_block', 'cancel_notification']);
+    expect(effect(ended, 'end_focus_block')).toMatchObject({ blockId: 'block-2', endedAt: END + 25 * MIN, interrupted: false });
+    expect(ended.stats).toMatchObject({ blocks: 2, focusMs: 50 * MIN });
+    const move = cycleReducer(ended, { type: 'circuit_ready', at: at + SEC, blockId: 'block-2', circuit: MICRO });
+    expectPhase(move, 'move');
+    expect(move.startedAt).toBe(at + SEC);
+  });
+
+  it('nobody back within 5 minutes of that block’s end: the cycle finishes, and the alert is withdrawn', () => {
+    const blockEnd = END + 25 * MIN;
+    expectPhase(cycleReducer(returning(), { type: 'tick', at: blockEnd + CYCLE_RULES.returnStaleMs, ids: IDS2 }), 'focus');
+    const idle = cycleReducer(returning(), { type: 'tick', at: blockEnd + CYCLE_RULES.returnStaleMs + 1, ids: IDS2 });
     expectPhase(idle, 'idle');
     expect(idle.summary).toMatchObject({ blocks: 1, sets: 1, moveBlocks: 1, finishedAt: END });
-    expect(idle.pending).toEqual([]);
+    expect(idle.pending.map(({ id, at, ...rest }) => rest)).toEqual([
+      { kind: 'cancel_notification', notificationId: 'block-end-session-1-2' },
+    ]);
   });
 
-  it('"Start now" starts the next block at once; "Finish" ends the cycle', () => {
+  it('"Start now" starts the next block at once (its alert moves); "Finish" ends the cycle and withdraws it', () => {
     const focus = cycleReducer(returning(), { type: 'start_now', at: END - 20 * SEC, ids: IDS2 });
     expectPhase(focus, 'focus');
     expect(focus.timer.endsAt).toBe(END - 20 * SEC + 25 * MIN);
+    expect(effect(focus, 'schedule_block_end')).toMatchObject({ notificationId: 'block-end-session-1-2', endsAt: END - 20 * SEC + 25 * MIN });
     const idle = cycleReducer(returning(), { type: 'finish', at: END - 10 * SEC });
     expectPhase(idle, 'idle');
     expect(idle.summary?.finishedAt).toBe(END - 10 * SEC);
+    expect(idle.pending.map(({ id, at, ...rest }) => rest)).toEqual([
+      { kind: 'cancel_notification', notificationId: 'block-end-session-1-2' },
+    ]);
   });
 
   it('the second block hands off to a fresh workout and transition', () => {
@@ -954,6 +1106,14 @@ describe('move-only ("Just train")', () => {
     expect(state.summary).toMatchObject({ mode: 'move_only', blocks: 0, focusMs: 0, sets: 6, moveBlocks: 1, startedAt: T0 });
   });
 
+  it('ending a move-only workout long after its last set: the summary and the row count to that set', () => {
+    const state = cleared(log(log(cleared(trained()), T0 + MIN), T0 + 3 * MIN));
+    const idle = cycleReducer(state, { type: 'finish_move', at: T0 + 14 * 60 * MIN });
+    expectPhase(idle, 'idle');
+    expect(effect(idle, 'finish_move_block').durationMinutes).toBe(3);
+    expect(idle.summary).toMatchObject({ mode: 'move_only', startedAt: T0, finishedAt: T0 + 3 * MIN });
+  });
+
   it('a move-only skip with no sets ends in idle with a skip', () => {
     const idle = cycleReducer(cleared(trained()), { type: 'skip_move', at: T0 + MIN });
     expectPhase(idle, 'idle');
@@ -1012,6 +1172,7 @@ describe('every event in every phase', () => {
     finish_move: { type: 'finish_move', at: LATER },
     skip_move: { type: 'skip_move', at: LATER },
     start_now: { type: 'start_now', at: LATER, ids: IDS2 },
+    reschedule_alert: { type: 'reschedule_alert', at: T0 + MIN },
     finish: { type: 'finish', at: LATER },
     dismiss_summary: { type: 'dismiss_summary' },
     effect_done: { type: 'effect_done', effectId: 999 },
@@ -1019,16 +1180,17 @@ describe('every event in every phase', () => {
   /** The events that change each sample state; every other event leaves it as it is. */
   const APPLIES: Record<CyclePhase, readonly CycleEventType[]> = {
     idle: ['start', 'start_move', 'dismiss_summary'],
-    focus: ['tick', 'circuit_ready', 'pause', 'end_block', 'finish'],
+    focus: ['tick', 'circuit_ready', 'pause', 'end_block', 'reschedule_alert', 'finish'],
     move: ['tick', 'log_set', 'skip_rest', 'skip_exercise', 'swap', 'rate_block', 'finish_move', 'skip_move', 'finish'],
-    return: ['tick', 'rate_block', 'start_now', 'finish'],
+    return: ['tick', 'rate_block', 'start_now', 'reschedule_alert', 'finish'],
   };
   /** The phase each applicable event leads to. */
   const LEADS_TO: Record<CyclePhase, Partial<Record<CycleEventType, CyclePhase>>> = {
     idle: { start: 'focus', start_move: 'move', dismiss_summary: 'idle' },
-    focus: { tick: 'focus', circuit_ready: 'focus', pause: 'focus', end_block: 'focus', finish: 'idle' },
+    focus: { tick: 'focus', circuit_ready: 'focus', pause: 'focus', end_block: 'focus', reschedule_alert: 'focus', finish: 'idle' },
     move: {
-      tick: 'move',
+      // A tick ten hours later finds an abandoned workout: it is closed and the cycle finishes.
+      tick: 'idle',
       log_set: 'move',
       skip_rest: 'move',
       skip_exercise: 'move',
@@ -1039,7 +1201,7 @@ describe('every event in every phase', () => {
       finish: 'idle',
     },
     // A tick ten hours late finds an abandoned countdown: the cycle finishes.
-    return: { tick: 'idle', rate_block: 'return', start_now: 'focus', finish: 'idle' },
+    return: { tick: 'idle', rate_block: 'return', start_now: 'focus', reschedule_alert: 'return', finish: 'idle' },
   };
 
   for (const phase of Object.keys(SAMPLES) as CyclePhase[]) {

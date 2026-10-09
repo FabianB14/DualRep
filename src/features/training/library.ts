@@ -8,7 +8,12 @@
  * library row, but on a fresh install the first sync may not have run yet (or the phone is in airplane
  * mode). The app ships the same exercises (starterLibrary.ts), so a circuit can always be built. Once
  * a row has synced, the synced copy wins, because the server may have corrected it; `measure` still
- * comes from the bundled data, because it is not a database column.
+ * comes from the bundled data, because it is not a database column. Once the server's starter rows
+ * are on the phone at all, they are all there (PowerSync applies the library stream a whole checkpoint
+ * at a time), so a bundled starter exercise missing from them was withdrawn or retired on the server
+ * (or this app is newer than the server's list): it is kept for its name and measure in history, but
+ * as not reviewed, so circuits and swaps stop picking it. Its sets would otherwise lose their
+ * exercise_id on upload (the server clears a link to an exercise the user cannot read).
  *
  * Reading rows defensively: PowerSync hands JSON columns over as text and booleans as 0/1, and a newer
  * server could send a value this app version does not know. Bad JSON reads as an empty list, unknown
@@ -18,7 +23,7 @@
 import type { ExerciseRow } from '@/db/schema';
 
 import { fitsSetup } from './equipment';
-import { STARTER_LIBRARY, starterMeasure } from './starterLibrary';
+import { isStarterExerciseId, STARTER_LIBRARY, starterMeasure } from './starterLibrary';
 import type {
   BodyRegion,
   DemandLevel,
@@ -171,15 +176,19 @@ function compareByName(a: LibraryExercise, b: LibraryExercise): number {
 
 /**
  * The library the app uses: every synced exercise plus every bundled starter exercise that has not
- * synced yet, sorted by name. A synced row replaces the bundled copy with the same id but keeps the
- * bundled `measure` (not a database column).
+ * synced, sorted by name. A synced row replaces the bundled copy with the same id but keeps the
+ * bundled `measure` (not a database column). Once any starter row has synced, a bundled one that has
+ * not is the server's withdrawal: it stays in the list, but not reviewed (see the header).
  */
 export function mergeLibrary(
   synced: readonly LibraryExercise[],
   starter: readonly LibraryExercise[] = STARTER_LIBRARY,
 ): LibraryExercise[] {
   const bundled = new Map(starter.map((exercise) => [exercise.id, exercise]));
-  const merged = new Map(bundled);
+  const serverHasStarters = synced.some((exercise) => isStarterExerciseId(exercise.id));
+  const merged = new Map(
+    starter.map((exercise) => [exercise.id, serverHasStarters ? { ...exercise, reviewed: false } : exercise]),
+  );
   for (const exercise of synced) {
     const copy = bundled.get(exercise.id);
     const keepMeasure = copy !== undefined && copy.measure !== exercise.measure;
@@ -192,8 +201,9 @@ export function mergeLibrary(
  * Whether the default circuits (and the location swap) may pick this exercise. The plan: "Tracy only
  * picks exercises marked as reviewed, plus the user's own custom entries", and the default builder
  * follows the same rule.
- * - Library rows (dataset or Interverse, starter rows included) only when reviewed. Bundled starter
- *   rows always are; a synced row is what the server says, so a curator can withdraw one.
+ * - Library rows (dataset or Interverse, starter rows included) only when reviewed. A synced row is
+ *   what the server says; a bundled starter row is reviewed until the server's starter rows have
+ *   synced without it (mergeLibrary), so a curator can withdraw a starter exercise on the server.
  * - The signed-in user's own exercises only when they say where they go in a circuit (movement
  *   pattern and body region) and that they fit a short circuit (microOk).
  * - Never a group mate's exercise: it is on the phone to browse, not to be picked for you.

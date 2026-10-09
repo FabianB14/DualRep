@@ -49,7 +49,7 @@ already does, and a checklist for every phase of the [roadmap](ROADMAP.md).
 | CI APK build | [`.github/workflows/android.yml`](../.github/workflows/android.yml) | Builds an arm64 APK, runs [`scripts/check-16kb.sh`](../scripts/check-16kb.sh) (zip alignment and ELF alignment of every 64-bit native library; the build fails if either is off), and lists the APK's permissions in the run summary. Its runs on 2026-10-08 compiled the release (preview) APK cleanly under Expo SDK 57, PowerSync's and op-sqlite's native code included. |
 | Variants | [`app.config.ts`](../app.config.ts), chosen by `APP_VARIANT` (set per profile in [`eas.json`](../eas.json)) | `development` → `com.interverse.dualrep.dev`, scheme `dualrep-dev`; `preview` → `com.interverse.dualrep.preview`, scheme `dualrep-preview`; `production` → `com.interverse.dualrep`, scheme `dualrep`. All three install side by side. |
 | Build types | `eas.json` | `development` and `preview` build APKs for internal distribution; `production` builds an app bundle (AAB) with a remotely incremented `versionCode` |
-| Removed permissions | `android.blockedPermissions` | `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `RECORD_AUDIO`, `USE_BIOMETRIC` and `USE_FINGERPRINT` (pulled in through expo-secure-store; DualRep doesn't use biometrics), and `SYSTEM_ALERT_WINDOW` except in development builds (the dev client's overlay needs it) |
+| Removed permissions | `android.blockedPermissions` | `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `RECORD_AUDIO`, `USE_BIOMETRIC` and `USE_FINGERPRINT` (pulled in through expo-secure-store; DualRep doesn't use biometrics), and `SYSTEM_ALERT_WINDOW` except in development builds (the dev client's overlay needs it). Since Phase 1 also the extras expo-notifications brings: Firebase push (`com.google.android.c2dm.permission.RECEIVE`), Google's install referrer, and 16 launcher-badge permissions ([DECISIONS.md](DECISIONS.md) D30) |
 | Backups | `android.allowBackup: false` | The auth session and local database stay out of Android cloud backups |
 | Predictive back | `android.predictiveBackGestureEnabled: false` | Off, as recommended below |
 | Orientation | `orientation: 'portrait'` | Phones stay portrait; screens must still work in landscape on ≥ 600 dp devices |
@@ -69,16 +69,21 @@ to Play.
 
 - **Phase 0** preview APK: exactly `INTERNET`, `VIBRATE` and the app's own
   `com.interverse.dualrep.preview.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`.
-- **Phase 1** preview APK (the CI build of 2026-10-08 with the Phase 1 packages): those three, plus
-  `RECEIVE_BOOT_COMPLETED` and `POST_NOTIFICATIONS` (expo-notifications), and some extras that come
-  with expo-notifications' own dependencies: `ACCESS_NETWORK_STATE`, `WAKE_LOCK` and
-  `com.google.android.c2dm.permission.RECEIVE` (Firebase Cloud Messaging, for push), Google's
-  install-referrer permission (expo-application, which expo-notifications depends on), and 16
-  launcher "badge" permissions (`READ_APP_BADGE` and vendor ones from Samsung, Huawei, Oppo, HTC, Sony
-  and others, for the count on the app icon). None of the extras asks the user anything, and DualRep
-  uses neither push nor badges yet. Whether to remove them with `blockedPermissions` is an open
-  Phase 1 decision ([roadmap](ROADMAP.md#phase-1-core-loop)); if you do, check that the end-of-block
-  alert still rings.
+- **Phase 1** preview APK (what the CI list should show, with the blocks below): those three, plus
+  `RECEIVE_BOOT_COMPLETED` and `POST_NOTIFICATIONS` (expo-notifications), and `ACCESS_NETWORK_STATE`
+  and `WAKE_LOCK` (which come with expo-notifications' own dependencies). If the list shows anything
+  else, compare it with the table below before releasing.
+- expo-notifications' dependencies also declare `com.google.android.c2dm.permission.RECEIVE`
+  (Firebase Cloud Messaging, for push), Google's install-referrer permission (expo-application, which
+  expo-notifications depends on), and 16 launcher "badge" permissions (`READ_APP_BADGE` and vendor
+  ones from Samsung, Huawei, Oppo, HTC, Sony and others, for the count on the app icon). DualRep uses
+  neither push nor badges, so Phase 1 **removes them** with `blockedPermissions` in `app.config.ts`
+  (decided: [DECISIONS.md](DECISIONS.md) D30). The list in `app.config.ts` is the one a CI build
+  printed on 2026-10-08, before they were blocked; builds since should not show them. Push arrives in
+  Phase 4: unblock `c2dm.permission.RECEIVE` then.
+- Removing them must not stop the end-of-block alert (a local notification, which needs none of
+  them). The Phase 1 gate checks exactly that: the phone has to ring at the end of the focus block in
+  runs 1 and 2 ([SETUP §16](SETUP.md#16-phase-1-the-core-loop-on-your-phone)).
 
 | Permission | Added by | Phase | Asks the user? | Play Console |
 |---|---|---|---|---|
@@ -88,9 +93,10 @@ to Play.
 | `SYSTEM_ALERT_WINDOW`, `READ/WRITE_EXTERNAL_STORAGE` | template | — | — | **remove** with `android.blockedPermissions` |
 | `USE_BIOMETRIC`, `USE_FINGERPRINT` | expo-secure-store (through its AndroidX Biometric dependency; DualRep doesn't use biometrics) | — | — | **remove** with `android.blockedPermissions` |
 | `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED` | expo-notifications | 1 (in) | `POST_NOTIFICATIONS` yes (Android 13+), asked when the first study block starts ([1.2](#12-notification-permission-and-channels)) | nothing |
-| `ACCESS_NETWORK_STATE`, `WAKE_LOCK`, `com.google.android.c2dm.permission.RECEIVE` | Firebase Cloud Messaging, through expo-notifications | 1 (in) | no | nothing (**verify**); push itself is Phase 4 |
-| `com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE` | Google's Install Referrer library, through expo-application (a dependency of expo-notifications) | 1 (in) | no | nothing (**verify**) |
-| `READ_APP_BADGE` and 15 vendor launcher badge permissions | ShortcutBadger, through expo-notifications | 1 (in) | no | nothing (**verify**); candidates for `blockedPermissions` |
+| `ACCESS_NETWORK_STATE`, `WAKE_LOCK` | Firebase Cloud Messaging, through expo-notifications | 1 (in) | no | nothing (**verify**) |
+| `com.google.android.c2dm.permission.RECEIVE` | Firebase Cloud Messaging, through expo-notifications | — (Phase 4: unblock for push) | — | **removed** with `android.blockedPermissions` until push arrives ([4.2](#42-push-notifications-for-friend-activity)) |
+| `com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE` | Google's Install Referrer library, through expo-application (a dependency of expo-notifications) | — | — | **removed** with `android.blockedPermissions` |
+| `READ_APP_BADGE` and 15 vendor launcher badge permissions | ShortcutBadger, through expo-notifications | — | — | **removed** with `android.blockedPermissions` (DualRep sets no badge count) |
 | `SCHEDULE_EXACT_ALARM` (optional) | `android.permissions` | 1 | special-access settings screen | believed none (**verify**) |
 | `USE_EXACT_ALARM` | — | — | — | **don't declare** |
 | `RECORD_AUDIO` | expo-audio / expo-speech-recognition | 2 | yes | Data safety (audio) |
@@ -154,13 +160,20 @@ needs that aren't installed yet are added in that phase with `npx expo install <
       'android.permission.USE_FINGERPRINT',
       // The development client's overlay needs it, so only dev builds keep it.
       ...(variant === 'development' ? [] : ['android.permission.SYSTEM_ALERT_WINDOW']),
+      // Phase 1: the extras expo-notifications brings. No push until Phase 4 (unblock c2dm.RECEIVE
+      // then), no install-referrer lookups, and no launcher badge counts.
+      'com.google.android.c2dm.permission.RECEIVE',
+      'com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE',
+      ...LAUNCHER_BADGE_PERMISSIONS, // READ_APP_BADGE and 15 vendor badge permissions
     ],
   },
   ```
-  Remove `RECORD_AUDIO` from this list in Phase 2, when audio study mode needs it.
-- **When:** done; check the CI permission list on every build. Phase 1's expo-notifications brought
-  in notification permissions and some extras (push, install referrer, launcher badges): see the
-  [permission ledger](#permission-ledger).
+  Remove `RECORD_AUDIO` from this list in Phase 2, when audio study mode needs it, and
+  `c2dm.permission.RECEIVE` in Phase 4, when push arrives.
+- **When:** done; check the CI permission list on every build against the
+  [permission ledger](#permission-ledger). Phase 1's expo-notifications adds `POST_NOTIFICATIONS`,
+  `RECEIVE_BOOT_COMPLETED`, `ACCESS_NETWORK_STATE` and `WAKE_LOCK`; its push, install-referrer and
+  launcher-badge extras are blocked.
 
 #### 0.5 Play Console account: decide now
 - **What:** choose a **personal** or an **organization** Play developer account, and create the app
@@ -308,7 +321,7 @@ waits for the Play Console app. How to run the gate on the phone:
   });
   // When a block starts (the id is ours, so scheduling again replaces it):
   await Notifications.scheduleNotificationAsync({
-    identifier: `block-end-${blockId}`,
+    identifier: `block-end-${sessionId}-${blockNumber}`,
     content: { title: 'Focus block done', body: 'Time to move: your 10-minute circuit is ready.',
       data: { url: '/cycle', kind: 'block-end' }, sound: 'default' },
     trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: endsAt, channelId: 'timers-v1' },
@@ -316,6 +329,11 @@ waits for the Play Console app. How to run the gate on the phone:
   ```
   - Tapping the alert opens `data.url` (the cycle screen), whether the app was running or not. Only
     paths inside the app are opened.
+  - After a workout, the next block starts on its own when the 30-second countdown ends, whether or
+    not the screen is on. So its alert is scheduled as soon as the countdown starts, and it rings even
+    if the phone was locked during the countdown.
+  - A block started while notifications were off gets its alert once they are turned on: the cycle
+    screen (each time it opens or the app comes back) and Settings schedule it again.
   - While the cycle screen is open the alert stays silent: the screen hands off by itself, with a
     haptic. On any other screen it shows as usual.
   - Nothing here throws: no permission just means no alert, and the on-screen timer still works.
@@ -384,7 +402,9 @@ waits for the Play Console app. How to run the gate on the phone:
 - **Status: built.**
 - **What:** keep the screen awake while the user is logging sets.
 - **How:** `expo-keep-awake`: `useKeepAwake()` in the move block only. The focus block and the
-  countdown after the workout let the screen dim and lock as usual (the alert covers the focus block).
+  countdown after the workout let the screen dim and lock as usual. Nothing is lost: the next block
+  starts when the countdown ends even with the screen off, and its alert was scheduled when the
+  countdown started ([1.1](#11-the-focus-timer-scheduled-notification-not-a-foreground-service)).
 - **Verify on the phone:** during a workout, leave the phone untouched past its screen timeout: the
   screen stays on. During a focus block it turns off as usual.
 - **When:** built in Phase 1.
@@ -566,6 +586,8 @@ waits for the Play Console app. How to run the gate on the phone:
     ```
   - The GitHub APK workflow needs the same file (for example from a repository secret), or it must
     leave `googleServicesFile` out.
+  - Take `com.google.android.c2dm.permission.RECEIVE` out of `android.blockedPermissions` in
+    `app.config.ts` (Phase 1 blocks it; [DECISIONS.md](DECISIONS.md) D30). Without it no push arrives.
 - **When:** Phase 4.
 
 #### 4.3 Data safety additions and the deletion flow

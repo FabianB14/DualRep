@@ -17,7 +17,7 @@ const STEPS = [
   'Pick 25 minutes for the real measurement (1 minute is a quick try).',
   'Tap “Schedule test alert”.',
   'Unplug the phone, lock it and leave it still. Don’t open it until the alert rings.',
-  'When it rings, tap the alert. It opens this screen with the result. Open DualRep before you swipe the alert away.',
+  'When it rings, tap the alert. It opens this screen with the result. Don’t swipe the alert away instead.',
 ];
 
 type Reading = { result: AlertTestResult; permission: NotificationPermission; at: number };

@@ -29,7 +29,8 @@ jest.mock('@powersync/react-native', () => ({
   usePowerSync: () => ({ getUploadQueueStats: async () => ({ count: 0 }) }),
 }));
 jest.mock('../../db/database', () => ({ db: {} }));
-jest.mock('../../db/syncCheck', () => ({ getUploadQueueCount: async () => 0 }));
+const mockWaitForUploads = jest.fn(async (_timeoutMs: number) => 0);
+jest.mock('../../db/syncCheck', () => ({ getUploadQueueCount: async () => 0, waitForUploads: mockWaitForUploads }));
 const mockSignOut = jest.fn(async () => undefined);
 jest.mock('../../auth/AuthProvider', () => ({
   useAuth: () => ({ user: { id: USER, email: 'sam@example.com' }, signOut: mockSignOut, offlineSession: false }),
@@ -155,10 +156,14 @@ describe('Settings', () => {
     expect(control(renderer, 'Increase Default block length').props.accessibilityState).toEqual({ disabled: false });
   });
 
-  it('signing out stops the running cycle and withdraws its alerts before the data is cleared', async () => {
+  it('signing out stops the running cycle, withdraws its alerts and lets its last writes upload before the data is cleared', async () => {
     const order: string[] = [];
     mockCancelAllAlerts.mockImplementationOnce(async () => {
       order.push('alerts withdrawn');
+    });
+    mockWaitForUploads.mockImplementationOnce(async () => {
+      order.push('uploads sent');
+      return 0;
     });
     mockSignOut.mockImplementationOnce(async () => {
       order.push('signed out');
@@ -172,7 +177,7 @@ describe('Settings', () => {
       for (let k = 0; k < 10; k += 1) await new Promise<void>((resolve) => setImmediate(resolve));
     });
     expect(confirm).toHaveBeenCalledTimes(1);
-    expect(order).toEqual(['alerts withdrawn', 'signed out']);
+    expect(order).toEqual(['alerts withdrawn', 'uploads sent', 'signed out']);
     confirm.mockRestore();
   });
 });

@@ -2,6 +2,8 @@ import * as Notifications from 'expo-notifications';
 import { useRootNavigationState, useRouter, type Href } from 'expo-router';
 import { useCallback, useEffect, useRef } from 'react';
 
+import { NOTIFICATION_KIND, recordAlertTestFired } from './notifications';
+
 /**
  * The in-app screen a tapped notification asks to open (`data.url`), or null. Only app paths are
  * accepted ("/cycle"), never another scheme or a protocol-relative "//host" URL, so a notification can
@@ -22,8 +24,9 @@ function responseKey(response: Notifications.NotificationResponse): string {
  * Opens the screen a notification points to when the user taps it: while the app runs (the response
  * listener) and when the tap launched the app (the last response, read once at mount). The route is
  * opened once the root navigator is ready, and the last response is cleared afterwards so that a
- * later remount (e.g. signing in again) does not open it a second time. Mount once, inside the
- * signed-in tree.
+ * later remount (e.g. signing in again) does not open it a second time. A tapped timer-check alert
+ * first has its posting time saved (recordAlertTestFired), so the screen it opens has the result.
+ * Mount once, inside the signed-in tree.
  */
 export function useNotificationRouting(): void {
   const router = useRouter();
@@ -63,8 +66,17 @@ export function useNotificationRouting(): void {
       const key = responseKey(response);
       if (seen.has(key)) return;
       seen.add(key);
-      pending.current = url;
-      openPending();
+      const open = () => {
+        if (!active) return;
+        pending.current = url;
+        openPending();
+      };
+      const { request, date } = response.notification;
+      if (request.content.data?.kind === NOTIFICATION_KIND.alertTest) {
+        void recordAlertTestFired(request.identifier, date).finally(open);
+      } else {
+        open();
+      }
     };
 
     try {

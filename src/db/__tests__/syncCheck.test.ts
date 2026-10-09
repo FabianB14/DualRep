@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { createProbeRow, getUploadFailures, getUploadQueueCount, verifyOnServer } from '../syncCheck';
+import { createProbeRow, getUploadFailures, getUploadQueueCount, verifyOnServer, waitForUploads } from '../syncCheck';
 
 // database.ts constructs the native PowerSync database, so it is replaced by a recording fake.
 // (jest.mock is hoisted above everything; a `mock`-prefixed function declaration is hoisted too.)
@@ -10,6 +10,7 @@ function mockCreateDb() {
     execute: jest.fn(async (_sql: string, _params?: unknown[]) => ({ rowsAffected: 1 })),
     getAll: jest.fn(async (_sql: string) => [] as unknown[]),
     getUploadQueueStats: jest.fn(async () => ({ count: 3, size: null })),
+    currentStatus: { connected: false },
   };
 }
 jest.mock('../database', () => ({ db: mockCreateDb() }));
@@ -87,5 +88,30 @@ describe('verifyOnServer', () => {
     await expect(verifyOnServer(denied.client, PROBE)).resolves.toBe('error');
     const thrown = fakeSupabase(new Error('aborted'));
     await expect(verifyOnServer(thrown.client, PROBE)).resolves.toBe('error');
+  });
+});
+
+describe('waitForUploads', () => {
+  it('offline: returns at once with what is still waiting', async () => {
+    mockDb.currentStatus.connected = false;
+    await expect(waitForUploads(10_000, 1)).resolves.toBe(3);
+    expect(mockDb.getUploadQueueStats).toHaveBeenCalledTimes(1);
+  });
+
+  it('online: waits until the queue is empty', async () => {
+    mockDb.currentStatus.connected = true;
+    mockDb.getUploadQueueStats
+      .mockResolvedValueOnce({ count: 2, size: null })
+      .mockResolvedValueOnce({ count: 1, size: null })
+      .mockResolvedValueOnce({ count: 0, size: null });
+    await expect(waitForUploads(10_000, 1)).resolves.toBe(0);
+    expect(mockDb.getUploadQueueStats).toHaveBeenCalledTimes(3);
+  });
+
+  it('online but stuck: gives up after the time limit; a failed count reads as nothing waiting', async () => {
+    mockDb.currentStatus.connected = true;
+    await expect(waitForUploads(20, 1)).resolves.toBe(3);
+    mockDb.getUploadQueueStats.mockRejectedValueOnce(new Error('closed'));
+    await expect(waitForUploads(20, 1)).resolves.toBe(0);
   });
 });

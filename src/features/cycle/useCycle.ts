@@ -4,7 +4,13 @@ import { AppState } from 'react-native';
 
 import { useAuth } from '@/auth/AuthProvider';
 import { TABLE } from '@/db/constants';
-import { cancelAllAlerts, cancelScheduled, registerVisibleTimer, scheduleBlockEnd } from '@/features/timer/notifications';
+import {
+  cancelAllAlerts,
+  cancelScheduled,
+  getNotificationPermission,
+  registerVisibleTimer,
+  scheduleBlockEnd,
+} from '@/features/timer/notifications';
 import type { LibraryExercise, Unit } from '@/features/training/types';
 import { useLibrary } from '@/features/training/useLibrary';
 import { newId } from '@/lib/ids';
@@ -69,17 +75,38 @@ export function resetCycleStore(): void {
 }
 
 /**
- * Sign-out: stops the shared store and waits for its save or write in progress, then withdraws every
- * alert. Call before AuthProvider.signOut() clears the local database: no write of this account may
- * land after the clear, and no block-end alert may ring (or open the cycle screen) for an account
- * that is signed out. The store runs whether or not the cycle screen is open, so the screen's own
- * sign-out handling is not enough. Never throws.
+ * Sign-out: finishes a running cycle (as "Finish" would), so its focus block, workout and transition
+ * are closed instead of left open on the server for good; waits for those writes to land on the
+ * phone; stops the store; then withdraws every alert. Call before AuthProvider.signOut() clears the
+ * local database (and give the upload queue a moment first, so the closing writes reach the server):
+ * no write of this account may land after the clear, and no block-end alert may ring (or open the
+ * cycle screen) for an account that is signed out. The cycle may be saved on the phone without its
+ * screen ever having been opened since launch, so the user's store is loaded here if need be. Never
+ * throws.
  */
-export async function stopCycleForSignOut(): Promise<void> {
-  const store = shared;
+export async function stopCycleForSignOut(
+  userId: string | null,
+  makeDeps: () => CycleStoreDeps = defaultCycleStoreDeps,
+): Promise<void> {
+  const store = userId ? cycleStoreFor(userId, makeDeps) : shared;
   shared = null;
-  await store?.stop();
+  await store?.finishAndStop();
   await cancelAllAlerts();
+}
+
+/**
+ * Notifications were just allowed (Settings): schedules the running block's end alert, which could
+ * not be scheduled while they were off. The cycle screen does the same whenever it opens or the app
+ * comes back; this covers turning them on from Settings and going back to Home. Never throws.
+ */
+export async function rescheduleCycleAlert(
+  userId: string | null,
+  makeDeps: () => CycleStoreDeps = defaultCycleStoreDeps,
+): Promise<void> {
+  if (!userId) return;
+  const store = cycleStoreFor(userId, makeDeps);
+  await store.load();
+  store.rescheduleAlert();
 }
 
 export type UseCycleResult = {
@@ -120,8 +147,10 @@ const noSnapshot = () => NO_SNAPSHOT;
  * The cycle for the screen: the machine state (loaded from local_state, saved on every change), the
  * actions, and a clock. While the app is open it ticks once a second (and at once when the app comes
  * back to the foreground), so a block that ended while the phone was locked, or while the app was
- * killed, hands off as soon as the user is back. Must be used under `PowerSyncContext.Provider` and
- * `AuthProvider`.
+ * killed, hands off as soon as the user is back. Each time the screen opens or the app comes back,
+ * if notifications are allowed, the coming block-end alert is scheduled again: a block started
+ * while they were off (or before the user turned them on in Settings) then still rings. Must be used
+ * under `PowerSyncContext.Provider` and `AuthProvider`.
  */
 export function useCycle(): UseCycleResult {
   const { user } = useAuth();
@@ -147,7 +176,13 @@ export function useCycle(): UseCycleResult {
 
   useEffect(() => {
     if (!store) return;
-    void store.load();
+    let mounted = true;
+    const reschedule = () => {
+      void getNotificationPermission().then((permission) => {
+        if (mounted && permission === 'granted') store.rescheduleAlert();
+      });
+    };
+    void store.load().then(reschedule);
     const release = registerVisibleTimer();
     let interval: ReturnType<typeof setInterval> | null = null;
     const tick = () => {
@@ -166,10 +201,15 @@ export function useCycle(): UseCycleResult {
     };
     if (AppState.currentState !== 'background') startTicking();
     const subscription = AppState.addEventListener('change', (status) => {
-      if (status === 'active') startTicking();
-      else stopTicking();
+      if (status === 'active') {
+        startTicking();
+        reschedule();
+      } else {
+        stopTicking();
+      }
     });
     return () => {
+      mounted = false;
       subscription.remove();
       stopTicking();
       release();

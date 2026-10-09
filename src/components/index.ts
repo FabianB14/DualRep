@@ -15,3 +15,4 @@ export { StatusPill, type StatusPillProps, type StatusTone } from './StatusPill'
 export { Stepper, stepValue, type StepperProps, type StepperRange } from './Stepper';
 export { Text, type TextProps, type TextTone } from './Text';
 export { TextField, type TextFieldProps } from './TextField';
+export { useWindowTop } from './useWindowTop';

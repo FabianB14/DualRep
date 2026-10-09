@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Linking, View } from 'react-native';
 
 import { useAuth } from '@/auth/AuthProvider';
 import { Button, Notice, Screen, Section, SegmentedControl, StatusPill, Stepper, Text } from '@/components';
-import { getUploadQueueCount } from '@/db/syncCheck';
-import { stopCycleForSignOut } from '@/features/cycle/useCycle';
+import { getUploadQueueCount, waitForUploads } from '@/db/syncCheck';
+import { CYCLE_STATE_KEY, parseCycleState } from '@/features/cycle/cycleMachine';
+import { useLocalState } from '@/features/cycle/localState';
+import { rescheduleCycleAlert, stopCycleForSignOut } from '@/features/cycle/useCycle';
 import { BLOCK_MINUTES, formatMinutes, UNIT_LABELS, UNITS, type ProfilePatch } from '@/features/settings/profile';
 import { updateProfile } from '@/features/settings/profileRepo';
 import { signOutWarning } from '@/features/settings/signOut';
@@ -14,6 +16,9 @@ import type { NotificationPermission } from '@/features/timer/notifications';
 import { useNotificationPermission } from '@/features/timer/useNotificationPermission';
 import type { Unit } from '@/features/training/types';
 import { haptic, useTheme } from '@/theme';
+
+/** How long sign-out waits for the last writes (a running cycle's end) to upload when online. */
+const SIGN_OUT_UPLOAD_WAIT_MS = 10_000;
 
 /**
  * Settings: default block length, units, end-of-block alerts, sync status and sign-out. Changes are
@@ -27,6 +32,13 @@ export default function SettingsScreen() {
   const { permission, request: requestPermission } = useNotificationPermission();
   const [signingOut, setSigningOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { value: savedCycle } = useLocalState<unknown>(CYCLE_STATE_KEY);
+  const cycleRunning = parseCycleState(savedCycle, user?.id ?? null).phase !== 'idle';
+
+  // Alerts allowed (here, or in system settings and back): a block already running gets its alert now.
+  useEffect(() => {
+    if (permission === 'granted' && cycleRunning) void rescheduleCycleAlert(user?.id ?? null);
+  }, [permission, cycleRunning, user?.id]);
 
   // The controls show the saved profile: a local write reaches the watched query within a few
   // milliseconds, so there is no separate "unsaved" state to keep in step.
@@ -47,9 +59,11 @@ export default function SettingsScreen() {
   const doSignOut = async () => {
     setSigningOut(true);
     try {
-      // The running cycle first (it keeps running when its screen is closed): none of its writes may
-      // land after this phone's data is cleared, and its block-end alert must not ring afterwards.
-      await stopCycleForSignOut();
+      // The running cycle first (it keeps running when its screen is closed): it is finished so its
+      // rows are closed, none of its writes may land after this phone's data is cleared, and its
+      // block-end alert must not ring afterwards. Online, its closing writes then go up before the clear.
+      await stopCycleForSignOut(user?.id ?? null);
+      await waitForUploads(SIGN_OUT_UPLOAD_WAIT_MS);
       await signOut();
     } finally {
       setSigningOut(false);
@@ -59,7 +73,7 @@ export default function SettingsScreen() {
   const confirmSignOut = async () => {
     // Signing out deletes this phone's copy of the data, including writes not uploaded yet.
     const pendingUploads = await getUploadQueueCount().catch(() => 0);
-    const warning = signOutWarning(pendingUploads);
+    const warning = signOutWarning(pendingUploads, cycleRunning);
     Alert.alert(warning.title, warning.message, [
       { text: 'Cancel', style: 'cancel' },
       { text: warning.confirmLabel, style: 'destructive', onPress: () => void doSignOut() },

@@ -119,7 +119,8 @@ tokens.
       on the phone with gesture and 3-button navigation
 - [x] [0.4 Keep the manifest lean](ANDROID.md#04-keep-the-manifest-lean): the Phase 0 preview APK
       requested only `INTERNET` and `VIBRATE` (plus the app's own internal receiver permission). The
-      Phase 1 packages added more (notifications, and extras that come with them): see the
+      Phase 1 packages add the notification permissions; their push, install-referrer and
+      launcher-badge extras are blocked in `app.config.ts`: see the
       [permission ledger](ANDROID.md#permission-ledger) and the Phase 1 decision below
 - [ ] [0.5 Play Console account: decide now](ANDROID.md#05-play-console-account-decide-now)
 - [x] [0.7 16 KB page size check](ANDROID.md#07-16-kb-page-size-check) runs in CI (zip and ELF
@@ -189,10 +190,11 @@ home setups, rules-based spotter, default micro circuits, zero-tap handoff.
       `src/features/cycle/__tests__/airplaneLoop.test.ts`)
 
 ### Good to know
-- The loop moves on by itself only while the cycle screen is open. During a focus block that doesn't
-  matter: the alert rings, and tapping it opens the cycle. If you leave for Home during the 30-second
-  countdown after a workout, the next block starts when you come back, or the cycle finishes if you
-  come back more than 5 minutes later (D23).
+- The screen only updates while the cycle screen is open, but the timers don't depend on it. During
+  a focus block the alert rings, and tapping it opens the cycle. The next block after a workout starts
+  when the 30-second countdown ends even if you lock the phone or leave for another app, and its
+  alert rings at its end; only if you come back more than 5 minutes after that does the cycle finish
+  instead (D23).
 - **Close** on the cycle screen goes to Home and leaves the cycle running; Home then shows
   "Back to your …". **Finish** ends the cycle and shows a summary.
 - No new tables or columns in Phase 1. The only new migration is the starter library.
@@ -211,14 +213,16 @@ Details for each step are in [SETUP §16](SETUP.md#16-phase-1-the-core-loop-on-y
 4. [ ] **Install** it over the old app (you stay signed in). Open it once online: Settings → **Sync**
        should say **Connected: Yes**
 5. [ ] **Gate run 1, home:** airplane mode on; Start a study block with a home setup; let the timer
-       end; do the circuit; let the next block start by itself; then Finish
+       end (the phone must ring); do the circuit; let the next block start by itself (it does even
+       if the screen turns off during the 30-second countdown); then Finish
        ([SETUP §16 step 3](SETUP.md#step-3-the-gate-run-1-with-a-home-setup))
 6. [ ] **Gate run 2, gym:** add a gym setup, then the same run with it in airplane mode
        ([SETUP §16 step 4](SETUP.md#step-4-the-gate-run-2-with-a-gym-setup))
 7. [ ] **Back online:** wait for **Waiting to upload: 0**, then check the rows in the SQL Editor
        ([SETUP §16 step 5](SETUP.md#step-5-check-the-rows-reached-postgres)). Both runs pass → tick
        the airplane-mode item above
-8. [ ] **Timer check:** 25 minutes, phone unplugged, locked and left alone. Write the delay here
+8. [ ] **Timer check:** 25 minutes, phone unplugged, locked and left alone; tap the alert when it
+       rings (don't swipe it away). Write the delay here
        ([SETUP §16 step 6](SETUP.md#step-6-measure-the-alert-delay-the-timer-check)).
        Result: _not measured yet_ (date, phone, delay)
 9. [ ] Optional: build the exercise-import SQL and run it in the SQL Editor (after the Phase 1 pull
@@ -252,9 +256,10 @@ Details for each step are in [SETUP §16](SETUP.md#16-phase-1-the-core-loop-on-y
       ([DECISIONS.md](DECISIONS.md) D9)
 - [x] New packages for this phase: `expo-notifications` 57.0.22, `expo-keep-awake` 57.0.2 and
       `react-native-svg` 15.15.4 (added 2026-10-08). `ts-fsrs` waits for Phase 2
-- [ ] The extra permissions that come with `expo-notifications` (launcher badges, Firebase push):
-      block them now or leave them until push arrives in Phase 4
-      ([ANDROID.md permission ledger](ANDROID.md#permission-ledger))
+- [x] The extra permissions that come with `expo-notifications` (Firebase push, install referrer,
+      16 launcher badges): **decided, blocked** in `app.config.ts`; unblock the push one in Phase 4
+      ([DECISIONS.md](DECISIONS.md) D30, [ANDROID.md permission ledger](ANDROID.md#permission-ledger)).
+      Gate runs 1 and 2 double as the check that the end-of-block alert still rings
 - [ ] Confirm or tune our own circuit rules: at most 2 heavy lifts per full session, and no warm-up
       sets in the time estimate (D22)
 - [ ] Timed sets keep their seconds in `exercise_sets.reps`: add a proper column at the next schema

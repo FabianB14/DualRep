@@ -17,7 +17,10 @@
  *
  * The D8 measurement (the timer-check screen): scheduleAlertTest schedules a test alert and keeps its
  * due time in local_state; readAlertTestResult compares it with the time Android actually posted it
- * (each presented notification's `date`).
+ * (each presented notification's `date`). Android removes a tapped notification from the shade by
+ * default, and the screen can only read the shade once the app is back, so the test alert is posted
+ * with autoDismiss off (a tap leaves it there until its time has been saved), and a tap on it also
+ * saves its posting time straight from the tap (recordAlertTestFired, from useNotificationRouting).
  */
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
@@ -149,14 +152,17 @@ async function scheduleAt(
   content: AlertContent,
   data: Record<string, unknown>,
   nowMs: number,
+  options: { keepWhenTapped?: boolean } = {},
 ): Promise<string | null> {
   if (!Number.isFinite(atMs) || atMs <= nowMs) return null;
   try {
     if ((await getNotificationPermission()) !== 'granted') return null;
     await configureNotifications();
+    // autoDismiss false: Android leaves the notification in the shade when it is tapped.
+    const keep = options.keepWhenTapped ? { autoDismiss: false } : {};
     return await Notifications.scheduleNotificationAsync({
       ...(content.identifier ? { identifier: content.identifier } : {}),
-      content: { title: content.title, body: content.body, data, sound: 'default' },
+      content: { title: content.title, body: content.body, data, sound: 'default', ...keep },
       trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: atMs, channelId: TIMER_CHANNEL_ID },
     });
   } catch {
@@ -226,7 +232,7 @@ export type AlertTestResult =
   | { status: 'waiting'; test: AlertTest }
   /** Due, but Android has not posted it yet (it is still scheduled): Doze is delaying it. */
   | { status: 'delayed'; test: AlertTest; lateByMs: number }
-  /** It fired, but it is gone from the shade (swiped away or tapped) before its time was read. */
+  /** It fired, but it was cleared from the shade (swiped away) before its time was read. */
   | { status: 'missed'; test: AlertTest }
   | { status: 'fired'; test: AlertTest; firedAt: number; delayMs: number };
 
@@ -237,7 +243,8 @@ function epochMs(date: number): number {
 
 /**
  * Schedules a test alert in `minutes` (at least 1) and remembers when it is due, replacing any earlier
- * test. Returns null when no alert could be scheduled (usually: notifications not allowed).
+ * test. The alert stays in the shade when tapped (see the header). Returns null when no alert could be
+ * scheduled (usually: notifications not allowed).
  */
 export async function scheduleAlertTest(minutes: number, nowMs = Date.now()): Promise<AlertTest | null> {
   const wait = Math.max(1, Number.isFinite(minutes) ? minutes : 1);
@@ -253,6 +260,7 @@ export async function scheduleAlertTest(minutes: number, nowMs = Date.now()): Pr
     },
     { url: TIMER_CHECK_URL, kind: NOTIFICATION_KIND.alertTest },
     nowMs,
+    { keepWhenTapped: true },
   );
   if (!id) return null;
   const test: AlertTest = { id, minutes: wait, scheduledAt: nowMs, dueAt, firedAt: null };
@@ -266,9 +274,26 @@ export async function scheduleAlertTest(minutes: number, nowMs = Date.now()): Pr
 }
 
 /**
+ * Saves when the current test alert was posted, from a tap on it (NotificationResponse.notification
+ * .date), so the measurement holds even if the alert is no longer in the shade when the screen reads
+ * it. Only for the current test, and only once. Never throws.
+ */
+export async function recordAlertTestFired(identifier: string, postedAt: number): Promise<void> {
+  if (!Number.isFinite(postedAt) || postedAt <= 0) return;
+  try {
+    const test = await readLocalState<AlertTest>(ALERT_TEST_STATE_KEY);
+    if (!test || test.id !== identifier || typeof test.firedAt === 'number') return;
+    await writeLocalState(ALERT_TEST_STATE_KEY, { ...test, firedAt: epochMs(postedAt) });
+    await Notifications.dismissNotificationAsync(identifier).catch(() => undefined);
+  } catch {
+    // Not saved: the screen still reads it from the shade, where the tapped test alert stays.
+  }
+}
+
+/**
  * The timer-check result: how late the test alert was posted compared with when it was due. The
- * posted time is read from the shade, so open the app before swiping the alert away; once read it is
- * saved, and later reads return it even after the alert is gone.
+ * posted time is read from the shade (or was saved when the alert was tapped); once read it is saved,
+ * the alert is cleared from the shade, and later reads return the saved time.
  */
 export async function readAlertTestResult(nowMs = Date.now()): Promise<AlertTestResult> {
   let test: AlertTest | null;
@@ -287,7 +312,12 @@ export async function readAlertTestResult(nowMs = Date.now()): Promise<AlertTest
   if (shown) {
     const firedAt = epochMs(shown.date);
     const saved: AlertTest = { ...test, firedAt };
-    await writeLocalState(ALERT_TEST_STATE_KEY, saved).catch(() => undefined);
+    const kept = await writeLocalState(ALERT_TEST_STATE_KEY, saved).then(
+      () => true,
+      () => false,
+    );
+    // A tap left it in the shade (autoDismiss off); now that its time is saved it can go.
+    if (kept) await Notifications.dismissNotificationAsync(test.id).catch(() => undefined);
     return { status: 'fired', test: saved, firedAt, delayMs: firedAt - test.dueAt };
   }
 

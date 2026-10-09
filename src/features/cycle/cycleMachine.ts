@@ -11,17 +11,25 @@
  *   "Tracy prepares the movement block while the timer is still running". When the timer reaches zero
  *   the block ends and the move block starts with zero taps (the handoff). If the circuit is somehow
  *   not ready yet (only after a crash), the block ends and the handoff happens as soon as it is.
+ *   The block's recorded end (interval_blocks.ended_at) is its start plus the time actually focused:
+ *   the table has no column for pauses, so a block paused and then ended early would otherwise count
+ *   its pause as focus time wherever end − start is read (History, Today).
  * - move: the circuit, where the user is in it, each item's sets and the spotter's targets for its
- *   next set, the rest timer, and the effort rating of the focus block just finished.
+ *   next set, the rest timer, and the effort rating of the focus block just finished. The workout's
+ *   length runs from its start to its last logged set (time after it, such as a workout left open, is
+ *   not counted). A move block nobody has touched for MOVE_STALE is closed as it stands (at its last
+ *   set) and the cycle finished, rather than resumed hours later.
  *   Micro circuits go round-robin (every station once, then the next round); full sessions do
  *   straight sets (all sets of an item, then the next). A rest-pause mini-set always comes right
  *   after the set it follows. The move block ends when every item is done, cut by the spotter or
  *   skipped, or when the user ends it.
  * - return: the last rest rolls into the next focus block: a countdown (30 s by default), then the
- *   next block starts on its own; "Start now" and "Finish" are the actions. A countdown that ran out
- *   while nobody was looking (the app in the background or killed) starts the block from when the user
- *   is back, not from the past; one that ran out more than RETURN_STALE ago finishes the cycle instead
- *   of starting a block nobody is there for.
+ *   next block starts on its own; "Start now" and "Finish" are the actions. The next block starts
+ *   when the countdown ends whether or not anyone is looking: nothing ticks while the screen is off or
+ *   the app is in the background, so its end-of-block alert is scheduled as soon as the countdown
+ *   starts, and the first tick after the countdown starts the block from the countdown's end (a tick
+ *   only notices it). If nobody is back by RETURN_STALE after that block would have ended (its alert
+ *   rang meanwhile), the cycle finishes instead of recording a block nobody was there for.
  * - idle: nothing running; after a finish it holds the cycle's summary until dismissed.
  *
  * Side effects are NOT performed here. The reducer describes them as data: every database write and
@@ -74,10 +82,10 @@ export const CYCLE_RULES = {
   /** The return countdown before the next focus block starts on its own. */
   returnSeconds: 30,
   maxReturnSeconds: 300,
-  /** A tick this soon after the countdown ended is on time: the block starts when the countdown ended. */
-  onTimeMs: 2_000,
-  /** RETURN_STALE: a countdown that ended longer ago than this finishes the cycle instead. */
+  /** RETURN_STALE: nobody back this long after the block the countdown started would have ended: finish instead. */
   returnStaleMs: 5 * 60_000,
+  /** MOVE_STALE: a move block with no set or skip for this long is closed and the cycle finished. */
+  moveStaleMs: 60 * 60_000,
   /** DOUBLE_TAP: a second "Done" or "Skip" this soon after the last one is the same tap. */
   doubleTapMs: 1_000,
   /** Effort rating of a focus block. */
@@ -197,8 +205,10 @@ export type FocusState = Base &
     blockId: string;
     /** 1 for the cycle's first block. */
     blockNumber: number;
+    /** When the block started (interval_blocks.started_at), epoch ms. */
+    startedAt: number;
     timer: TimerState;
-    /** Set when the block has ended but the circuit is not ready yet (the handoff waits for it). */
+    /** The block's recorded end (see the header); set when it has ended but the circuit is not ready yet. */
     endedAt: number | null;
     interrupted: boolean;
     /** The move block's circuit, prepared while the timer runs; null until it is ready. */
@@ -296,6 +306,11 @@ export type CycleEvent =
   | { type: 'skip_move'; at: number }
   /** Start the next focus block without waiting for the countdown. */
   | { type: 'start_now'; at: number; ids: BlockIds }
+  /**
+   * Schedule the coming block-end alert again (the notification permission may have been granted
+   * since, or Android dropped the alarm). It keeps its id, so this only ever replaces it.
+   */
+  | { type: 'reschedule_alert'; at: number }
   /** Finish the cycle from any phase. */
   | { type: 'finish'; at: number }
   | { type: 'dismiss_summary' }
@@ -350,9 +365,13 @@ export function normalizePlan(input: CyclePlanInput): CyclePlan {
   };
 }
 
-/** Our id of a block's end-of-block alert (scheduling it again replaces it). */
-export function blockEndNotificationId(blockId: string): string {
-  return `block-end-${blockId}`;
+/**
+ * Our id of a block's end-of-block alert (scheduling it again replaces it): the study session and the
+ * block's number in it, so the next block's alert can be scheduled when the return countdown starts,
+ * before that block has its ids.
+ */
+export function blockEndNotificationId(sessionId: string | null, blockNumber: number): string {
+  return `block-end-${sessionId ?? 'none'}-${blockNumber}`;
 }
 
 /** The end-of-block alert's words. */
@@ -462,13 +481,14 @@ function beginFocus(
   createSession: boolean,
 ): FocusState {
   const timer = startTimer(at, core.plan.blockMinutes * 60_000);
-  const notificationId = blockEndNotificationId(ids.blockId);
+  const notificationId = blockEndNotificationId(core.sessionId, blockNumber);
   const focus: FocusState = {
     ...base,
     ...core,
     phase: 'focus',
     blockId: ids.blockId,
     blockNumber,
+    startedAt: at,
     timer,
     endedAt: null,
     interrupted: false,
@@ -494,13 +514,16 @@ function beginFocus(
   ]);
 }
 
-/** Records the end of the focus block (stays in focus; see endFocus). */
-function closeBlock(state: FocusState, endedAt: number, interrupted: boolean, at: number): FocusState {
-  const stats = {
-    ...state.stats,
-    blocks: state.stats.blocks + 1,
-    focusMs: state.stats.focusMs + elapsedMs(state.timer, endedAt),
-  };
+/**
+ * Records the end of the focus block (stays in focus; see endFocus). `clockEnd` is when it ended on the
+ * clock; the recorded end is the start plus the time focused until then (see the header). A state saved
+ * before blocks kept their start has no startedAt: its end is the clock's, as before.
+ */
+function closeBlock(state: FocusState, clockEnd: number, interrupted: boolean, at: number): FocusState {
+  const focusedMs = elapsedMs(state.timer, clockEnd);
+  const start = finite(state.startedAt);
+  const endedAt = start === null ? clockEnd : start + focusedMs;
+  const stats = { ...state.stats, blocks: state.stats.blocks + 1, focusMs: state.stats.focusMs + focusedMs };
   return addEffects({ ...state, endedAt, interrupted, stats }, at, [
     { kind: 'end_focus_block', blockId: state.blockId, endedAt, interrupted },
     { kind: 'cancel_notification', notificationId: state.notificationId },
@@ -518,18 +541,37 @@ function reachedEnd(state: FocusState, at: number): CycleState {
   return endFocus(state, state.timer.endsAt ?? at, false, at);
 }
 
+/** The alert at the end of the block a return countdown starts: its id and when it rings. */
+function nextBlockAlert(state: ReturnState): Extract<EffectBody, { kind: 'schedule_block_end' }> {
+  const startsAt = state.countdown.endsAt ?? 0;
+  return {
+    kind: 'schedule_block_end',
+    notificationId: blockEndNotificationId(state.sessionId, state.blockNumber + 1),
+    endsAt: startsAt + state.plan.blockMinutes * 60_000,
+    ...blockEndNotice(state.plan),
+  };
+}
+
+/** The return countdown; the next block's alert is scheduled now (see the header). */
 function toReturn(
   state: ActiveCycleState,
   at: number,
   last: { blockId: string | null; blockNumber: number; effortRating: number | null },
 ): ReturnState {
-  return {
+  const back: ReturnState = {
     ...baseOf(state),
     ...coreOf(state),
     phase: 'return',
     ...last,
     countdown: startTimer(at, state.plan.returnSeconds * 1000),
   };
+  return addEffects(back, at, [nextBlockAlert(back)]);
+}
+
+/** Ends the cycle from the return countdown: the next block's alert is withdrawn. */
+function finishReturn(state: ReturnState, finishedAt: number, at: number): IdleState {
+  const { notificationId } = nextBlockAlert(state);
+  return finishCycle(addEffects(state, at, [{ kind: 'cancel_notification', notificationId }]), finishedAt);
 }
 
 /** The zero-tap handoff: the move block starts with the circuit prepared during the focus block. */
@@ -579,6 +621,11 @@ function finishCycle(state: ActiveCycleState, at: number): IdleState {
   };
 }
 
+/** When the move block's work ended: its last set, or `at` before any (see the header). */
+function moveEnd(state: MoveState, at: number): number {
+  return state.lastSetAt === null ? at : Math.min(at, state.lastSetAt);
+}
+
 /** Closes the move block's rows: finished with its length, or skipped when no set was logged. */
 function closeMove(state: MoveState, at: number): MoveState {
   if (state.setsLogged === 0) {
@@ -586,7 +633,7 @@ function closeMove(state: MoveState, at: number): MoveState {
       { kind: 'skip_move_block', workoutId: state.workoutId, transitionId: state.transitionId },
     ]);
   }
-  const durationMinutes = Math.max(0, Math.round((at - state.startedAt) / 60_000));
+  const durationMinutes = Math.max(0, Math.round((moveEnd(state, at) - state.startedAt) / 60_000));
   const stats = { ...state.stats, moveBlocks: state.stats.moveBlocks + 1 };
   return addEffects({ ...state, stats }, at, [
     { kind: 'finish_move_block', workoutId: state.workoutId, durationMinutes },
@@ -596,7 +643,8 @@ function closeMove(state: MoveState, at: number): MoveState {
 /** The move block is over: back to studying (return), or the end of a move-only cycle. */
 function completeMove(state: MoveState, at: number): CycleState {
   const closed = closeMove(state, at);
-  if (closed.mode === 'move_only') return finishCycle(closed, at);
+  // A move-only cycle is its workout: it ends when the workout did (the summary counts its minutes).
+  if (closed.mode === 'move_only') return finishCycle(closed, moveEnd(state, at));
   return toReturn(closed, at, {
     blockId: closed.blockId,
     blockNumber: closed.blockNumber,
@@ -669,6 +717,9 @@ function logSet(state: MoveState, event: Extract<CycleEvent, { type: 'log_set' }
     plannedRestSeconds: item.restSeconds,
     last,
     earlier: progress.history,
+    // Micro: while another station is open, this exercise's next set comes after it, a round later.
+    roundRobin:
+      state.circuit.kind === 'micro' && state.items.some((entry, i) => i !== index && entry.status === 'open'),
   });
   const restPause = advice.action === 'rest_pause' && advice.next !== null;
   const setsDone = progress.setsDone + (last.setType === 'rest_pause' ? 0 : 1);
@@ -889,6 +940,17 @@ function reduceFocus(state: FocusState, event: CycleEvent): CycleState {
     case 'end_block':
       if (state.endedAt !== null) return state;
       return isDone(state.timer, event.at) ? reachedEnd(state, event.at) : endFocus(state, event.at, true, event.at);
+    case 'reschedule_alert': {
+      if (state.endedAt !== null || isPaused(state.timer) || isDone(state.timer, event.at)) return state;
+      return addEffects(state, event.at, [
+        {
+          kind: 'schedule_block_end',
+          notificationId: state.notificationId,
+          endsAt: state.timer.endsAt ?? event.at,
+          ...blockEndNotice(state.plan),
+        },
+      ]);
+    }
     case 'circuit_ready': {
       if (event.blockId !== state.blockId || state.circuit !== null || !event.circuit) return state;
       const ready: FocusState = { ...state, circuit: event.circuit };
@@ -907,8 +969,12 @@ function reduceFocus(state: FocusState, event: CycleEvent): CycleState {
 
 function reduceMove(state: MoveState, event: CycleEvent): CycleState {
   switch (event.type) {
-    case 'tick':
+    case 'tick': {
+      // MOVE_STALE: left open (the app closed mid-workout): close it at its last set and finish.
+      const lastTouched = state.lastStepAt ?? state.startedAt;
+      if (event.at - lastTouched > R.moveStaleMs) return finishCycle(closeMove(state, event.at), lastTouched);
       return state.rest && isDone(state.rest, event.at) ? { ...state, rest: null } : state;
+    }
     case 'log_set':
       return logSet(state, event);
     case 'skip_rest':
@@ -933,18 +999,24 @@ function reduceReturn(state: ReturnState, event: CycleEvent): CycleState {
   switch (event.type) {
     case 'tick': {
       if (!isDone(state.countdown, event.at)) return state;
+      // The next block started when the countdown ended, looked at or not (see the header).
       const end = state.countdown.endsAt ?? event.at;
-      const late = event.at - end;
-      if (late > R.returnStaleMs) return finishCycle(state, end);
+      if (event.at - nextBlockAlert(state).endsAt > R.returnStaleMs) return finishReturn(state, end, event.at);
       if (!event.ids) return state;
-      return nextBlock(state, late <= R.onTimeMs ? end : event.at, event.ids);
+      const focus = nextBlock(state, end, event.ids);
+      // Back only after that block's time was up (its alert rang): it ends, and the workout follows.
+      return isDone(focus.timer, event.at) ? reachedEnd(focus, event.at) : focus;
     }
     case 'start_now':
       return nextBlock(state, event.at, event.ids);
+    case 'reschedule_alert': {
+      const alert = nextBlockAlert(state);
+      return alert.endsAt > event.at ? addEffects(state, event.at, [alert]) : state;
+    }
     case 'rate_block':
       return rate(state, event);
     case 'finish':
-      return finishCycle(state, event.at);
+      return finishReturn(state, event.at, event.at);
     default:
       return state;
   }

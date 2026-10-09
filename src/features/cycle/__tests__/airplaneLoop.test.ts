@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import { SYSTEM_PRESET_IDS, TABLE } from '@/db/constants';
 import {
+  describeBlock,
   focusBlockFromRow,
   groupWorkouts,
   RECENT_BLOCKS_SQL,
@@ -373,5 +374,31 @@ describe.each([
       (await db.get<{ n: number }>(TODAY_SETS_SQL, [USER, since])).n,
     );
     expect(today).toEqual({ blocks: 2, focusMinutes: 25 + 15, sets });
+  });
+});
+
+describe('a paused block on Today and in History', () => {
+  it('counts only the minutes focused, the same as the cycle summary (pauses are not focus time)', async () => {
+    const { io, deps } = phone();
+    const store = await openStore(deps, 'lb');
+    store.start({ split: { lower: 25, upper: 25, core: 25, cardio: 25 }, location: 'home', blockMinutes: 25 });
+    await settle();
+    // Two minutes in, a pause; "Finish" half an hour later, still paused.
+    io.clock = T0 + 2 * MIN;
+    store.pause();
+    await settle();
+    io.clock = T0 + 30 * MIN;
+    store.finish();
+    await settle();
+    const done = current(store);
+    if (done.phase !== 'idle' || !done.summary) throw new Error('The cycle did not finish');
+    expect(done.summary.focusMs).toBe(2 * MIN);
+
+    const blocks = await db.getAll<BlockRow>(RECENT_BLOCKS_SQL, [USER, 30]);
+    expect(blocks).toHaveLength(1);
+    expect(describeBlock(focusBlockFromRow(blocks[0]))).toBe('2 of 25 min · ended early · effort not rated');
+    const since = new Date(T0 - 9 * 60 * MIN).toISOString();
+    const today = summarizeToday(await db.getAll<BlockRow>(TODAY_BLOCKS_SQL, [USER, since]), 0);
+    expect(today).toEqual({ blocks: 1, focusMinutes: 2, sets: 0 });
   });
 });

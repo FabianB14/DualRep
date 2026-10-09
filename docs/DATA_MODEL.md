@@ -434,13 +434,13 @@ milliseconds.
 |---|---|---|
 | First focus block of a cycle starts | `study_sessions` | INSERT: `focus_subject` (what you typed, or `''`), `plan_id` null |
 | Every focus block starts | `interval_blocks` | INSERT: `study_session_id`, `planned_minutes` (10–50), `started_at`, `interrupted = false`, `mode = 'seated'` |
-| A focus block ends | `interval_blocks` | UPDATE `ended_at` (the timer's real end, even if the app only noticed later) and `interrupted` (true for **End block early**, or **Finish** before the time was up) |
+| A focus block ends | `interval_blocks` | UPDATE `ended_at` and `interrupted` (true for **End block early**, or **Finish** before the time was up). `ended_at` is `started_at` plus the time actually focused, with pauses left out (there is no column for them), so `ended_at − started_at` is the block's focus time. For a block that ran out without a pause it is the timer's real end, even if the app only noticed later |
 | You rate the block (1–5) | `interval_blocks` | UPDATE `effort_rating` (again on each change) |
 | The move block starts (the handoff) | `workout_sessions` | INSERT: `kind` (`micro` or `full`), `logged_at`, `preset_id`, `setup_id` |
 | … after a focus block | `transitions` | INSERT: `interval_block_id`, `workout_session_id`, `proposal` (the circuit), `accepted` null |
 | Each **Done** | `exercise_sets` | INSERT one set ([how sets are filled](#training)) |
 | … the workout's first set | `transitions` | UPDATE `accepted = true` |
-| The workout ends with sets logged | `workout_sessions` | UPDATE `duration_minutes` (rounded) |
+| The workout ends with sets logged | `workout_sessions` | UPDATE `duration_minutes`: from the handoff to the last logged set, rounded (time after the last set, such as a workout left open, isn't counted) |
 | The workout is skipped or ended with no set | `transitions`, `workout_sessions` | UPDATE `accepted = false` and `workout_session_id = null`; DELETE the empty workout |
 
 - **Just train** (a workout without a focus block) writes no `study_sessions`, `interval_blocks` or

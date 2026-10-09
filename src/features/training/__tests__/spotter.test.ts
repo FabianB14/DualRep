@@ -67,9 +67,10 @@ describe('adviseNextSet: on target', () => {
     expect(advice.next).toEqual({ targetReps: 10, targetSeconds: null, targetWeightLbs: 100 });
   });
 
-  it('carries on at the load actually used (falling back to the target load)', () => {
+  it('carries on at the load actually used; no weight ("None") is a bodyweight set, whatever the target', () => {
     expect(advise({ weightLbs: 95 }).next?.targetWeightLbs).toBe(95);
-    expect(advise({ weightLbs: null }).next?.targetWeightLbs).toBe(100);
+    expect(advise({ weightLbs: null }).next?.targetWeightLbs).toBeNull();
+    expect(advise({ weightLbs: 0 }).next?.targetWeightLbs).toBeNull();
   });
 
   it('keeps an effort of 10 on a set that hit its target', () => {
@@ -259,6 +260,19 @@ describe('adviseNextSet: bodyweight', () => {
     expect(advise({ targetWeightLbs: 0, weightLbs: 0, done: 7 }).action).toBe('lower_target');
   });
 
+  it('goes by the weight used when the user picked "None" over a target weight (no drop from a load never lifted)', () => {
+    // 10 reps at 25 lb planned; the user had no dumbbells to hand, set the weight to None and did 8.
+    const none = { targetWeightLbs: 25, weightLbs: null } as const;
+    expect(advise({ ...none, done: 8 }, { equipment: 'dumbbell' })).toEqual({
+      action: 'lower_target',
+      next: { targetReps: 8, targetSeconds: null, targetWeightLbs: null },
+      restSeconds: 90,
+      setType: 'normal',
+      message: '2 reps short. Next set: aim for 8 reps.',
+    });
+    expect(advise({ ...none, done: 9 }).message).toBe('1 rep short. Rest 120 s, then same again: 10 reps.');
+  });
+
   it('lowers to at least 1 rep', () => {
     expect(advise({ ...BODYWEIGHT, target: 3, done: 1 }).next?.targetReps).toBe(1);
   });
@@ -387,14 +401,67 @@ describe('adviseNextSet: cut the exercise', () => {
     expect(advise({ ...dropSet, done: 7 }, { earlier, plannedSets: 4 }).action).toBe('cut_set');
   });
 
-  it('spots an eased set by its target load even if it was logged as normal', () => {
-    const earlier = [logged({ done: 7 })];
-    const advice = advise({ targetWeightLbs: 85, weightLbs: 85, done: 7 }, { earlier, plannedSets: 4 });
-    expect(advice.action).toBe('cut_set');
+  it('does not count a lighter weight the user picked as easing: a miss after it drops, it is not cut', () => {
+    // History said 10 reps at 25 lb; the user went lighter (20 lb) and hit it, so set 2 aims for 20 lb.
+    const equipment = 'dumbbell';
+    const earlier = [logged({ targetWeightLbs: 25, weightLbs: 20 })];
+    const advice = advise({ targetWeightLbs: 20, weightLbs: 20, done: 8 }, { earlier, equipment });
+    expect(advice).toMatchObject({ action: 'drop_weight', setType: 'drop', next: { targetReps: 10, targetWeightLbs: 15 } });
+    expect(advice.message).toBe('2 reps short. Next set: 10 reps at 15 lb.');
+    // The same as with no history target on set 1.
+    const fresh = [logged({ targetWeightLbs: null, weightLbs: 20 })];
+    expect(advise({ targetWeightLbs: 20, weightLbs: 20, done: 8 }, { earlier: fresh, equipment })).toEqual(advice);
+    // Only the spotter's own easing counts: its drops are drop sets, its lower targets are lower targets.
+    const afterMiss = [logged({ done: 7 })];
+    expect(advise({ targetWeightLbs: 85, weightLbs: 85, done: 7 }, { earlier: afterMiss, plannedSets: 4 }).action).toBe(
+      'drop_weight',
+    );
+    expect(advise({ setType: 'drop', targetWeightLbs: 85, weightLbs: 85, done: 7 }, { earlier: afterMiss, plannedSets: 4 }).action).toBe(
+      'cut_set',
+    );
   });
 
   it('does not treat a second normal set as eased', () => {
     expect(advise({ done: 7 }, { earlier: [logged({ done: 9 })] }).action).toBe('drop_weight');
+  });
+});
+
+describe('adviseNextSet: a micro circuit (round-robin)', () => {
+  /** The next set of this exercise comes a round later, after the other stations. */
+  const ROUND: Partial<NextSetInput> = { roundRobin: true, plannedRestSeconds: 20 };
+
+  it('promises no extra rest for 1 short: the round is the rest, so the same target next round', () => {
+    expect(advise({ done: 9 }, ROUND)).toEqual({
+      action: 'continue',
+      next: { targetReps: 10, targetSeconds: null, targetWeightLbs: 100 },
+      restSeconds: 20,
+      setType: 'normal',
+      message: '1 rep short. Same again next round: 10 reps at 100 lb.',
+    });
+    expect(advise({ ...BODYWEIGHT, done: 9 }, ROUND).message).toBe('1 rep short. Same again next round: 10 reps.');
+  });
+
+  it('words every next-set message for the next round, with the same numbers as straight sets', () => {
+    expect(advise({ done: 10 }, ROUND).message).toBe('On target. Next round: 10 reps at 100 lb.');
+    const drop = advise({ done: 8 }, ROUND);
+    expect(drop).toMatchObject({ action: 'drop_weight', setType: 'drop', next: { targetWeightLbs: 90 } });
+    expect(drop.message).toBe('2 reps short. Next round: 10 reps at 90 lb.');
+    expect(advise({ ...BODYWEIGHT, done: 7 }, ROUND).message).toBe('3 reps short. Next round: aim for 7 reps.');
+    for (const done of [10, 8, 7, 2]) {
+      const straight = advise({ done }, { plannedRestSeconds: 20 });
+      const round = advise({ done }, ROUND);
+      expect([round.action, round.next, round.setType]).toEqual([straight.action, straight.next, straight.setType]);
+    }
+  });
+
+  it('keeps the rest-pause straight after the last round, and the end-of-exercise messages', () => {
+    const last = { ...ROUND, earlier: [logged(), logged()] };
+    expect(advise({ done: 7 }, last)).toMatchObject({
+      action: 'rest_pause',
+      restSeconds: 20,
+      message: '3 reps short. Rest 20 s, then do the last 3 reps at 100 lb.',
+    });
+    expect(advise({}, last).message).toBe('On target. All 3 sets done.');
   });
 });
 
@@ -632,6 +699,46 @@ describe('adviseNextSession', () => {
         targetWeightLbs: 50,
       });
       expect(adviseNextSession(allHit(50, 60), timedCtx)).toMatchObject({ action: 'hold', targetWeightLbs: 50 });
+    });
+  });
+
+  describe('a lower top of the range (a micro circuit’s 50 s station)', () => {
+    it.each([
+      [10, 'raise', 12],
+      [12, 'raise', 13],
+      [13, 'hold', 13],
+    ])('bodyweight reps with a top of 13: %p → %s %p', (target, action, reps) => {
+      expect(adviseNextSession(allHit(null, target), ctx({ equipment: [], topReps: 13 }))).toMatchObject({
+        action,
+        targetReps: reps,
+      });
+    });
+
+    it('goes up in load once the reps are at that top (double progression), within the cap', () => {
+      const advice = adviseNextSession(allHit(20, 13), ctx({ equipment: 'dumbbell', topReps: 13 }));
+      expect(advice).toMatchObject({ action: 'raise', targetWeightLbs: 25 });
+      expect(advice?.targetReps).toBeLessThanOrEqual(13);
+      expect(estimatedMax(25, advice?.targetReps ?? 0)).toBeLessThanOrEqual(estimatedMax(20, 13) * 1.05 + 1e-9);
+    });
+
+    it('stops timed sets at that top', () => {
+      const timed = ctx({ measure: 'time', equipment: [], topSeconds: 40 });
+      expect(adviseNextSession(allHit(null, 35), timed)).toMatchObject({ action: 'raise', targetSeconds: 40 });
+      expect(adviseNextSession(allHit(null, 40), timed)).toMatchObject({ action: 'hold', targetSeconds: 40 });
+    });
+
+    it('ignores an unusable top', () => {
+      expect(adviseNextSession(allHit(null, 14), ctx({ equipment: [], topReps: Number.NaN }))?.targetReps).toBe(15);
+      expect(adviseNextSession(allHit(null, 14), ctx({ equipment: [], topReps: 0 }))?.targetReps).toBe(15);
+    });
+  });
+
+  it('reads sets done with no weight ("None") as bodyweight, not at their target weight', () => {
+    const none = [1, 2, 3].map(() => logged({ targetWeightLbs: 25, weightLbs: null, rpe: null }));
+    expect(adviseNextSession(none, ctx({ equipment: 'dumbbell' }))).toMatchObject({
+      action: 'raise',
+      targetReps: 12,
+      targetWeightLbs: null,
     });
   });
 

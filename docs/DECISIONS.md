@@ -321,6 +321,12 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
   `MIGRATION` in the script to a new timestamp and leave the old file alone. The new file sets every
   column of every starter row, so it replaces the old one's effect. Retiring an exercise needs a
   hand-written delete.
+- **Withdrawing one on the server** (`reviewed = false`, or the delete) works without an app update:
+  once the server's starter rows are on a phone, a bundled one the server no longer sends stays
+  there for its name in history, but circuits and swaps stop picking it (its sets would otherwise
+  lose their `exercise_id` on upload). For the same reason, a starter exercise added to the app is
+  only picked once its row has reached the server: apply the new migration before shipping the
+  build.
 - **Why:** the gate needs circuits for every preset and setup from day one, offline, before any sync.
   Hand-written entries can be checked against the rules the circuit builder relies on, and their
   instructions are ours, so the licence question in D9 doesn't touch them. Curating the dataset is
@@ -339,7 +345,9 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
   through a day and across a week.
   - **Short circuits (5, 10 or 15 minutes):** 50-second stations (work, then change-over); 2 rounds
     under 8 minutes, else 3. So 5 min = 3 stations × 2 rounds, 10 = 4 × 3, 15 = 6 × 3. Only
-    exercises marked for short circuits, at demand level 1 or 2.
+    exercises marked for short circuits, at demand level 1 or 2. As targets move on from session to
+    session, a station still fits its 50 seconds: at most 40 s or 13 reps of work, and the
+    change-over is worked out again from the new target. Past that, progress comes from the weight.
   - **Full sessions (30, 45 or 60 minutes):** 3 straight sets of each exercise; 120 s rest for demand
     level 3, 60 s otherwise. The number of exercises is picked so the estimate is closest to the time
     asked.
@@ -380,10 +388,16 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
   - Timers keep their end time, not a countdown, so a killed app reopens in the right place. A block
     that ended meanwhile hands off at once.
   - The loop only ticks while the cycle screen is open. The block-end alert covers the focus timer.
-    A return countdown that ran out while you were on another screen starts the next block when you
-    come back, or finishes the cycle if that was more than 5 minutes later.
-  - Signing out stops the cycle first (it waits for a write in progress) and withdraws every alert,
-    before the phone's data is cleared.
+    The next block after a workout starts when the 30-second countdown ends, whether or not anyone is
+    looking: its alert is scheduled as the countdown starts, and the first tick afterwards starts the
+    block from the countdown's end. If nobody is back within 5 minutes after that block would have
+    ended (its alert rang meanwhile), the cycle finishes instead.
+  - A block's recorded end (`ended_at`) is its start plus the time actually focused, so pauses never
+    count as focus time in History or Today. A workout's length runs from its start to its last set,
+    and a workout nobody touched for an hour is closed as it stands and the cycle finished.
+  - Signing out finishes a running cycle first, so its block, workout and transition are closed on
+    the server instead of left open for good. It waits for those writes, withdraws every alert, and
+    when online gives the upload queue up to 10 seconds, before the phone's data is cleared.
 - **Why:** an app restart, a killed process or a flat battery must never lose a logged set or write
   it twice, and Phase 1 adds no tables or columns to the database. The cycle belongs to this phone,
   not to the account. Keeping it in the same SQLite file as the loop's rows avoids a second storage
@@ -401,8 +415,14 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
     weight; with no weight, lower the target to what was done. Last planned set 2+ short → one
     rest-pause mini-set (20 s rest, then the missing reps). Stop the exercise for today when a set
     comes up short and a quarter of the target or less was done, or the effort was 10; or when a set
-    the spotter already eased (a drop or a rest-pause) comes up 2 or more short again. The weight
-    never goes up within a session.
+    the spotter already eased (a drop, a rest-pause or a lowered target) comes up 2 or more short
+    again. A lighter weight you picked yourself is not easing, so a miss after it drops the weight as
+    usual. The weight never goes up within a session.
+  - The spotter goes by the weight you used. A set logged with the weight at **None** is a bodyweight
+    set, even if it had a target weight.
+  - In a short circuit the next set of an exercise comes a round later, after the other stations. The
+    round is its rest, so 1 rep short means the same target next round (no extra rest), and the note
+    says "Next round" instead of "Next set".
   - **The next session:** raise only when every normal set hit its target with effort 8 or less (or
     not rated). Lower 10% when more than half the sets were 2+ short. Otherwise hold.
   - Timed sets use the same rules on seconds; every full 5 s short counts as 1 rep short.
@@ -495,14 +515,19 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
 - **Decision:** built as D8 proposed. The timer keeps its end time and the screen shows end − now.
   When a focus block starts, a local notification is scheduled for its end (a DATE trigger) on the
   channel `timers-v1`: high importance, the default sound, vibration, shown on the lock screen.
-  - Its id is `block-end-<block id>`, so scheduling it again replaces it. Pause, **End block early**,
-    **Finish** and the handoff cancel it and clear it from the shade.
+  - Its id is `block-end-<study session id>-<block number>`, so scheduling it again replaces it.
+    Pause, **End block early**, **Finish** and the handoff cancel it and clear it from the shade. The
+    next block's alert is scheduled when the countdown after a workout starts (D23), and a running
+    block's alert is scheduled again whenever the cycle screen opens or Settings sees notifications
+    allowed, so a block started while they were off still rings once they are on.
   - Tapping it opens the cycle screen. Only paths inside the app are ever opened from a notification.
   - While the cycle screen is open, the alert stays silent (the screen hands off with a haptic). On
     any other screen it shows, so a block never ends unnoticed.
   - No foreground service and no exact alarms yet.
   - The **Timer check** screen measures the real delay with the phone locked: it schedules a test
-    alert in 1 or 25 minutes and compares when Android posted it with when it was due.
+    alert in 1 or 25 minutes and compares when Android posted it with when it was due. Android clears
+    a tapped notification by default, so the test alert is posted with `autoDismiss: false`, and a
+    tap on it also saves the time it was posted before the screen opens.
 - **Why:** see D8. The channel id carries a version because users own a channel's settings once it
   exists, so a different sound later needs a new id.
 - **Alternatives:** see D8; a custom alert sound (needs a sound file and a new channel).
@@ -517,9 +542,25 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
   the app knows it is the first start; nothing extra is stored. **Just train** never asks. If the
   answer is no, the block starts anyway and a quiet "Alerts are off" note shows. Settings shows the
   state, with **Turn on alerts** (asks again) or **Open system settings** (when Android won't ask
-  again).
+  again). A block already running when alerts are turned on gets its alert then (D28).
 - **Why:** on Android 13 and later an app gets few chances to ask. Asking at the moment the alert
   matters gets more yeses, and the timer works without it
   ([ANDROID.md 1.2](ANDROID.md#12-notification-permission-and-channels)).
 - **Alternatives:** ask at first launch (no context, more refusals); never ask (no alerts).
 - **Revisit when:** Phase 2 adds review reminders (a second reason to ask).
+
+## D30. expo-notifications' extra permissions are blocked in Phase 1 (2026-10-08)
+
+- **Decision:** `app.config.ts` removes, with `android.blockedPermissions`, the permissions that
+  expo-notifications' dependencies declare but DualRep doesn't use: Firebase push
+  (`com.google.android.c2dm.permission.RECEIVE`), Google's install referrer
+  (`com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE`) and 16 launcher-badge
+  permissions (`READ_APP_BADGE` and vendor ones). The Phase 1 APK asks for Phase 0's three plus
+  `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED`, `ACCESS_NETWORK_STATE` and `WAKE_LOCK`
+  ([ANDROID.md permission ledger](ANDROID.md#permission-ledger)).
+- **Why:** each permission is a Play declaration or a Data safety answer
+  ([ANDROID.md 0.4](ANDROID.md#04-keep-the-manifest-lean)). The end-of-block alert is a local
+  notification: it needs none of these. The Phase 1 gate checks that it still rings.
+- **Alternatives:** leave them in until push arrives (more to declare, for nothing).
+- **Revisit when:** Phase 4 adds push: take `c2dm.permission.RECEIVE` out of the list
+  ([ANDROID.md 4.2](ANDROID.md#42-push-notifications-for-friend-activity)).

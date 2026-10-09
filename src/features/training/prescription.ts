@@ -19,6 +19,9 @@
  *   the next station (rounded to 5 s, at least 10 s). 12 reps (36 s) leave 15 s, 10 reps or a 30 s
  *   hold leave 20 s, a 40 s hold leaves 10 s. Harder moves get shorter work and a longer change-over.
  *   Demand 3 never goes into a micro circuit; its row is there so that no caller ever meets a gap.
+ *   So that a station keeps to its slot as targets move on from session to session, a micro target is
+ *   at most 40 s or 13 reps (MICRO_LIMITS: the slot less the shortest change-over), and the change-over
+ *   is worked out again from the new target (microRestSeconds; circuitPrep.ts does both).
  * - Full: heavy lifts (demand 3) get 5 reps and 2 minutes of rest; everything else 10 to 12 reps (or
  *   40 to 45 s) with 60 s of rest. The number of sets (3) is the circuit's business: circuits.ts uses
  *   PRESCRIPTION.full.sets.
@@ -48,6 +51,17 @@ export const PRESCRIPTION = {
     seconds: { 1: 45, 2: 40, 3: 30 },
     restSeconds: { 1: 60, 2: 60, 3: 120 },
   },
+} as const;
+
+/**
+ * The most work one micro station holds: its slot less the shortest change-over (40 s), as seconds and
+ * as reps at PRESCRIPTION.secondsPerRep (13). Targets above these would make the circuit overrun.
+ */
+export const MICRO_LIMITS = {
+  seconds: PRESCRIPTION.micro.slotSeconds - PRESCRIPTION.micro.minChangeoverSeconds,
+  reps: Math.floor(
+    (PRESCRIPTION.micro.slotSeconds - PRESCRIPTION.micro.minChangeoverSeconds) / PRESCRIPTION.secondsPerRep,
+  ),
 } as const;
 
 /** What each set of an exercise aims for, in the same shape as a CircuitItem's targets. */
@@ -81,6 +95,12 @@ function roundTo5(seconds: number): number {
   return Math.round(seconds / 5) * 5;
 }
 
+/** A micro station's change-over after work with these targets: the rest of its slot (see the header). */
+export function microRestSeconds(targets: Pick<CircuitItem, 'targetReps' | 'targetSeconds'>): number {
+  const rules = PRESCRIPTION.micro;
+  return Math.max(rules.minChangeoverSeconds, roundTo5(rules.slotSeconds - workSeconds(targets)));
+}
+
 /** Targets for each set of an exercise in a workout of this kind (see the table in the header). */
 export function defaultTargets(exercise: PrescriptionInput, kind: WorkoutKind): SetPrescription {
   const demand = demandOf(exercise);
@@ -89,8 +109,7 @@ export function defaultTargets(exercise: PrescriptionInput, kind: WorkoutKind): 
     const rules = PRESCRIPTION.micro;
     const targetReps = timed ? null : rules.reps[demand];
     const targetSeconds = timed ? rules.seconds[demand] : null;
-    const work = workSeconds({ targetReps, targetSeconds });
-    const restSeconds = Math.max(rules.minChangeoverSeconds, roundTo5(rules.slotSeconds - work));
+    const restSeconds = microRestSeconds({ targetReps, targetSeconds });
     return { targetReps, targetSeconds, targetWeightLbs: null, restSeconds };
   }
   const rules = PRESCRIPTION.full;

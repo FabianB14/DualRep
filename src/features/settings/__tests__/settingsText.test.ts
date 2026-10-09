@@ -30,6 +30,19 @@ describe('signOutWarning', () => {
       '4 changes have not been uploaded yet and will be lost. Connect to the internet first to keep them.',
     );
   });
+
+  it('says a running cycle is finished first', () => {
+    expect(signOutWarning(0, true)).toEqual({
+      title: 'Sign out?',
+      message:
+        'Your cycle in progress is finished first. Its end is sent to the server if the phone is online. This phone’s copy is then removed.',
+      confirmLabel: 'Sign out',
+    });
+    expect(signOutWarning(2, true).message).toBe(
+      'Your cycle in progress is finished first. 2 changes have not been uploaded yet and will be lost. Connect to the internet first to keep them.',
+    );
+    expect(signOutWarning(0, false)).toEqual(signOutWarning(0));
+  });
 });
 
 describe('timer check wording', () => {

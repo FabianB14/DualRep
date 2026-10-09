@@ -1050,7 +1050,8 @@ prove the loop. Keep the phone in airplane mode for the whole run.
    - Optional: the effort chips (Easy, Solid, All out), and "How was that focus block?" (1–5).
 6. **Back to studying.** When the circuit ends, the screen says "Next focus block in 0:30". Don't tap
    anything. After 30 seconds the next focus block starts by itself. That is the second "study" of
-   the cycle.
+   the cycle. It starts even if the screen turns off during the countdown (a short screen timeout)
+   or you lock the phone: wake it and the block is already running, and its alert is already set.
 7. Optional, recommended once: **swipe DualRep away** from the recent-apps screen while the focus
    block runs. Open it again: the block is still running, with the right time left.
 8. **Finish.** Tap **Finish** at the top. A summary shows the blocks, focus minutes and sets. Tap
@@ -1123,9 +1124,9 @@ whether DualRep needs the optional exact-alarm setting ([DECISIONS.md](DECISIONS
 2. Today → **More** → **Timer check**. Pick **25 min** and tap **Schedule test alert**.
 3. **Unplug the phone** (Doze only starts on battery), lock it and leave it still, for example face
    down on a table. Don't touch it until it rings. Online or in airplane mode makes no difference.
-4. When it rings, unlock the phone and **tap the alert**. The Timer check opens with the result:
-   "Rang on time", or "Rang … late". Open DualRep before you swipe the alert away, or the result is
-   lost ("Result lost": run it again).
+4. When it rings, **tap the alert** (on the lock screen, or in the notification shade after
+   unlocking). The Timer check opens with the result: "Rang on time", or "Rang … late". Tap it
+   rather than swiping it away: a swiped alert can't be measured ("Result lost": run it again).
 5. Write the result in [ROADMAP.md](ROADMAP.md#your-manual-steps-for-the-gate-in-order) (Phase 1,
    step 8): the date, the phone, and the delay. A second run at another time of day helps.
 
@@ -1167,8 +1168,8 @@ GitHub's download limit, not the code: open the run and click **Re-run failed jo
 | "Couldn't put a workout together for this setup" (Just train), or a focus block went straight to "Next focus block in 0:30" with no workout | No exercise fit that setup and preset. Try another setup or preset, and tell whoever maintains the code which ones failed. |
 | "Couldn't save on this phone. Trying again…" | The app retries by itself and the warning goes away when it works. If it stays for more than a minute, take a screenshot and get help. |
 | "A change was not saved: …" | A bug in the app's write code: that one change was skipped so the loop could go on. Send a screenshot to whoever maintains the code. |
-| The phone didn't ring when the block ended | Settings → **End-of-block alerts** must say **On**. Also check that DualRep's notifications aren't silenced in Android's settings. The on-screen timer is right either way. |
+| The phone didn't ring when the block ended | Settings → **End-of-block alerts** must say **On**. Also check that DualRep's notifications aren't silenced in Android's settings. If you turned alerts on during a block, that block's alert is set as soon as you're back in DualRep (the cycle screen or Settings). The on-screen timer is right either way. |
 | The block ended but the workout didn't appear | Open DualRep (or tap the alert). The handoff happens as soon as the cycle screen is open. |
-| The next focus block didn't start after the workout | The countdown runs only while the cycle screen is open. Coming back within 5 minutes starts the block; later than that, the cycle finishes and shows its summary. |
+| The next focus block didn't start after the workout | It starts when the 30-second countdown ends, even with the screen off or another app open; DualRep shows it the moment you open it, and its alert rings at its end. If you only come back more than 5 minutes after that block would have ended, the cycle finishes instead and shows its summary. |
 | Timer check: "No alert could be scheduled" | Notifications aren't allowed yet: do step 6.1 first. |
 | `linked` is false in step 5 | The sets uploaded before the step 1 migration. Nothing to fix; apply the migration before the next run. |

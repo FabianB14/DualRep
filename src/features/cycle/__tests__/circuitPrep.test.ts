@@ -3,9 +3,10 @@ import { describe, expect, it } from '@jest/globals';
 import { SYSTEM_PRESET_IDS } from '@/db/constants';
 import { buildDefaultCircuit, estimateCircuitSeconds } from '@/features/training/circuits';
 import { SETUP_TEMPLATES } from '@/features/training/equipment';
+import { MICRO_LIMITS, PRESCRIPTION } from '@/features/training/prescription';
 import type { LoggedSet } from '@/features/training/spotter';
-import { STARTER_LIBRARY } from '@/features/training/starterLibrary';
-import type { Circuit, CircuitItem } from '@/features/training/types';
+import { STARTER_LIBRARY, STARTER_LIBRARY_BY_ID } from '@/features/training/starterLibrary';
+import type { Circuit, CircuitItem, Split } from '@/features/training/types';
 
 import { applySessionAdvice, buildCycleCircuit, circuitVariant, localDayNumber } from '../circuitPrep';
 import { normalizePlan } from '../cycleMachine';
@@ -143,5 +144,77 @@ describe('applySessionAdvice', () => {
     const onlyRestPause = new Map([['goblet', [set({ setType: 'rest_pause' })]]]);
     expect(applySessionAdvice(CIRCUIT, onlyRestPause, { unit: 'kg', byId })).toBe(CIRCUIT);
     expect(applySessionAdvice(CIRCUIT, new Map([['goblet', []]]), { unit: 'lb', byId })).toBe(CIRCUIT);
+  });
+});
+
+describe('applySessionAdvice: a micro circuit keeps to its minutes', () => {
+  /** Every set of every item hit its target at its target weight, effort not rated (one tap on "Done"). */
+  function allHit(c: Circuit): Map<string, LoggedSet[]> {
+    return new Map(
+      c.items.map((entry) => {
+        const target = entry.measure === 'time' ? entry.targetSeconds : entry.targetReps;
+        const sets = Array.from({ length: entry.sets }, () =>
+          set({ target, done: target ?? 0, targetWeightLbs: entry.targetWeightLbs, weightLbs: entry.targetWeightLbs }),
+        );
+        return [entry.exerciseId, sets];
+      }),
+    );
+  }
+
+  it.each([
+    ['mostly cardio, home with just your body, 10 min', { lower: 10, upper: 10, core: 10, cardio: 70 }, 'home_bodyweight', 10],
+    ['upper and core, home with just your body, 15 min', { lower: 25, upper: 50, core: 25, cardio: 0 }, 'home_bodyweight', 15],
+    ['mostly cardio, gym, 5 min', { lower: 10, upper: 10, core: 10, cardio: 70 }, 'gym', 5],
+    ['full body, home with gear, 10 min', { lower: 25, upper: 25, core: 25, cardio: 25 }, 'home_basic', 10],
+  ] as [string, Split, keyof typeof SETUP_TEMPLATES, number][])(
+    '%s: ten sessions that all hit still fit the 50 s stations',
+    (_name, split, template, minutes) => {
+      const setup = SETUP_TEMPLATES[template];
+      let c = buildDefaultCircuit({
+        split,
+        location: setup.location,
+        equipment: setup.equipment,
+        minutes,
+        kind: 'micro',
+        library: STARTER_LIBRARY,
+        variant: 0,
+      });
+      for (let session = 0; session < 10; session += 1) {
+        c = applySessionAdvice(c, allHit(c), { unit: 'lb', byId: STARTER_LIBRARY_BY_ID });
+      }
+      const slot = PRESCRIPTION.micro.slotSeconds;
+      for (const entry of c.items) {
+        if (entry.targetReps !== null) expect(entry.targetReps).toBeLessThanOrEqual(MICRO_LIMITS.reps);
+        if (entry.targetSeconds !== null) expect(entry.targetSeconds).toBeLessThanOrEqual(MICRO_LIMITS.seconds);
+        expect(entry.restSeconds).toBeGreaterThanOrEqual(PRESCRIPTION.micro.minChangeoverSeconds);
+        const station = (entry.targetSeconds ?? (entry.targetReps ?? 0) * PRESCRIPTION.secondsPerRep) + entry.restSeconds;
+        expect(Math.abs(station - slot)).toBeLessThanOrEqual(2.5);
+      }
+      expect(c.estimatedSeconds).toBe(estimateCircuitSeconds(c.items));
+      expect(Math.abs(c.estimatedSeconds - minutes * 60)).toBeLessThanOrEqual(minutes * 60 * 0.05);
+    },
+  );
+
+  it('cuts a longer target from a full session back to the station, and works out the change-over again', () => {
+    const history = new Map<string, LoggedSet[]>([
+      // A full session's 15 bodyweight reps and 45 s hold, all on target: neither fits a 50 s station.
+      ['goblet', [set({ target: 15, done: 15, targetWeightLbs: null, weightLbs: null })]],
+      ['plank', [set({ target: 45, done: 45, targetWeightLbs: null, weightLbs: null })]],
+    ]);
+    const c = circuitOf([
+      item('goblet'),
+      item('plank', { measure: 'time', targetReps: null, targetSeconds: 30 }),
+    ]);
+    const advised = applySessionAdvice(c, history, { unit: 'lb', byId: new Map() });
+    expect(advised.items.map((entry) => [entry.targetReps, entry.targetSeconds, entry.restSeconds])).toEqual([
+      [13, null, 10],
+      [null, 40, 10],
+    ]);
+    // A full session keeps the spotter's targets (15 reps is the top; the hold goes up 5 s) and its rest.
+    const full = applySessionAdvice({ ...c, kind: 'full' }, history, { unit: 'lb', byId: new Map() });
+    expect(full.items.map((entry) => [entry.targetReps, entry.targetSeconds, entry.restSeconds])).toEqual([
+      [15, null, 20],
+      [null, 50, 20],
+    ]);
   });
 });
