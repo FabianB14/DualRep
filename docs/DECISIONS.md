@@ -600,9 +600,11 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
   - The worker calls Tracy's `POST /ai/extract` and `POST /ai/tasks/dualrep_*` with
     `X-Service-Secret` (Tracy's `SERVICE_SECRET_DUALREP`, kept in Supabase as
     `TRACY_SERVICE_SECRET`), and writes the results with DualRep's own service role.
-  - Before a step that needs Tracy it calls `GET /health` (5 s). If Tracy is asleep (Render's free
-    plan), the job goes back in the queue without counting an attempt
-    (`release_tracy_event`), and the next minute tries again. The health call itself wakes Tracy.
+  - Before a step that needs Tracy it calls `GET /health` (5 s). If Tracy doesn't answer (restarting
+    after a deploy, or asleep if it ever runs on Render's Free instance), the job goes back in the
+    queue without counting an attempt (`release_tracy_event`), and the next minute tries again.
+    Tracy runs on the Starter instance (never sleeps, 512 MB, half a CPU; confirmed by the founder
+    2026-10-09), so this mostly covers restarts.
   - Tracy stores nothing on disk and logs only metadata (it keeps the last Storage file it read in
     memory for a few minutes, see D34). DualRep's tasks never fall back to Groq.
 - **Why:** DualRep's service-role key never leaves DualRep, and its data never rests on Tracy. One
@@ -819,7 +821,7 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
     errors, timeouts and 5xx retry, up to 3 attempts. Express's own 404/405 page ("the DualRep lane
     isn't deployed yet") fails at once with "The study builder isn't set up yet. Try again later."
   - **Released, not counted:** only a job that never reached Tracy: its `/health` check failed
-    (Render's free service asleep), or Tracy answered 503 `busy` (it reads one file at a time). The
+    (Tracy restarting, or asleep on a Free instance), or Tracy answered 503 `busy` (it reads one file at a time). The
     database counts these in a row (`tracy_events.releases`); after 15 (about a quarter of an
     hour) Tracy is down rather than asleep and the job fails with "Tracy couldn't be reached for a
     while. Try again later." Render's HTML 502/503/504 page after a passing `/health` means Tracy
@@ -829,7 +831,8 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
   - **One step at a time:** `claim_tracy_events(p_limit, p_max_running)` claims nothing while
     `DUALREP_WORKER_CONCURRENCY` jobs (default 1) are running with a lock under 3 minutes old. The
     every-minute cron and the self-kicks otherwise added a parallel chain each minute during a
-    backlog, and two scanned-page renders at once exceed Render's free 512 MB.
+    backlog, and two scanned-page renders at once exceed the 512 MB of Render's Starter (and Free)
+    instance. Raise it only on Standard (2 GB) or bigger.
   - **Fixed messages:** every `error` the phone shows is one of a fixed list of English sentences
     (`MESSAGES` in [`supabase/functions/_shared/errors.ts`](../supabase/functions/_shared/errors.ts)).
     They never contain the material, a URL or a model's words.

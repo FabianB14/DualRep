@@ -339,15 +339,15 @@ reviews runs correctly.
   outline" (when it proposes new topics) → "Making cards (2 of 5)" → "Ready". A failure shows
   "Couldn't finish" with a short reason and **Try again**.
 - Each step runs in the background on the server, one AI call at a time. Expect minutes, not
-  seconds, and longer when Tracy on Render's free plan has to wake up (about a minute).
+  seconds. (Tracy is on Render's Starter instance, which never sleeps.)
 - "Due" now means **due today**: a review card is due for its whole day (D46).
 - The cycle's saved state is still version 1: a cycle saved by the Phase 1 app loads unchanged.
 
 ### Your manual steps for the Phase 2 gate (in order)
 Details for each step are in [SETUP §17](SETUP.md#17-phase-2-the-study-engine-on-your-phone).
 
-1. [ ] **Check Tracy is awake:** open its `/health` page in a browser
-       ([step 1](SETUP.md#step-1-check-that-tracy-is-awake))
+1. [ ] **Check Tracy is up:** open its `/health` page in a browser
+       ([step 1](SETUP.md#step-1-check-that-tracy-is-up))
 2. [ ] **Make the Tracy secret** and save it in your password manager
        ([step 2](SETUP.md#step-2-make-the-tracy-secret))
 3. [ ] **Render:** add `SERVICE_SECRET_DUALREP`, `DUALREP_STORAGE_HOSTS`, `TRACY_TASK_MODEL_STRONG`

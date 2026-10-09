@@ -1248,15 +1248,20 @@ Rules for every secret:
   For the Supabase token: delete it in Supabase (Account → Access Tokens) and make a new one. For the
   worker secret: run Deploy backend with **Make a new cron -> tracy-worker secret** ticked.
 
-### Step 1: Check that Tracy is awake
+### Step 1: Check that Tracy is up
 
 Tracy runs on Render. Its address looks like `https://<name>.onrender.com`: Render shows it at the
 top of the Tracy service's page (https://dashboard.render.com → the Tracy service). Write it down;
 it is `TRACY_URL` in step 4.
 
+Tracy is on Render's **Starter** instance (the paid step above Free: about $7 a month, 512 MB of
+memory, half a CPU). It never goes to sleep, so it answers straight away. To confirm the plan: the
+Tracy service → **Settings** → **Instance Type** (**verify** the label). If it says **Standard** (2 GB)
+or bigger instead, see `DUALREP_WORKER_CONCURRENCY` in step 4.
+
 1. In a browser, open `https://<name>.onrender.com/health`.
-2. On Render's free plan Tracy sleeps after 15 minutes without visitors. The first visit wakes it,
-   which can take **about a minute**: wait, then reload.
+2. It should load within a few seconds. (Only on Render's **Free** instance does a service sleep
+   after 15 idle minutes and take about a minute to wake.)
 
 **Success:** the page shows a short line starting `{"ok":true,"assistant":"Tracy"`. If it never
 loads, check the service's **Logs** on Render before going on.
@@ -1368,8 +1373,9 @@ can leave out for now:
   **and** the scanned pages of PDFs (see step 7). `none` means no limit
   ([DECISIONS.md](DECISIONS.md) D36).
 - `DUALREP_WORKER_CONCURRENCY`: how many study-builder steps may run at the same time, for everyone
-  together. Unset means 1, which is right for Tracy on Render's free plan: two scanned-PDF pages
-  being read at once can use up its memory. With a paid Render plan you could try `2`.
+  together. Unset means 1, which is right for Tracy on Render's **Starter** instance: it has the same
+  512 MB of memory as Free, and two scanned-PDF pages being read at once can use it up. Leave it
+  unset. Only on **Standard** (2 GB) or bigger could you try `2`.
 - `SUPABASE_PROJECT_REF`: only if `EXPO_PUBLIC_SUPABASE_URL` is a custom domain.
 
 **Success:** the Secrets tab lists `SUPABASE_ACCESS_TOKEN` and `TRACY_SERVICE_SECRET`. The
@@ -1688,8 +1694,8 @@ long the steps took.
 | `/diag` has no `dualrepLane` | The tracy-ai pull request isn't merged or deployed yet (step 3b). |
 | `configured: false` / `storageHostsSet: false` | Add `SERVICE_SECRET_DUALREP` / `DUALREP_STORAGE_HOSTS` (step 3a). |
 | Tracy's log says "SERVICE_SECRET_DUALREP equals SERVICE_SECRET…" | The two must differ: make a new Tracy secret (step 2), then update Render and GitHub and run Deploy backend. |
-| "A page here was scanned at too high a resolution to read. Skip it to carry on." | A scanned page in that batch needs more memory to turn into a picture than Tracy has on Render's free plan (a page scanned at more than about 600 dpi, or a very large photo). Tap **Skip this page** to carry on without that batch, or scan the page again at 300 dpi and add it as new material. |
-| Tracy keeps restarting, or reading big PDFs is very slow | Render's free plan has little memory and CPU. Tracy reads each PDF in a separate process that it stops when it uses too much memory (the file then fails with "The file is too large to read."), and the study builder sends it one step at a time. If Tracy still restarts: on Render, set `EXTRACT_MAX_PAGES` to `40`, or move Tracy to a paid plan. A file that crashes Tracy now fails after three tries instead of being sent again every minute. |
+| "A page here was scanned at too high a resolution to read. Skip it to carry on." | A scanned page in that batch needs more memory to turn into a picture than Tracy has on Render's Starter instance (512 MB; a page scanned at more than about 600 dpi, or a very large photo). Tap **Skip this page** to carry on without that batch, or scan the page again at 300 dpi and add it as new material. |
+| Tracy keeps restarting, or reading big PDFs is very slow | Render's Starter instance has 512 MB of memory and half a CPU. Tracy reads each PDF in a separate process that it stops when it uses too much memory (the file then fails with "The file is too large to read."), and the study builder sends it one step at a time. If Tracy still restarts: on Render, set `EXTRACT_MAX_PAGES` to `40`, or move Tracy to the **Standard** instance (2 GB). A file that crashes Tracy now fails after three tries instead of being sent again every minute. |
 | `/diag` says `storageHostsLookValid: false` | `DUALREP_STORAGE_HOSTS` has a typo: it must be just `<project-ref>.supabase.co` (a pasted `https://…/` is cleaned up for you, anything else is not). |
 
 **Adding material** (the "Not added" box on Add material, or "That didn't work" on the plan):
@@ -1766,7 +1772,7 @@ in Anthropic's console (**Usage**).
 |---|---|---|
 | Supabase | $0 (Free plan) | Limits that matter now: 500 MB database, 1 GB of file storage, 500,000 Edge Function calls a month (the every-minute schedule only calls the worker when there is work), 5 GB of downloads (egress). Tracy downloading the files counts as downloads: a scanned PDF is read in batches of 4 pages, and Tracy keeps the file it read last and only checks with Supabase that it hasn't changed, so a 25 MB scan should cost about 25 MB, not 25 MB per batch (**verify** in the dashboard's **Usage** after the first big scan). Over 5 GB in a month, Supabase restricts the project (sync and uploads stop until the next month): watch **Usage** in the Supabase dashboard if many large scans are added. A free project is paused after a week with little activity (**verify** the rule); restoring it is a click. |
 | PowerSync | $0 (Free plan) | As in Phase 0. |
-| Render (Tracy) | $0 (free plan) | Sleeps after 15 idle minutes and takes about a minute to wake; the worker copes with that by itself. A paid instance never sleeps and reads PDFs faster (**verify** the price on render.com). |
+| Render (Tracy) | What you already pay for Tracy (Starter instance, about $7 a month; **verify** on your Render billing page) | Nothing new to buy. Starter never sleeps, so steps start at once. Scanned PDF pages are sent from Tracy to Claude as pictures (about 1.2 MB each), which counts toward your Render workspace's included outbound bandwidth; a 100-page scan is about 120 MB. Check **Billing → Bandwidth** on Render now and then (**verify** the menu name). |
 | GitHub Actions | $0 | Each Deploy backend run uses a few minutes of the monthly allowance. |
 | Gemini (embeddings) | $0 (off) | If you turn it on, with billing: about $0.012 per 100-page PDF. |
 | **Anthropic (through Tracy)** | **pay per use** | See below. Studying costs nothing: reviews happen on the phone. |

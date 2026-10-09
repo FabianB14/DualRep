@@ -305,8 +305,8 @@ Use the `tracy_events.id` as Tracy's `request_id`, so a log line on either side 
   webhook. The worker answers 202 at once, does **one step** in the background, and calls itself
   again while work remains (at most 20 times in a row).
 - Claiming is `claim_tracy_events()` (`FOR UPDATE SKIP LOCKED`, plus reaping jobs stuck for 5
-  minutes), one job at a time across all users by default (`DUALREP_WORKER_CONCURRENCY`; Tracy on
-  Render's free plan can't hold two scanned-page renders at once); finishing is fenced on `status`,
+  minutes), one job at a time across all users by default (`DUALREP_WORKER_CONCURRENCY`; Tracy's
+  Render Starter instance, 512 MB, can't hold two scanned-page renders at once); finishing is fenced on `status`,
   `attempts` and `locked_at`.
 - `GET /health` (5 s) comes first; if Tracy is asleep the job goes back without counting an attempt
   (`release_tracy_event`). After 15 such releases in a row it fails ("Tracy couldn't be reached for a
@@ -326,11 +326,13 @@ audit log either way.
   arrives within 150 s; 2 s of CPU (waiting on network does not count); 256 MB memory. (Read from
   Supabase's docs source during research, again in Phase 2 on 2026-10-09; the live page itself
   wasn't reachable.)
-- **Render free tier** (if Tracy runs there): sleeps after 15 minutes idle and takes about a minute to
-  wake; 750 free instance hours a month per workspace. That threatens the planner's 3-second gate.
-  Calling the planner during the focus block and keeping the default circuit as a fallback covers
-  it. Tracy's actual Render plan was not visible. For the queued study builder, the worker's
-  `/health` check and release handle a sleeping Tracy.
+- **Render plan:** Tracy runs on the **Starter** instance (confirmed by the founder on 2026-10-09):
+  about $7 a month, 512 MB of memory, 0.5 CPU, and it **never sleeps**. So the planner's 3-second
+  gate (Phase 3) isn't threatened by a cold start; calling the planner during the focus block, with
+  the default circuit as a fallback, still covers slow answers. Memory is the same 512 MB as Free,
+  which is why the worker runs one step at a time. (On a Free instance a service sleeps after 15
+  idle minutes and takes about a minute to wake; the worker's `/health` check and release would
+  handle that too.)
 
 If Tracy-side async is ever wanted: `POST` returns `202 { job_id }` and Tracy calls back a DualRep
 Edge Function webhook with an HMAC-signed body. Still never give Tracy the service key.
@@ -601,8 +603,8 @@ the gate settles most of these):
   photos. If not, Tracy would have to download the photo and send it as base64.
 - Whether `fallbacks: "default"` combines with `output_config.format` on Sonnet 5.5. If the first
   live call returns 400, set `TRACY_TASK_FALLBACKS=off` on Render.
-- How fast Render's free plan (0.1 CPU, 512 MB) reads and renders big PDFs. If it is slow or
-  restarts, lower `EXTRACT_MAX_PAGES` / `EXTRACT_MAX_BYTES`, or move to a paid plan.
+- How fast Tracy's Render Starter instance (0.5 CPU, 512 MB) reads and renders big PDFs. If it is
+  slow or restarts, lower `EXTRACT_MAX_PAGES` / `EXTRACT_MAX_BYTES`, or move to Standard (2 GB).
 - The real cost and latency of the Sonnet 5.5 calls (the estimates could be off by about 2×).
 - Known limits: a scan with an OCR'd header may not be flagged as scanned; a web link's address is
   checked before the download, so a DNS change in between (rebinding) isn't caught.
@@ -611,7 +613,7 @@ the gate settles most of these):
 From the Phase 0 review:
 
 - Tracy's deployed settings on Render: `SERVICE_SECRET`, `TRACY_TASK_MODEL`, `GEMINI_EMBED_DIM`,
-  whether `GROQ_API_KEY` and `AUTH_SECRET` are set, and whether the Render plan is free or paid.
+  whether `GROQ_API_KEY` and `AUTH_SECRET` are set. (The Render plan is now known: Starter.)
 - Gemini embedding specs (dimensions, input limit): from search summaries only. Tracy's code comment
   says `gemini-embedding-001` "died 2026-07-14"; a search summary of Google's guide says 001 is still
   available for text.
