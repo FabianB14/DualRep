@@ -1418,6 +1418,18 @@
           "has_default": true
         },
         {
+          "name": "counted_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "ran",
+          "type": "boolean",
+          "nullable": false,
+          "has_default": true
+        },
+        {
           "name": "releases",
           "type": "integer",
           "nullable": false,

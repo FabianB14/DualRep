@@ -521,15 +521,20 @@ that phase. How to run the Phase 2 gate on the phone:
 - **What:** a daily "reviews due" reminder; optional background sync.
 - **How (as built, [`src/features/study/reminders.ts`](../src/features/study/reminders.ts),
   [DECISIONS.md](DECISIONS.md) D47):**
-  - Channel `reviews-v1` ("Review reminders", default importance; versioned like `timers-v1`). One
-    notification id, `reviews-due`, so scheduling again replaces it. Its `data` is
+  - Channel `reviews-v1` ("Review reminders", default importance; versioned like `timers-v1`). Up
+    to 14 notification ids: `reviews-due` and the follow-ups `reviews-due-1` … `reviews-due-13`.
+    Scheduling again first withdraws all 14, then sets what is needed now. Their `data` is
     `{url: '/', kind: 'reviews-due'}`: a tap opens Today.
   - Off until the person turns it on in Settings → **Daily review reminder** (18:00 offered, any
     time in 15-minute steps). Turning it on asks for `POST_NOTIFICATIONS` if Android still allows
     asking ([1.2](#12-notification-permission-and-channels)).
-  - If cards are due by the next reminder time: an inexact `DAILY` trigger with that count. If not:
-    one `DATE` trigger at the reminder time on the day the first card falls due. If no card will
-    ever be due: none. No exact alarm: a little late is fine.
+  - If cards are due by the next reminder time: an inexact `DAILY` trigger with that count (one id,
+    `reviews-due`). If not: a `DATE` trigger at the reminder time on the day the first card falls
+    due (`reviews-due`), plus one at the same time on each of the 13 days after it
+    (`reviews-due-1` … `-13`), because cards that aren't answered stay due and a dismissed
+    reminder must not be the last one. If no card will ever be due: none. No exact alarm: a little
+    late is fine. So on that path Android lists up to 14 scheduled alarms for DualRep: that is
+    expected, not a duplicate.
   - The text holds only a count ("Cards to review": "12 cards are due. A 10-minute block clears a
     lot of them."), never a card, so the lock screen shows nothing private.
   - It is set again on app start, on return to the foreground, when card states change (at most

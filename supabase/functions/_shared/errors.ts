@@ -35,6 +35,7 @@ export const MESSAGES = {
   tracyBusy: "Tracy couldn't finish this step. Try again.",
   tracySlow: "Tracy didn't answer in time. Try again.",
   tooLarge: 'The file is too large to read.',
+  pageTooDetailed: 'A page here was scanned at too high a resolution to read. Skip it to carry on.',
   unsupported: "This file type can't be read.",
   encrypted: 'This PDF is password-protected. Upload a copy without a password.',
   pdfUnreadable: "This PDF couldn't be read.",
@@ -78,8 +79,19 @@ export function classifyTracyFailure(
     case 'bad_url':
       // For a Storage file this means DUALREP_STORAGE_HOSTS on Render does not list this project.
       return { action: 'fail', message: link ? MESSAGES.linkUnusable : MESSAGES.notSetUp };
+    case 'page_too_large':
+      // Tracy couldn't render a scanned page in the memory it has left (a 600 dpi or 24 MP page
+      // needs about 340 MB of the free plan's 512), or the page's image is over the API's limit.
+      // The file itself is fine. Retried: the room depends on what Tracy holds at that moment, and
+      // the render fails before the model is asked, so a retry costs no API call. After the third
+      // attempt it fails, and skipping this batch lets the rest of the material carry on.
+      return { action: 'retry', message: MESSAGES.pageTooDetailed };
     case 'too_large':
-      return { action: 'fail', message: MESSAGES.tooLarge };
+      // From a page transcription it means the same (a Tracy from before page_too_large existed
+      // killed the render with this code): the file was read already, at extract.
+      return ctx.stage === 'transcribe'
+        ? { action: 'retry', message: MESSAGES.pageTooDetailed }
+        : { action: 'fail', message: MESSAGES.tooLarge };
     case 'unsupported_type':
       return { action: 'fail', message: MESSAGES.unsupported };
     case 'pdf_encrypted':

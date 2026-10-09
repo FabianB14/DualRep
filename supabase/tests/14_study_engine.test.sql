@@ -2,11 +2,12 @@
 -- policies; source_files.storage_path pinned to the source's own folder; sources.status kept by the
 -- server; topics.status; cards.source_id derived from the source chunk; the tracy_events columns the
 -- phone reads and cannot write; the worker's claim / release and the stale-job reap; the monthly caps
--- per stage in enqueue_tracy_event; the list of orphaned files; and the cron kick, which calls the
--- worker only when there is work and Vault holds its URL and secret.
+-- per stage in enqueue_tracy_event and requeue_tracy_event (the month a unit counts in, and a job
+-- that ran stays counted); the list of orphaned files; and the cron kick, which calls the worker only
+-- when there is work and Vault holds its URL and secret.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(103);
+select plan(111);
 
 -- Runs one write and returns how many rows it changed. RLS hides other people's rows from UPDATE
 -- (0 rows, no error), so that is how "cannot modify" is asserted.
@@ -509,11 +510,30 @@ select results_eq(
   'a run locked more than 3 minutes ago (its worker is gone) no longer takes up a place'
 );
 reset role;
+-- Cards jobs are background work: a page of notes added after an outline review goes first.
+insert into public.tracy_events (id, user_id, job, stage, status, created_at) values
+  ('90000000-0000-4000-8000-000000000007', '11111111-1111-4111-8111-111111111111', 'study_builder', 'cards',
+   'queued', now() - interval '2 minutes'),
+  ('90000000-0000-4000-8000-000000000008', '11111111-1111-4111-8111-111111111111', 'handwriting', 'transcribe',
+   'queued', now() - interval '1 minute');
+set local role service_role;
+select results_eq(
+  $$select id from public.claim_tracy_events(1)$$,
+  $$values ('90000000-0000-4000-8000-000000000008'::uuid)$$,
+  'a queued transcription is claimed before an older queued cards job'
+);
+select results_eq(
+  $$select id from public.claim_tracy_events(1)$$,
+  $$values ('90000000-0000-4000-8000-000000000007'::uuid)$$,
+  '... which comes next'
+);
+reset role;
 
 -- The monthly caps (Bob, free tier) ----------------------------------------------------------------------
 -- Last month's sources do not count this month.
-insert into public.tracy_events (user_id, job, stage, status, cap_units, created_at)
+insert into public.tracy_events (user_id, job, stage, status, cap_units, created_at, counted_at)
 values ('22222222-2222-4222-8222-222222222222', 'study_builder', 'extract', 'succeeded', 5,
+        (date_trunc('month', now() at time zone 'UTC') at time zone 'UTC') - interval '1 day',
         (date_trunc('month', now() at time zone 'UTC') at time zone 'UTC') - interval '1 day');
 set local role service_role;
 set local request.jwt.claims to '{"role": "service_role"}';
@@ -630,6 +650,57 @@ select throws_ok(
   $$select public.enqueue_tracy_event('22222222-2222-4222-8222-222222222222', 'handwriting', 'outline', '{}')$$,
   '23514', null,
   'enqueue refuses a stage that does not belong to the job'
+);
+reset role;
+-- A unit counts in the month it was taken (Ada, free tier, a page limit of 1). Two pages queued and
+-- cancelled before they ran last month gave their units back; "Try again" after the 1st takes them
+-- again, in this month.
+insert into public.tracy_events (id, user_id, job, stage, status, cap_units, created_at, counted_at)
+select ('93000000-0000-4000-8000-00000000000' || n)::uuid, '11111111-1111-4111-8111-111111111111',
+       'handwriting', 'transcribe', 'cancelled', 1, last_month, last_month
+  from generate_series(1, 2) n,
+       lateral (select (date_trunc('month', now() at time zone 'UTC') at time zone 'UTC') - interval '2 days'
+                  as last_month) m;
+set local role service_role;
+set local request.jwt.claims to '{"role": "service_role"}';
+select results_eq(
+  $$select status, counted_at = now() from public.requeue_tracy_event('93000000-0000-4000-8000-000000000001', 1, 50)$$,
+  $$values ('queued', true)$$,
+  'retrying a page cancelled before it ran last month takes its unit again, counted in this month ...'
+);
+select throws_ok(
+  $$select * from public.requeue_tracy_event('93000000-0000-4000-8000-000000000002', 1, 50)$$,
+  'P0001', 'monthly limit reached for transcribe',
+  '... so the second one no longer fits under the limit of 1 ...'
+);
+select throws_ok(
+  $$select public.enqueue_tracy_event('11111111-1111-4111-8111-111111111111', 'handwriting', 'transcribe', '{}',
+      p_free_limit => 1, p_paid_limit => 50)$$,
+  'P0001', 'monthly limit reached for transcribe',
+  '... and neither does a new page'
+);
+reset role;
+-- A job that ran stays counted. The worker ran page 1 and it was cancelled while Tracy read it.
+update public.tracy_events set status = 'cancelled', attempts = 1 where id = '93000000-0000-4000-8000-000000000001';
+set local role service_role;
+select results_eq(
+  $$select status, attempts, ran from public.requeue_tracy_event('93000000-0000-4000-8000-000000000001', 1, 50)$$,
+  $$values ('queued', 0, true)$$,
+  '"Try again" on a job that ran starts its attempts over but keeps that it ran ...'
+);
+reset role;
+update public.tracy_events set status = 'cancelled' where id = '93000000-0000-4000-8000-000000000001';
+set local role service_role;
+select throws_ok(
+  $$select public.enqueue_tracy_event('11111111-1111-4111-8111-111111111111', 'handwriting', 'transcribe', '{}',
+      p_free_limit => 1, p_paid_limit => 50)$$,
+  'P0001', 'monthly limit reached for transcribe',
+  '... so cancelling it again while it waits (attempts 0) does not give its unit back'
+);
+select results_eq(
+  $$select status from public.requeue_tracy_event('93000000-0000-4000-8000-000000000001', 1, 50)$$,
+  $$values ('queued')$$,
+  '... and trying it once more needs no room: its unit is still taken'
 );
 reset role;
 

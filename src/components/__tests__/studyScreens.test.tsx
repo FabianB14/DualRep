@@ -165,6 +165,19 @@ async function render(Screen: ComponentType): Promise<ReactTestRenderer> {
   return renderer!;
 }
 
+/** Renders the same screen again, as a sync that changed the rows it reads would. */
+async function rerender(renderer: ReactTestRenderer, Screen: ComponentType): Promise<void> {
+  await act(async () => {
+    renderer.update(
+      <SafeAreaProvider initialMetrics={METRICS}>
+        <ThemeProvider>
+          <Screen />
+        </ThemeProvider>
+      </SafeAreaProvider>,
+    );
+  });
+}
+
 function textOf(renderer: ReactTestRenderer): string {
   return renderer.root
     .findAll((node) => (node.type as unknown) === 'Text')
@@ -444,6 +457,38 @@ describe('Plan detail', () => {
     await tap(renderer, 'Try again');
     expect(api.retryJob).toHaveBeenCalledWith(mockSupabase, 'j9');
     expect(textOf(renderer)).toContain('Trying again');
+  });
+
+  it('a step that fails again after Try again shows the new failure, with Try again (the same job is reused)', async () => {
+    setPlan();
+    setSource({ kind: 'pdf', title: 'Lecture 3' });
+    const failedAt = (at: string, error = 'Tracy declined this request.') => ({ ...job('j9', 'extract', 'failed', error), updated_at: at });
+    mockRows.set(PLAN_JOBS_SQL, [failedAt('2026-10-09T12:00:00.000Z')]);
+    const Plan = screen('../../app/(app)/plans/[id]/index');
+    const renderer = await render(Plan);
+    await tap(renderer, 'Try again');
+    expect(textOf(renderer)).toContain('Trying again');
+    expect(hasControl(renderer, 'Try again')).toBe(false);
+
+    // The sync shows it queued, then failed once more.
+    mockRows.set(PLAN_JOBS_SQL, [{ ...job('j9', 'extract', 'queued'), updated_at: '2026-10-09T12:00:01.000Z' }]);
+    await rerender(renderer, Plan);
+    expect(textOf(renderer)).not.toContain('Trying again');
+    mockRows.set(PLAN_JOBS_SQL, [failedAt('2026-10-09T12:00:05.000Z')]);
+    await rerender(renderer, Plan);
+    expect(textOf(renderer)).toContain('Tracy declined this request.');
+    expect(textOf(renderer)).not.toContain('Trying again');
+    expect(textOf(renderer)).not.toContain('Getting your material ready');
+    expect(hasControl(renderer, 'Try again')).toBe(true);
+
+    // Also when the sync never showed it queued: a newer failure of the same job is a new failure.
+    await tap(renderer, 'Try again');
+    expect(textOf(renderer)).toContain('Trying again');
+    mockRows.set(PLAN_JOBS_SQL, [failedAt('2026-10-09T12:01:00.000Z', 'The PDF could not be read.')]);
+    await rerender(renderer, Plan);
+    expect(textOf(renderer)).toContain('The PDF could not be read.');
+    expect(hasControl(renderer, 'Try again')).toBe(true);
+    expect(api.retryJob).toHaveBeenCalledTimes(2);
   });
 
   it('a failed retry says why (offline)', async () => {

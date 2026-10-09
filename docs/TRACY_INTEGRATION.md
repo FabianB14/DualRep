@@ -311,8 +311,9 @@ Use the `tracy_events.id` as Tracy's `request_id`, so a log line on either side 
 - `GET /health` (5 s) comes first; if Tracy is asleep the job goes back without counting an attempt
   (`release_tracy_event`). After 15 such releases in a row it fails ("Tracy couldn't be reached for a
   while. Try again later.").
-- New columns `stage`, `plan_id`, `source_id` (synced) and `cap_units`, `releases` (server only) let
-  the phone show progress per source and let `enqueue_tracy_event` enforce the monthly caps.
+- New columns `stage`, `plan_id`, `source_id` (synced) and `cap_units`, `counted_at`, `ran`,
+  `releases` (server only) let the phone show progress per source and let `enqueue_tracy_event`
+  enforce the monthly caps.
 - The study builder's steps: `extract` (per-page text through `/ai/extract`), `transcribe` (photos
   and scanned pages), `outline`, then one `cards` job per topic; optional `embed`.
 
@@ -526,8 +527,16 @@ What was proposed, and what was built:
    - Limits: 25 MiB per file (`EXTRACT_MAX_BYTES`), 5 MiB per web page, a 20 s download timeout.
    - Error codes: 400 `bad_input` / `bad_url`, 413 `too_large`, 415 `unsupported_type`, 422
      `fetch_failed` / `timeout` / `pdf_encrypted` / `pdf_unreadable` / `doc_unreadable` / `no_text`,
-     503 `pdf_unavailable` / `doc_unavailable`. The scanned-page task adds 422 `page_out_of_range`,
-     502 `prepare_failed` (retryable) and 503 `render_unavailable`.
+     503 `pdf_unavailable` / `doc_unavailable`. The scanned-page task adds 413 `page_too_large` (a
+     page needs more memory to render than Tracy's child process may have, or its image is over the
+     API's 10 MB), 422 `page_out_of_range`, 502 `prepare_failed` (retryable) and 503
+     `render_unavailable`.
+   - Memory: the child that reads a file or renders pages is stopped once its private memory
+     passes `EXTRACT_MAX_MEMORY_MB` (350) or what the instance has left (cgroup limit less Tracy's
+     own memory and 32 MB), whichever is less. A scanned page takes about 230 MB (12 MP) to 340 MB
+     (a 600 dpi copier page or a 24 MP photo), however many pages the call has. Pages are rendered
+     1568 px wide, or to a 2576 px long edge when taller than that (the API refuses an edge over
+     8000 px).
    - The HTML-to-text step is a linear scanner (regular expressions could stall Tracy's single CPU on
      a hostile page).
 7. **Tests:** `tests/dualrep-tasks.test.js` and `tests/extract.test.js`, in the style of
@@ -552,6 +561,7 @@ What was proposed, and what was built:
 | `truncated` | Retried with "answer more briefly"; an outline also with half as many entries (100, then 50) |
 | `refused` | Fails at once: "Tracy declined to work on this material." |
 | `too_large`, `unsupported_type`, `pdf_encrypted`, `pdf_unreadable`, `doc_unreadable`, `no_text`, `page_out_of_range` | Fails at once with a sentence about the file |
+| `page_too_large` (and `too_large` from a page transcription) | Retried (the memory Tracy has left varies, and the render fails before any model call), then fails: "A page here was scanned at too high a resolution to read. Skip it to carry on." The person can skip that batch of pages |
 | `bad_url` | A link: fails ("This link can't be used…"). A stored file or photo (from `/ai/extract` or a transcription task alike): fails with "The study builder isn't set up yet" (`DUALREP_STORAGE_HOSTS` is wrong) |
 | `fetch_failed`, `timeout` | A link: fails ("The web page couldn't be downloaded."). A stored file: retried |
 | 401 / 403 | Fails: "The study builder isn't set up yet" (the secrets don't match) |

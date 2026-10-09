@@ -2,8 +2,9 @@
  * One step of one job per invocation (spec "Job pipeline"). index.ts wires the real clients; tests
  * pass fakes. No Deno APIs here.
  *
- *   claim the oldest queued job (claim_tracy_events: running, attempt counted, locked now), unless
- *   `maxRunning` jobs are running already (Tracy on Render's free plan handles one heavy job at a time)
+ *   claim the oldest queued job, cards and embed jobs last (claim_tracy_events: running, attempt
+ *   counted, locked now), unless `maxRunning` jobs are running already (Tracy on Render's free plan
+ *   handles one heavy job at a time)
  *   └─ needs Tracy? GET /health (5 s). Asleep -> release_tracy_event (attempt not counted), stop:
  *      the health call wakes Render's free service and the next cron minute goes ahead. After
  *      MAX_RELEASES in a row Tracy is down rather than asleep, and the job fails with a message.
@@ -479,8 +480,10 @@ async function apply(deps: WorkerDeps, job: JobRow, stage: Stage | null, fence: 
       return await finish({
         status: 'queued',
         input: withoutRetryNotes(outcome.input),
-        // A new step: its own three attempts (the lock time still fences out an old run).
+        // A new step: its own three attempts (the lock time still fences out an old run). `ran`
+        // remembers that this job did work, so a cancel while the next step waits keeps it counted.
         attempts: 0,
+        ran: true,
         releases: 0,
         error: null,
         ...(outcome.output !== undefined ? { output: outcome.output } : {}),

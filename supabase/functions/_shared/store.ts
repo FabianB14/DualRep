@@ -15,7 +15,7 @@ import type { SourceKind } from './contracts.ts';
 export type Fence = Pick<JobRow, 'id' | 'attempts' | 'locked_at'>;
 
 export type JobPatch = Partial<
-  Pick<JobRow, 'status' | 'input' | 'output' | 'error' | 'attempts' | 'locked_at' | 'releases'> & {
+  Pick<JobRow, 'status' | 'input' | 'output' | 'error' | 'attempts' | 'locked_at' | 'releases' | 'ran'> & {
     model: string | null;
     usage: unknown;
   }
@@ -117,8 +117,9 @@ export interface Approval {
 export interface Store {
   // ---- the job queue (tracy_events) ----
   /**
-   * claim_tracy_events: the oldest queued job, now running with its attempt counted; null when none
-   * is queued or `maxRunning` jobs are running already (null = no limit).
+   * claim_tracy_events: the oldest queued job (cards and embed jobs after the others), now running
+   * with its attempt counted; null when none is queued or `maxRunning` jobs are running already
+   * (null = no limit).
    */
   claimJob(maxRunning: number | null): Promise<JobRow | null>;
   /** release_tracy_event: back to the queue without counting the attempt (its `releases` + 1). */
@@ -135,9 +136,10 @@ export interface Store {
   /** enqueue_tracy_event with a monthly cap. */
   enqueueCounted(req: CountedEnqueue): Promise<{ ok: true; job: JobRow } | { ok: false; cap: CapReached }>;
   /**
-   * requeue_tracy_event (retry_job): a failed or cancelled job back to the queue with fresh attempts;
-   * job null when it is neither any more. A counted job whose units were given back (cancelled before
-   * it ran) goes through the monthly cap again with these limits.
+   * requeue_tracy_event (retry_job): a failed or cancelled job back to the queue with fresh attempts
+   * (a job that ran keeps `ran`); job null when it is neither any more. A counted job whose units
+   * were given back (cancelled before it ever ran) goes through the monthly cap again with these
+   * limits, and its units count in this month from then on.
    */
   requeueJob(
     id: string,

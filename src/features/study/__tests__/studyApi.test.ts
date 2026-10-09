@@ -206,7 +206,11 @@ describe('messages', () => {
     expect(text).toContain(new Date(cap.resetsAt).toLocaleDateString(undefined, { month: 'long', day: 'numeric' }));
     expect(describeCap({ ...cap, stage: 'transcribe', limit: 0 })).toMatch(/^You’ve used this month’s handwritten and scanned pages\./);
     // The page limit also covers scanned PDF pages: it never blames notes the person did not add.
-    expect(describeCap({ ...cap, stage: 'transcribe', limit: 20 })).toMatch(/^You’ve used all 20 handwritten and scanned pages for this month\./);
+    expect(describeCap({ ...cap, stage: 'transcribe', used: 20, limit: 20 })).toMatch(/^You’ve used all 20 handwritten and scanned pages for this month\./);
+    // Adding more than is left: it says how many are left instead of "all 20" (8 photos, 15 used).
+    expect(describeCap({ ...cap, stage: 'transcribe', used: 15, limit: 20 })).toBe(
+      `That’s more than this month’s limit allows: 15 of 20 handwritten and scanned pages used, 5 left. The limit resets on ${new Date(cap.resetsAt).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}.`,
+    );
     expect(studyErrorMessage(new StudyApiError('cap_reached', { cap }))).toBe(text);
     expect(studyErrorMessage(new StudyApiError('cap_reached'))).toBe('You’ve reached this month’s limit. Try again next month.');
   });

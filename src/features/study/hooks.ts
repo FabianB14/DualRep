@@ -147,6 +147,11 @@ export type SourceView = {
   /** True when the signed-in user owns the source. */
   isOwner: boolean;
   step: SourceStep;
+  /**
+   * updated_at of the job a failed step names (`step.jobId`), else null. Try again puts that same job
+   * back in the queue, so this tells the failure a screen acted on from a later one of the same job.
+   */
+  stepJobVersion: string | null;
   text: StepText;
   /** A note the pipeline left (e.g. scanned pages skipped at the monthly limit), or null. */
   note: string | null;
@@ -181,6 +186,7 @@ export function useSourceProgress(planId: string | null): {
         sourceJobs,
         draftTopics,
       );
+      const stepJobId = step.step === 'failed' ? step.jobId : null;
       return {
         planSourceId: row.plan_source_id,
         sourceId: row.source_id,
@@ -192,6 +198,7 @@ export function useSourceProgress(planId: string | null): {
         cardCount: Number(row.card_count ?? 0),
         isOwner: userId !== null && row.owner_id === userId,
         step,
+        stepJobVersion: (stepJobId && jobs.data.find((j) => j.id === stepJobId)?.updated_at) || null,
         text: describeStep(step),
         note: sourceNote(sourceJobs),
       };

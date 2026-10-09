@@ -29,6 +29,8 @@ import { supabase } from '@/lib/supabase';
 import { haptic, useTheme } from '@/theme';
 
 type JobAction = { jobId: string; kind: 'retry' | 'skip' };
+/** A failed step retried or skipped here, and which failure of that job it was (its updated_at). */
+type Handled = { kind: JobAction['kind']; version: string | null };
 
 /**
  * One plan: what is due, its material with where each piece is in the pipeline (from synced rows,
@@ -48,7 +50,9 @@ export default function PlanScreen() {
   const { topics } = useTopics(planId);
   const [busy, setBusy] = useState<JobAction | null>(null);
   // Failed steps retried or skipped on this screen: their rows still say "failed" until the next sync.
-  const [handled, setHandled] = useState<ReadonlyMap<string, JobAction['kind']>>(new Map());
+  // Keyed by job and failure: Try again reuses the job, so when it fails again (a newer updated_at)
+  // that new failure shows, with Try again, instead of "Trying again" for as long as the screen is open.
+  const [handled, setHandled] = useState<ReadonlyMap<string, Handled>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
   if (!plan || !planId) {
@@ -63,15 +67,23 @@ export default function PlanScreen() {
 
   const owner = plan.isOwner;
   const readyTopics = topics.filter((topic) => topic.status !== 'draft');
+  /** What was done here about this source's failed step, while that same failure is still shown. */
+  const handledFor = (source: SourceView | undefined): JobAction['kind'] | null => {
+    const jobId = source?.step.step === 'failed' ? source.step.jobId : null;
+    const entry = jobId ? handled.get(jobId) : undefined;
+    return entry && entry.version === source?.stepJobVersion ? entry.kind : null;
+  };
 
   const runJob = async (action: JobAction) => {
     if (busy) return;
     setBusy(action);
     setError(null);
+    // The failure acted on (read before the call: a sync may land while it runs).
+    const version = progress.sources.find((s) => s.step.step === 'failed' && s.step.jobId === action.jobId)?.stepJobVersion ?? null;
     try {
       if (action.kind === 'retry') await retryJob(supabase, action.jobId);
       else await cancelJob(supabase, action.jobId);
-      setHandled((current) => new Map(current).set(action.jobId, action.kind));
+      setHandled((current) => new Map(current).set(action.jobId, { kind: action.kind, version }));
       haptic('success');
     } catch (problem) {
       setError(studyErrorMessage(problem));
@@ -112,7 +124,7 @@ export default function PlanScreen() {
       case 'review_outline':
         return <Button label="Review the outline" size="comfortable" onPress={() => openStep(next)} />;
       case 'retry':
-        if (!next.jobId || handled.has(next.jobId)) break;
+        if (!next.jobId || handledFor(progress.sources.find((s) => s.sourceId === next.sourceId)) !== null) break;
         return (
           <Button
             label="Try again"
@@ -170,7 +182,7 @@ export default function PlanScreen() {
             owner={owner}
             inFooter={'sourceId' in progress.nextStep && progress.nextStep.sourceId === source.sourceId}
             busy={busy}
-            handled={handled.get(source.step.step === 'failed' ? (source.step.jobId ?? '') : '') ?? null}
+            handled={handledFor(source)}
             onCheck={() => router.push({ pathname: '/plans/[id]/check/[sourceId]', params: { id: planId, sourceId: source.sourceId } })}
             onReview={() => router.push({ pathname: '/plans/[id]/outline', params: { id: planId } })}
             onJob={(action) => void runJob(action)}
@@ -238,7 +250,7 @@ function SourceCard({
   /** Its step is the screen's primary action (the footer button), so the card doesn't repeat it. */
   inFooter: boolean;
   busy: JobAction | null;
-  /** Its failed step was just retried or skipped here (the synced row hasn't caught up yet). */
+  /** Its failed step was just retried or skipped here (the synced row hasn't caught up yet), else null. */
   handled: JobAction['kind'] | null;
   onCheck(): void;
   onReview(): void;

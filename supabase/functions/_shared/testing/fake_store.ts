@@ -1,9 +1,10 @@
 /**
  * An in-memory Store and UserView for `deno test`, with the database behaviour the pipeline relies on:
- * claim (oldest queued, attempt counted, lock time set), release, the fenced finish, derived-id
- * inserts that ignore duplicates, the monthly cap (enqueue_tracy_event), cascades on delete, and the
- * `sources` bucket. Not a database: no RLS (UserView returns every row), no triggers beyond the
- * cascades noted, one month only.
+ * claim (oldest queued, cards and embed after the rest; attempt counted, lock time set), release, the fenced finish, derived-id
+ * inserts that ignore duplicates, the monthly cap (enqueue_tracy_event, and requeue_tracy_event's
+ * "a job that ran stays counted"), cascades on delete, and the `sources` bucket. Not a database: no
+ * RLS (UserView returns every row), no triggers beyond the cascades noted, one month only (the
+ * month a unit counts in is tested in SQL, 14_study_engine.test.sql).
  */
 import type { CapReached } from '../errors.ts';
 import type { JobRow, JobStatus, NewJob, Stage, TopicRow } from '../pipeline.ts';
@@ -85,8 +86,10 @@ export class FakeStore implements Store {
       j.status === 'running' && j.locked_at !== null && Date.parse(j.locked_at) > fresh
     ).length;
     if (maxRunning !== null && running >= maxRunning) return Promise.resolve(null);
+    // Background stages (cards, embed) after the steps a person waits on, then oldest first.
+    const background = (j: FakeJob) => (j.stage === 'cards' || j.stage === 'embed' ? 1 : 0);
     const next = [...this.jobs.values()].filter((j) => j.status === 'queued')
-      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))[0];
+      .sort((a, b) => background(a) - background(b) || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))[0];
     if (!next) return Promise.resolve(null);
     next.status = 'running';
     next.attempts += 1;
@@ -159,7 +162,7 @@ export class FakeStore implements Store {
     limits: { free_limit: number | null; paid_limit: number | null },
   ): CapReached | null {
     const used = [...this.jobs.values()]
-      .filter((j) => j.user_id === userId && j.stage === stage && (j.status !== 'cancelled' || j.attempts > 0))
+      .filter((j) => j.user_id === userId && j.stage === stage && (j.status !== 'cancelled' || j.attempts > 0 || j.ran))
       .reduce((sum, j) => sum + j.cap_units, 0);
     const limit = this.paidUsers.has(userId) ? limits.paid_limit : limits.free_limit;
     if (limit !== null && used + units > limit) {
@@ -200,12 +203,14 @@ export class FakeStore implements Store {
   ): Promise<{ ok: true; job: JobRow | null } | { ok: false; cap: CapReached }> {
     const j = this.jobs.get(id);
     if (!j || (j.status !== 'failed' && j.status !== 'cancelled')) return Promise.resolve({ ok: true, job: null });
-    if (j.status === 'cancelled' && j.attempts === 0 && j.cap_units > 0 && (limits.free_limit !== null || limits.paid_limit !== null)) {
+    const givenBack = j.status === 'cancelled' && j.attempts === 0 && !j.ran && j.cap_units > 0;
+    if (givenBack && (limits.free_limit !== null || limits.paid_limit !== null)) {
       const cap = this.capCheck(j.user_id, j.stage, j.cap_units, limits);
       if (cap) return Promise.resolve({ ok: false, cap });
     }
     const { previous_errors: _drop, ...input } = j.input;
-    Object.assign(j, { status: 'queued', error: null, attempts: 0, locked_at: null, releases: 0, input });
+    const ran = !!j.ran || j.attempts > 0;
+    Object.assign(j, { status: 'queued', error: null, attempts: 0, ran, locked_at: null, releases: 0, input });
     return Promise.resolve({ ok: true, job: clone(j) });
   }
 

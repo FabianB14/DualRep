@@ -95,6 +95,7 @@ async function ownJob(d: StudyDeps, jobId: string): Promise<JobRow> {
   return job;
 }
 
+/** The cap refusal. `used` is what this month had used before the refused request. */
 function capError(cap: CapReached): StudyError {
   const what = cap.stage === 'transcribe' ? 'handwritten and scanned pages' : 'new material';
   const extra: Omit<CapReachedBody, 'ok' | 'code' | 'error'> = {
@@ -103,7 +104,11 @@ function capError(cap: CapReached): StudyError {
     limit: cap.limit,
     resets_at: cap.resets_at,
   };
-  return new StudyError('cap_reached', `You've used this month's ${what}. It resets on the 1st.`, { extra });
+  const left = cap.limit - cap.used;
+  const message = left > 0
+    ? `That's more than this month's limit allows: ${cap.used} of ${cap.limit} ${what} used, ${left} left. It resets on the 1st.`
+    : `You've used this month's ${what}. It resets on the 1st.`;
+  return new StudyError('cap_reached', message, { extra });
 }
 
 // ---- submit_source ------------------------------------------------------------------------------
@@ -198,7 +203,9 @@ async function submitSource(r: SubmitSourceRequest, d: StudyDeps): Promise<Study
       // nothing) and remove the source unless an earlier request had queued work for it.
       for (const id of queued) await store.updateJobIf(id, ['queued'], { status: 'cancelled' });
       if (earlierJobs.length === 0) await store.deleteSource(r.source_id);
-      throw capError(res.cap);
+      // The refusal counted this request's own jobs (1 unit each), which were just given back: report
+      // the month's usage without them, so 15 of 20 used and 8 photos added says "5 left", not "all 20".
+      throw capError({ ...res.cap, used: Math.max(res.cap.used - queued.length, 0) });
     }
     queued.push(res.job.id);
   }
@@ -380,9 +387,10 @@ async function retryJob(r: JobRequest, d: StudyDeps): Promise<StudyResult> {
   if (stage === 'cards' && typeof job.input?.topic_id === 'string' && !(await store.getTopic(job.input.topic_id))) {
     throw new StudyError('not_ready', 'The topic of this step was deleted.');
   }
-  // The same job goes back to the queue with three fresh attempts. Its cap units count already,
-  // unless it was cancelled before it ever ran (they were given back): then it goes through the
-  // monthly limit again, or "cancel, add more, retry" would get past it.
+  // The same job goes back to the queue with three fresh attempts (a job that ran stays marked as
+  // run, so cancelling it again gives nothing back). Its cap units count already, unless it was
+  // cancelled before it ever ran (they were given back): then it goes through the monthly limit
+  // again and counts in this month, or "cancel, add more, retry" would get past it.
   const caps = stage === 'transcribe' ? d.config.caps.pages : stage === 'extract' ? d.config.caps.sources : null;
   const res = await store.requeueJob(job.id, { free_limit: caps?.free ?? null, paid_limit: caps?.paid ?? null });
   if (!res.ok) throw capError(res.cap);

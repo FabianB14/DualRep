@@ -64,6 +64,11 @@ export interface JobRow {
   locked_at: string | null;
   /** Times in a row the job was put back because Tracy could not be reached (server-only). */
   releases?: number;
+  /**
+   * Worked on before its attempts last started over (server-only, never set back): `attempts > 0 ||
+   * ran` means a worker ran it, so its cap units stay spent even when it is cancelled while queued.
+   */
+  ran?: boolean;
   plan_id: string | null;
   source_id: string | null;
   created_at: string;

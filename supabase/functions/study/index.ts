@@ -21,10 +21,12 @@
  *     409 not_ready       this step does not apply now (error says why, e.g. "Some pages are still
  *                         being transcribed.")
  *     422 no_text         the confirmed transcripts hold nothing to study
- *     429 cap_reached     the monthly limit is used up; extra fields:
+ *     429 cap_reached     the monthly limit is used up, or this request needs more than is left;
+ *                         extra fields:
  *                         { "stage": "extract" | "transcribe", "used": 5, "limit": 5,
  *                           "resets_at": "2026-11-01T00:00:00.000Z" }
- *                         extract = sources this month, transcribe = pages and photos this month
+ *                         extract = sources this month, transcribe = pages and photos this month;
+ *                         used = this month's usage before the request (used < limit: some is left)
  *     500 server_error    (retry later)
  *     503 not_configured  the backend is not deployed completely
  *
@@ -75,7 +77,8 @@
  *
  * retry_job: try a failed (or cancelled) step again: the same job goes back to the queue. It is not
  *   counted against the monthly limit again, unless it was cancelled before it ever ran (its units
- *   were given back then): such a job takes them again, and over the limit -> 429 cap_reached.
+ *   were given back then): such a job takes them again, in this month, and over the limit -> 429
+ *   cap_reached. A job that ran stays counted even if it is cancelled again while it waits.
  *   { "action": "retry_job", "job_id": "<tracy_events.id>" }
  *   -> 202 { "ok": true, "job_id": "…", "status": "queued" }
  *   Not failed/cancelled, or the source has moved past this step -> 409 not_ready.

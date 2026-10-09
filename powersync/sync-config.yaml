@@ -55,7 +55,7 @@ streams:
       - SELECT * FROM card_states WHERE user_id = auth.user_id()
       - SELECT * FROM reviews WHERE user_id = auth.user_id()
       # Explicit light column list: the large input/output/usage JSON and the worker bookkeeping
-      # (attempts, locked_at, model, cap_units, releases) stay on the server. stage, plan_id and source_id let the
+      # (attempts, locked_at, model, cap_units, counted_at, ran, releases) stay on the server. stage, plan_id and source_id let the
       # phone show each source's progress and errors. Must match TABLES.tracy_events in
       # src/db/tables.ts (checked by src/db/__tests__/sync-config.test.ts).
       - SELECT id, user_id, job, stage, plan_id, source_id, status, error, accepted, created_at, updated_at FROM tracy_events WHERE user_id = auth.user_id()

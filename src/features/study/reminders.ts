@@ -1,8 +1,10 @@
 /**
  * The daily "cards to review" reminder (expo-notifications 57; Phase 2, "The app").
  *
- * One local notification, at the time the user picked (Settings → Daily review reminder), on its own
- * channel `reviews-v1` (versioned like `timers-v1`: once a channel exists, the user owns its settings).
+ * Local notifications at the time the user picked (Settings → Daily review reminder), on their own
+ * channel `reviews-v1` (versioned like `timers-v1`: once a channel exists, the user owns its settings):
+ * the reminder (id `reviews-due`) and, when it is a one-time one, up to 13 follow-ups
+ * (`reviews-due-1` … `-13`, see below). Every reschedule withdraws all of them first.
  * Nothing runs in the background: the reminder is (re)scheduled when the app starts, comes to the
  * foreground, ends a focus block, receives a sync that changed card states, and when the setting
  * changes. A card counts on its day (as in the queue: a review is due on its day, not at its minute,

@@ -194,6 +194,7 @@ export interface CapReachedBody extends StudyErrorBody {
   code: 'cap_reached';
   /** 'extract' = sources this month; 'transcribe' = pages and photos this month. */
   stage: 'extract' | 'transcribe';
+  /** This month's usage before the refused request (below `limit` when the request needed more than was left). */
   used: number;
   limit: number;
   /** ISO timestamp with milliseconds: the first moment of next month, UTC. */

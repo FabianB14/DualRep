@@ -440,8 +440,8 @@ export const TABLES = {
 
   tracy_events: {
     // Light columns only: the sync config selects exactly these, so the large input/output/usage
-    // JSON and the worker bookkeeping (attempts, locked_at, model, cap_units, releases) stay on the
-    // server.
+    // JSON and the worker bookkeeping (attempts, locked_at, model, cap_units, counted_at, ran,
+    // releases) stay on the server.
     columns: {
       user_id: 'uuid',
       job: 'text',
@@ -473,7 +473,7 @@ export const TABLE_NAMES = Object.keys(TABLES) as TableName[];
  * test requires every other Postgres column of a synced table to be in the registry.
  */
 export const SERVER_ONLY_COLUMNS: Readonly<Partial<Record<TableName, readonly string[]>>> = {
-  tracy_events: ['input', 'output', 'attempts', 'locked_at', 'model', 'usage', 'cap_units', 'releases'],
+  tracy_events: ['input', 'output', 'attempts', 'locked_at', 'model', 'usage', 'cap_units', 'counted_at', 'ran', 'releases'],
 };
 
 /** Tables that exist in Postgres but must never be synced (pgvector embeddings stay on the server). */

@@ -63,6 +63,15 @@ Deno.test('bad files, refusals and setup problems fail at once with a fixed mess
   assertEquals(classifyTracyFailure(http(422, 'fetch_failed'), { stage: 'extract', kind: 'pdf' }).action, 'retry');
 });
 
+Deno.test('a scanned page too detailed to render is about that page, not "the file is too large"', () => {
+  // Retried (the room Tracy has left varies, and no model call was made), then failed with this.
+  const page = { action: 'retry' as const, message: MESSAGES.pageTooDetailed };
+  assertEquals(classifyTracyFailure(http(413, 'page_too_large'), { stage: 'transcribe', kind: 'pdf' }), page);
+  // An older Tracy killed the render with too_large: on a transcription that is the same page problem.
+  assertEquals(classifyTracyFailure(http(413, 'too_large'), { stage: 'transcribe', kind: 'pdf' }), page);
+  assertEquals(classifyTracyFailure(http(413, 'too_large'), { stage: 'extract', kind: 'pdf' }), { action: 'fail', message: MESSAGES.tooLarge });
+});
+
 Deno.test('every message is a fixed sentence (nothing from the request or the answer)', () => {
   for (const m of Object.values(MESSAGES)) {
     assert(m.length < 120 && /[.!]$/.test(m), m);

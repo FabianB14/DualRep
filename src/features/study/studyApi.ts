@@ -138,6 +138,7 @@ export type StudyApiErrorKind =
 export type CapInfo = {
   /** 'extract' = sources this month; 'transcribe' = pages and photos this month. */
   stage: 'extract' | 'transcribe';
+  /** This month's usage before the refused request (below `limit`: the request needed more than was left). */
   used: number;
   limit: number;
   /** Epoch ms of the reset (the first moment of next month, UTC). */
@@ -361,14 +362,21 @@ function formatDay(ms: number): string {
 }
 
 /**
- * The cap in plain words: "You've used all 5 sources for this month. …". The page limit covers
- * photos of notes and the scanned pages of PDFs (pages without a text layer are transcribed too),
- * so it never says "pages of notes": a scanned PDF can use it up before any notes are added.
+ * The cap in plain words: "You've used all 5 sources for this month. …", or, when what was added
+ * is more than is left (`used` is the month's usage before this request), "That's more than this
+ * month's limit allows: 15 of 20 … used, 5 left. …". The page limit covers photos of notes and the
+ * scanned pages of PDFs (pages without a text layer are transcribed too), so it never says "pages
+ * of notes": a scanned PDF can use it up before any notes are added.
  */
 export function describeCap(cap: CapInfo): string {
   const what = cap.stage === 'extract' ? 'sources' : 'handwritten and scanned pages';
+  const day = formatDay(cap.resetsAt);
+  const left = cap.limit - cap.used;
+  if (cap.limit > 0 && left > 0) {
+    return `That’s more than this month’s limit allows: ${cap.used} of ${cap.limit} ${what} used, ${left} left. The limit resets on ${day}.`;
+  }
   const used = cap.limit > 0 ? `You’ve used all ${cap.limit} ${what} for this month.` : `You’ve used this month’s ${what}.`;
-  return `${used} More can be added from ${formatDay(cap.resetsAt)}.`;
+  return `${used} More can be added from ${day}.`;
 }
 
 /** What to tell the user about a failed study call. */

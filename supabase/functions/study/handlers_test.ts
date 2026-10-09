@@ -118,6 +118,30 @@ Deno.test('notes: one counted transcription per photo; hitting the page limit gi
   assertEquals([...s.store.files.values()].map((f) => f.page), [1, 2]);
 });
 
+Deno.test('over the page limit partway through a submit: the refusal reports the usage before it, and what is left', async () => {
+  // Free plan, 20 pages: 15 used, then 8 photos. The refusal must not say "used all 20": the 5
+  // photos this request queued before it hit the limit are given back, and 5 still fit.
+  const s = scenario();
+  for (const f of [...photos(15), ...photos(8, SOURCE2)]) s.store.upload(f.path, 'image/jpeg');
+  await s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE, kind: 'notes', title: 'A', files: photos(15) });
+  const err = await rejects(
+    s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE2, kind: 'notes', title: 'B', files: photos(8, SOURCE2) }),
+    'cap_reached',
+    429,
+  );
+  assertEquals(err.body() as unknown, {
+    ok: false,
+    code: 'cap_reached',
+    error: "That's more than this month's limit allows: 15 of 20 handwritten and scanned pages used, 5 left. It resets on the 1st.",
+    stage: 'transcribe',
+    used: 15,
+    limit: 20,
+    resets_at: '2026-11-01T00:00:00.000Z',
+  });
+  const five = photos(8, SOURCE2).slice(0, 5);
+  assertEquals((await s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE2, kind: 'notes', title: 'B', files: five })).status, 202);
+});
+
 // ---- confirm_transcripts ------------------------------------------------------------------------
 
 async function transcribedNotes(s: ReturnType<typeof scenario>, pages = 2) {
@@ -342,6 +366,42 @@ Deno.test('retry_job: a step cancelled before it ran gave its units back, so ret
   const second = s.store.jobsOf(SOURCE2, 'transcribe')[0];
   Object.assign(s.store.jobs.get(second.id)!, { status: 'failed', attempts: 3, error: 'x' });
   assertEquals((await s.call({ action: 'retry_job', job_id: second.id })).status, 202);
+});
+
+Deno.test('retry_job: a step that ran stays counted, even when it is cancelled again while it waits', async () => {
+  // Free plan, 2 pages. Each photo is cancelled while Tracy transcribes it (the transcript is saved
+  // anyway), then tried again and cancelled while it waits in the queue: once right away, once after
+  // Tracy was asleep and the job was put back. Try again starts the attempts over, but the pages were
+  // read, so they still count and two more photos are over the limit.
+  const s = scenario({ caps: { sources: DEFAULT_CAPS.sources, pages: { free: 2, paid: 200 } } });
+  for (const f of [...photos(2), ...photos(2, SOURCE2)]) s.store.upload(f.path, 'image/jpeg');
+  await s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE, kind: 'notes', title: 'A', files: photos(2) });
+  s.tracy.tasks.dualrep_transcribe_notes = async (input, jobId) => {
+    assertEquals((await s.call({ action: 'cancel_job', job_id: jobId })).status, 200);
+    return answer({ status: 'draft', page: { page: input.page, blank: false, transcript: 'Osmosis.', legibility: 'good', uncertain: [], diagrams: [] } });
+  };
+  await s.drain();
+  const [first, second] = s.store.jobsOf(SOURCE, 'transcribe');
+  assertEquals([first, second].map((j) => [j.status, j.attempts]), [['cancelled', 1], ['cancelled', 1]]);
+  assertEquals([...s.store.files.values()].map((f) => f.transcript), ['Osmosis.', 'Osmosis.']);
+
+  assertEquals((await s.call({ action: 'retry_job', job_id: first.id })).status, 202);
+  await s.call({ action: 'cancel_job', job_id: first.id });
+  assertEquals((await s.call({ action: 'retry_job', job_id: second.id })).status, 202);
+  s.tracy.awake = false;
+  const put = await s.step(); // Tracy asleep: put back uncounted, attempts 0 again
+  assertEquals(put.kind === 'step' && put.outcome, 'release');
+  await s.call({ action: 'cancel_job', job_id: second.id });
+  assertEquals([first, second].map((j) => [s.store.jobs.get(j.id)!.status, s.store.jobs.get(j.id)!.attempts]), [['cancelled', 0], ['cancelled', 0]]);
+
+  const err = await rejects(
+    s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE2, kind: 'notes', title: 'B', files: photos(2, SOURCE2) }),
+    'cap_reached',
+    429,
+  );
+  assertEquals((err.body() as unknown as { used: number; limit: number }).limit, 2);
+  // Trying them again needs no room either: their units were never given back.
+  assertEquals((await s.call({ action: 'retry_job', job_id: first.id })).status, 202);
 });
 
 Deno.test('cancel_job: skipping the last scanned page starts the outline; cancelling extraction stops the source', async () => {

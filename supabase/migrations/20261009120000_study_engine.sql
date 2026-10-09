@@ -8,7 +8,8 @@
 --
 --   1. Extensions (pg_cron, pg_net) and the `private` schema
 --   2. Columns the phone reads: topics.status, cards.source_id, tracy_events.stage / plan_id /
---      source_id (+ the server-only cap_units and releases); sources.status becomes server-owned
+--      source_id (+ the server-only cap_units, counted_at, ran and releases); sources.status becomes
+--      server-owned
 --   3. source_files.storage_path must stay inside its own source's folder
 --   4. The private Storage bucket `sources` and its folder policies
 --   5. The job queue: claim (at most N at once), release, enqueue and requeue (with the monthly caps),
@@ -149,6 +150,13 @@ create trigger keep_server_status
 --   cap_units  SERVER ONLY (not synced): how much of the user's monthly cap for this stage the job used
 --              (1 per source for extract, 1 per page or photo for transcribe; 0 = not counted). See
 --              enqueue_tracy_event in section 5.
+--   counted_at SERVER ONLY (not synced): when the job's cap units were taken, so the month they count
+--              in: when it was queued, or when "Try again" took back units it had given back (see
+--              requeue_tracy_event).
+--   ran        SERVER ONLY (not synced): the job had been worked on before its attempts last started
+--              over (the next window of a long PDF, or "Try again"). `attempts > 0 or ran` means a
+--              worker got past Tracy's /health check for it at least once (a release does not
+--              count), so its cap units are spent for good (see check_tracy_cap). Never set back.
 --   releases   SERVER ONLY (not synced): how many times in a row the job was put back because Tracy
 --              could not be reached (release_tracy_event). The worker fails the job after 15, so a
 --              Tracy that stays down (suspended, a wrong TRACY_URL) shows an error instead of
@@ -158,6 +166,8 @@ alter table public.tracy_events
   add column plan_id uuid references public.study_plans (id) on delete set null,
   add column source_id uuid references public.sources (id) on delete set null,
   add column cap_units integer not null default 0 check (cap_units >= 0),
+  add column counted_at timestamptz not null default now(),
+  add column ran boolean not null default false,
   add column releases integer not null default 0 check (releases >= 0),
   add constraint tracy_events_stage_matches_job check (
     stage is null
@@ -241,8 +251,12 @@ create policy "dualrep sources: delete own files" on storage.objects
 --    empty search_path, like every other definer function here.
 -- =================================================================================================
 
--- Claims up to p_limit queued jobs (oldest first, at most 10) for one worker run: each becomes
--- 'running', locked now, with its attempt counted. FOR UPDATE SKIP LOCKED lets two workers that run at
+-- Claims up to p_limit queued jobs (at most 10) for one worker run: each becomes 'running', locked
+-- now, with its attempt counted. Oldest first, except that cards and embed jobs (background work: an
+-- approved outline queues one cards job per topic, 15-30 minutes of them) wait behind the steps a
+-- person is waiting on (extract, transcribe, outline). With one job running at a time, strict age
+-- order kept notes added right after an approval at "Reading your material" until every cards job of
+-- the earlier material was done; now they wait for the cards job that is running, at most. FOR UPDATE SKIP LOCKED lets two workers that run at
 -- once take different jobs. The returned `attempts` is the fencing token: the worker finishes a job
 -- with `... where id = $1 and status = 'running' and attempts = $2`, so a worker that was presumed
 -- dead cannot overwrite a job that has since been retried.
@@ -293,7 +307,7 @@ begin
        select q.id
          from public.tracy_events q
         where q.status = 'queued'
-        order by q.created_at
+        order by coalesce(q.stage in ('cards', 'embed'), false), q.created_at
         limit slots
         for update skip locked
      )
@@ -330,9 +344,11 @@ $$;
 --     no migration) and the units. The user's tier comes from has_paid_access(), which answers for any
 --     user when there is no user JWT (the service role).
 --   * A limit of null for the user's tier (the other one set) counts the job but never refuses it.
--- Usage this month (UTC) = the cap_units of the user's jobs of that stage. A job cancelled before the
--- worker ever picked it up (attempts = 0) gives its units back; one cancelled later has cost something
--- and still counts.
+-- Usage this month (UTC) = the cap_units of the user's jobs of that stage whose units were taken this
+-- month (counted_at, not created_at: "Try again" can take a job's units again months after it was
+-- queued). A job cancelled before a worker ever ran it (attempts = 0 and not ran) gives its units
+-- back; one cancelled after it ran has cost something and still counts, even after a "Try again"
+-- (which starts its attempts over but keeps `ran`).
 -- When used + units would pass the limit it raises P0001 with hint 'dualrep_cap_reached' and a JSON
 -- detail {stage, used, limit, resets_at}, which PostgREST hands the Edge Function (as HTTP 400); the
 -- study function answers 429 {code: 'cap_reached'} and the app says when the cap resets. A per-user,
@@ -370,8 +386,8 @@ begin
     from public.tracy_events e
    where e.user_id = p_user_id
      and e.stage is not distinct from p_stage
-     and (e.status <> 'cancelled' or e.attempts > 0)
-     and e.created_at >= month_start;
+     and (e.status <> 'cancelled' or e.attempts > 0 or e.ran)
+     and e.counted_at >= month_start;
   if monthly_limit is not null and used + p_units > monthly_limit then
     raise exception 'monthly limit reached for %', coalesce(p_stage, 'this job')
       using errcode = 'P0001',
@@ -433,12 +449,14 @@ $$;
 
 -- retry_job: puts a failed or cancelled job back in the queue, the same row (so no new cap units),
 -- with three fresh attempts, no error, no lock and without the previous attempt's validator notes.
--- A counted job that was cancelled before the worker ever ran it (attempts = 0) gave its units back
--- (see check_tracy_cap), so queueing it again takes them again: it goes through the monthly cap like
--- a new job, under the same lock. Without that, "cancel while queued, submit more, retry the
--- cancelled ones" would get past the cap. The caller passes the stage's limits (null, null for an
--- uncounted stage). Returns the queued job, or no row when the job is not failed or cancelled (any
--- more); raises the cap error when over the limit.
+-- A job that ran keeps `ran`, so cancelling it again while it waits does not give its units back.
+-- A counted job that was cancelled before a worker ever ran it (attempts = 0 and not ran) gave its
+-- units back (see check_tracy_cap), so queueing it again takes them again: it goes through the
+-- monthly cap like a new job, under the same lock, and counts in this month from now on (counted_at).
+-- Without that, "cancel while queued, submit more, retry the cancelled ones" would get past the cap,
+-- this month or (checked against this month, counted in the old one) after the 1st. The caller
+-- passes the stage's limits (null, null for an uncounted stage). Returns the queued job, or no row
+-- when the job is not failed or cancelled (any more); raises the cap error when over the limit.
 create function public.requeue_tracy_event(
   p_id uuid,
   p_free_limit integer default null,
@@ -452,18 +470,21 @@ set search_path = ''
 as $$
 declare
   ev public.tracy_events;
+  given_back boolean;
 begin
   select * into ev from public.tracy_events e where e.id = p_id for update;
   if not found or ev.status not in ('failed', 'cancelled') then
     return;
   end if;
-  if ev.status = 'cancelled' and ev.attempts = 0 and ev.cap_units > 0
-     and (p_free_limit is not null or p_paid_limit is not null) then
+  given_back := ev.status = 'cancelled' and ev.attempts = 0 and not ev.ran and ev.cap_units > 0;
+  if given_back and (p_free_limit is not null or p_paid_limit is not null) then
     perform private.check_tracy_cap(ev.user_id, ev.stage, ev.cap_units, p_free_limit, p_paid_limit);
   end if;
   return query
   update public.tracy_events e
      set status = 'queued', error = null, attempts = 0, locked_at = null, releases = 0,
+         ran = e.ran or e.attempts > 0,
+         counted_at = case when given_back then now() else e.counted_at end,
          input = e.input - 'previous_errors'
    where e.id = p_id
   returning e.*;
@@ -507,7 +528,7 @@ begin
    where t.id = any(coalesce(p_cut, '{}'::uuid[])) and t.plan_id = p_plan_id and t.status = 'draft';
 
   -- One statement gives every row the same now(); a millisecond apart keeps the given order (the
-  -- worker claims the oldest first, and the phone syncs milliseconds).
+  -- worker claims cards jobs oldest first, and the phone syncs milliseconds).
   insert into public.tracy_events (id, user_id, job, stage, plan_id, source_id, input, created_at)
   select j.id, j.user_id, j.job, j.stage, j.plan_id, j.source_id, coalesce(j.input, '{}'::jsonb),
          now() + (x.n - 1) * interval '1 millisecond'

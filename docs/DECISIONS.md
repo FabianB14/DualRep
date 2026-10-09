@@ -705,14 +705,28 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
     new pages after 60 s (or 3 million characters); `last_page` says where it stopped, and the
     worker continues from there.
   - **Untrusted files are read in a child process** (review fix, 2026-10-09): PDFs and Word files,
-    and the rendering of scanned pages, run in a separate Node process that Tracy stops past 350 MB
-    of memory (`EXTRACT_MAX_MEMORY_MB`) or its time limit. A 100 KB Word file can unpack to 100 MB
-    and a 300 KB PDF to a 300 MB page; read inside Tracy, that took the whole service down (and
-    Interverse and `/chat` with it). Such a file now fails with "The file is too large to read." One
-    file is read at a time; a second request meanwhile gets 503 `busy`, and the worker tries again
-    a minute later without counting it. Scanned pages are rendered one at a time as JPEG (a few
-    hundred KB each, about half the CPU of PNG), within 45 s, so the model keeps most of the task's
-    time.
+    and the rendering of scanned pages, run in a separate Node process that Tracy stops past its
+    time limit, or once its private memory passes 350 MB (`EXTRACT_MAX_MEMORY_MB`) or what the
+    instance has left (its 512 MB less Tracy's own memory and a 32 MB margin), whichever is less.
+    A 100 KB Word file can unpack to 100 MB and a 300 KB PDF to a 300 MB page; read inside Tracy,
+    that took the whole service down (and Interverse and `/chat` with it). Such a file now fails
+    with "The file is too large to read." One file is read at a time; a second request meanwhile
+    gets 503 `busy`, and the worker tries again a minute later without counting it. Scanned pages
+    are rendered one at a time as JPEG (a few hundred KB each, about half the CPU of PNG), within
+    45 s, so the model keeps most of the task's time.
+  - **Ordinary scans fit** (second review fix): the first version measured the child's VmRSS, which
+    counts about 70 MB of the node binary that Tracy shares, and memory crept up page by page, so a
+    193 KB 600 dpi copier page (410 MB VmRSS, 340 MB its own), a 24 MP photo page, and some 4-page
+    batches of 12 MP scans were refused at random as "too large". Now only private memory counts,
+    the child collects garbage before each full-resolution canvas and runs with glibc settings that
+    hand freed memory back, so a page takes 230-340 MB however many pages the call has. A page that
+    still doesn't fit is 413 `page_too_large`. The worker retries it (the room left depends on what
+    Tracy holds at that moment, and no model call was made), and after the third attempt the phone
+    says "A page here was scanned at too high a resolution to read. Skip it to carry on." instead
+    of blaming the file. A page more than
+    about 1.6 times as tall as it is wide is rendered to a 2576 px long edge instead of 1568 px wide
+    (a 612 x 4000 pt page came out 10248 px tall, which the API refuses as over 8000 px, and the
+    worker retried that three times).
   - **The last Storage file stays in Tracy's memory** for up to 10 minutes, and each new request
     for it asks Storage only whether it changed (`If-None-Match`; Storage still checks the signed
     URL). A 200-page scan is transcribed in 50 batches of 4 pages; downloading the whole file each
@@ -750,19 +764,30 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
     `_PAID` (30), `DUALREP_CAP_PAGES_FREE` (20), `_PAID` (200). `none` means no limit. They are
     optional GitHub variables that the Deploy backend workflow copies across.
   - Usage is the sum of `tracy_events.cap_units` (a new server-only column) for that user and
-    stage since the start of the month, UTC. A job cancelled before it ever ran gives its units
-    back; one that ran still counts. An advisory lock per user and stage makes two requests at once
-    unable to both slip under the limit.
+    stage, for units taken since the start of the month, UTC (`counted_at`: when the job was
+    queued, or when Try again took its units again). A job cancelled before it ever ran gives its
+    units back; one that ran still counts, for good. "Ran" means `attempts > 0` or the server-only
+    flag `ran`, which is set when the attempts start over after work was done (the next window of a
+    long PDF, or Try again) and never cleared. An advisory lock per user and stage makes two
+    requests at once unable to both slip under the limit.
   - Over the cap the function answers 429 `cap_reached` with `{stage, used, limit, resets_at}`,
     and the app says, for example, "You've used all 5 sources for this month. More can be added
     from November 1." (for pages: "… handwritten and scanned pages …", because PDF pages without a
-    text layer use the same limit as photos of notes). Hitting the cap during `submit_source` undoes
+    text layer use the same limit as photos of notes). `used` is the usage before the refused
+    request, so when a request is bigger than what is left the app says so instead: "That's more
+    than this month's limit allows: 15 of 20 handwritten and scanned pages used, 5 left." (Before
+    the second review fix, 8 photos with 15 of 20 used were refused as "You've used all 20".) Hitting the cap during `submit_source` undoes
     the whole submit (its uploaded files are swept after 3 days). Scanned PDF pages past the page
     cap are skipped, with a note on the source; they are only read by adding the file again.
   - **Try again (`retry_job`) checks the cap too** when the job's units were given back (it was
     cancelled before it ran): `requeue_tracy_event` puts the same job back under the same lock, or
     answers `cap_reached`. Without that, "queue, cancel while queued, add more, then retry the
-    cancelled ones" got past the limit (review fix, 2026-10-09).
+    cancelled ones" got past the limit (review fix, 2026-10-09). Those units then count in the
+    month of the retry, not the month the job was first queued; otherwise jobs cancelled late in
+    one month could all be retried after the 1st while next month's usage stayed at 0. And Try
+    again on a job that ran keeps `ran`, so cancelling it again while it waits gives nothing back
+    (before the second review fix, Try again reset `attempts` to 0 and made such a job look as if
+    it had never run).
   - The tier comes from `has_paid_access()`, so beta access ([SETUP §14](SETUP.md#14-give-yourself-beta-access-for-testing))
     gets the paid limits.
 - **Why:** each source and page costs real money at Anthropic
@@ -777,8 +802,13 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
 
 - **Decision:**
   - `claim_tracy_events` takes the oldest queued job with `FOR UPDATE SKIP LOCKED` and counts the
-    attempt. First it reaps jobs still `running` 5 minutes after they were locked: back to the
-    queue, or failed after the third attempt with "This step took too long. Try again."
+    attempt. Cards and embed jobs (background work) go after the steps a person waits on
+    (extract, transcribe, outline): with one job at a time, strict age order kept notes added right
+    after an outline review at "Reading your material" until every cards job of the earlier
+    material was done (15-30 minutes for 15 topics). Now they wait for the one cards job that is
+    running, at most (second review fix). First it reaps jobs still `running` 5 minutes after they
+    were locked: back to the queue, or failed after the third attempt with "This step took too
+    long. Try again."
   - **Fencing:** the worker finishes a job only where `status = 'running'` and `attempts` and
     `locked_at` still match what it claimed. A worker that was presumed dead can't overwrite a job
     that has since been retried. `locked_at` is in the fence so a long PDF can reset `attempts` for
@@ -1105,9 +1135,10 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
   reminder** (18:00 offered; any time in 15-minute steps). Turning it on asks for the notification
   permission if Android still allows asking
   ([D29](#d29-the-notification-permission-is-asked-in-context-2026-10-08)).
-  - Channel `reviews-v1` (default importance), one notification id (`reviews-due`). It says "Cards
-    to review: N cards are due. A 10-minute block clears a lot of them." The lock screen shows only
-    the count, never a card.
+  - Channel `reviews-v1` (default importance). The reminder's id is `reviews-due`; the follow-ups
+    below use `reviews-due-1` … `reviews-due-13`, and every reschedule withdraws all 14 first. It
+    says "Cards to review: N cards are due. A 10-minute block clears a lot of them." The lock
+    screen shows only the count, never a card.
   - If cards are due by the next reminder time: a daily reminder with that count. If not: a
     reminder at the reminder time on the day the first card falls due and on each of the 13 days
     after it (unanswered cards stay due, so a dismissed reminder is not the last one; review fix,

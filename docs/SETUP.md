@@ -1325,12 +1325,13 @@ DualRep lane goes live when its pull request is merged.
 
 **Success:**
 ```json
-"dualrepLane": { "configured": true, "storageHostsSet": true, "strongModel": "claude-sonnet-5-5" }
+"dualrepLane": { "configured": true, "storageHostsSet": true, "storageHostsLookValid": true, "strongModel": "claude-sonnet-5-5" }
 ```
 (`strongModel` shows the model you chose.) `configured: false` means `SERVICE_SECRET_DUALREP` is
 missing; `storageHostsSet: false` means `DUALREP_STORAGE_HOSTS` is missing. No `dualrepLane` at all
-means the new Tracy isn't deployed yet. `storageHostsSet` only says the setting is there, not that
-it is right: double-check it is exactly `<project-ref>.supabase.co`.
+means the new Tracy isn't deployed yet. `storageHostsSet` only says the setting is there;
+`storageHostsLookValid: true` says it has the right shape (a bare host name, no path or spaces).
+Neither can tell a wrong project, so still check that it is exactly `<project-ref>.supabase.co`.
 
 ### Step 4: Add the GitHub secrets and variables
 
@@ -1512,7 +1513,7 @@ Please write down what you see.
 |---|---|
 | "Waiting to start" | Under a minute; up to 2 minutes if Tracy was asleep |
 | "Reading your material" (a 100-page PDF with a text layer) | 1–3 minutes. Scanned pages take longer: about 1–2 minutes per 4 pages |
-| "Reading your material" (one photo of notes) | About a minute |
+| "Reading your material" (one photo of notes) | About a minute; up to 3 minutes while cards are being made (one step runs at a time, and the photo goes ahead of the cards still waiting) |
 | "Making the outline" | 1–2 minutes |
 | "Making cards (n of m)" | About 1–2 minutes per topic; a 15-topic course takes 15–30 minutes |
 
@@ -1549,7 +1550,8 @@ Then tap **Save and make cards**. (Cutting every topic asks first.) Back on the 
 "Making cards (0 of 6)" and counts up. Right after saving, the button may still say **Review the
 outline** for a few seconds until the phone syncs; tapping it again is harmless.
 
-**8.6 Add the page of notes** (you don't need to wait for the cards). **Add material** →
+**8.6 Add the page of notes** (you don't need to wait for the cards: the notes are read before
+the PDF's remaining cards, once the topic being worked on is done). **Add material** →
 **Photos**:
 - **Take a photo**: the first time, Android asks to allow the camera: allow it. Photograph the page
   flat, in good light. (On Android 9 or older there is no camera button: take the photo with the
@@ -1686,6 +1688,7 @@ long the steps took.
 | `/diag` has no `dualrepLane` | The tracy-ai pull request isn't merged or deployed yet (step 3b). |
 | `configured: false` / `storageHostsSet: false` | Add `SERVICE_SECRET_DUALREP` / `DUALREP_STORAGE_HOSTS` (step 3a). |
 | Tracy's log says "SERVICE_SECRET_DUALREP equals SERVICE_SECRET…" | The two must differ: make a new Tracy secret (step 2), then update Render and GitHub and run Deploy backend. |
+| "A page here was scanned at too high a resolution to read. Skip it to carry on." | A scanned page in that batch needs more memory to turn into a picture than Tracy has on Render's free plan (a page scanned at more than about 600 dpi, or a very large photo). Tap **Skip this page** to carry on without that batch, or scan the page again at 300 dpi and add it as new material. |
 | Tracy keeps restarting, or reading big PDFs is very slow | Render's free plan has little memory and CPU. Tracy reads each PDF in a separate process that it stops when it uses too much memory (the file then fails with "The file is too large to read."), and the study builder sends it one step at a time. If Tracy still restarts: on Render, set `EXTRACT_MAX_PAGES` to `40`, or move Tracy to a paid plan. A file that crashes Tracy now fails after three tries instead of being sent again every minute. |
 | `/diag` says `storageHostsLookValid: false` | `DUALREP_STORAGE_HOSTS` has a typo: it must be just `<project-ref>.supabase.co` (a pasted `https://…/` is cleaned up for you, anything else is not). |
 
@@ -1696,7 +1699,7 @@ long the steps took.
 | "No internet connection. Adding and preparing material needs the internet; studying doesn't." | Go online and tap the button again. What you picked is kept. |
 | "Adding material isn't set up on the server yet. Try again later." | The `study` function isn't deployed: step 5c. |
 | "Your session has expired. Sign in again, then try again." | Sign out and in again (online, after **Waiting to upload: 0**). |
-| "You've used all 5 sources for this month. More can be added from November 1." (or "… handwritten and scanned pages …") | The monthly limit. The page limit counts photos of notes and the PDF pages that had to be read from their image (scans, picture-only slides), so a scanned PDF can use it up before any notes. For testing: beta access ([section 14](#14-give-yourself-beta-access-for-testing)), or a higher `DUALREP_CAP_…` variable (step 4c) and Deploy backend again. |
+| "You've used all 5 sources for this month. More can be added from November 1." (or "… handwritten and scanned pages …"), or "That's more than this month's limit allows: 15 of 20 handwritten and scanned pages used, 5 left." | The monthly limit. In the second case what you added is more than is left this month: add fewer photos (5 here) or wait for the reset. The page limit counts photos of notes and the PDF pages that had to be read from their image (scans, picture-only slides), so a scanned PDF can use it up before any notes. For testing: beta access ([section 14](#14-give-yourself-beta-access-for-testing)), or a higher `DUALREP_CAP_…` variable (step 4c) and Deploy backend again. |
 | "This plan isn't on the server yet. Wait a moment for it to sync, then try again." | A plan made offline hasn't uploaded. Settings → **Sync** must say **Connected: Yes** and **Waiting to upload: 0**. |
 | "… is larger than 25 MB." / "Only PDF and Word (.docx) files can be added." / "Up to 20 photos per set of notes…" | The limits. Split a big PDF, or save an old `.doc` as `.docx`. |
 | "Use a web address that starts with https://." | Links must be public `https://` pages. |

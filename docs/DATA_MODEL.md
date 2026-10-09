@@ -679,7 +679,8 @@ smallint (state before), `elapsed_days` integer, then the state **after** the re
 `input` jsonb, `output` jsonb?, `error` text?, `accepted` boolean?, `attempts` integer, `locked_at`
 timestamptz?, `model` text?, `usage` jsonb?, and since Phase 2 `stage` text?, `plan_id` uuid? →
 study_plans (set null), `source_id` uuid? → sources (set null), `cap_units` integer (default 0),
-`releases` integer (default 0).
+`counted_at` timestamptz (default now()), `ran` boolean (default false), `releases` integer
+(default 0).
 - **Written by:** Edge Functions with the service role: the `study` function queues jobs, the
   `tracy-worker` runs them. It is DualRep's job queue and the audit log of every proposal and whether
   the user accepted it. See
@@ -694,6 +695,12 @@ study_plans (set null), `source_id` uuid? → sources (set null), `cap_units` in
 - `cap_units` (Phase 2, **server only**): how much of the monthly cap the job used: 1 per source for
   `extract`, 1 per photo or scanned page for `transcribe`, 0 when not counted. See
   `enqueue_tracy_event` below.
+- `counted_at` (Phase 2, **server only**): when the job's cap units were taken, so the month they
+  count in. It is when the job was queued, or when **Try again** took back units the job had given
+  back (`requeue_tracy_event`).
+- `ran` (Phase 2, **server only**): true once the job had done work before its attempts started
+  over (the next window of a long PDF, or **Try again**). Never set back. `attempts > 0 or ran` means
+  a worker ran the job at least once, so its cap units stay used even if it is cancelled later.
 - `releases` (Phase 2, **server only**): how many times in a row the job was put back because Tracy
   could not be reached (`release_tracy_event`). The worker fails the job after 15 with "Tracy
   couldn't be reached for a while. Try again later."; it goes back to 0 whenever Tracy is reached.
@@ -702,7 +709,7 @@ study_plans (set null), `source_id` uuid? → sources (set null), `cap_units` in
   example "This month's page limit is used up, so the scanned pages weren't read.").
 - **Synced columns:** `id`, `user_id`, `job`, `stage`, `plan_id`, `source_id`, `status`, `error`,
   `accepted`, `created_at`, `updated_at`. `input`, `output`, `attempts`, `locked_at`, `model`,
-  `usage`, `cap_units` and `releases` stay on the server.
+  `usage`, `cap_units`, `counted_at`, `ran` and `releases` stay on the server.
 - **RLS:** read own, update own. **Grants:** select, and `update (accepted)` only. So every column
   above except `accepted` is written by the server alone.
 - **Indexes** (Phase 2): `plan_id`; `(source_id, created_at)` for "the jobs of a source"; running
@@ -753,10 +760,10 @@ outline", "Review the outline", "Making cards (2 of 5)", "Ready", or "Couldn't f
 
 | Function | What it does |
 |---|---|
-| `claim_tracy_events(p_limit integer default 1, p_max_running integer default null)` | First reaps jobs still `running` 5 minutes after they were locked (back to `queued`, or `failed` after the third attempt with "This step took too long. Try again."). Then, unless `p_max_running` jobs are already running with a lock under 3 minutes old (the worker passes `DUALREP_WORKER_CONCURRENCY`, default 1; an advisory lock makes the count and the claim atomic), claims the oldest queued jobs (at most 10, and only as many as there is room for) with `FOR UPDATE SKIP LOCKED`: `running`, `locked_at = now()`, `attempts + 1`. The returned `attempts` is the fencing token |
+| `claim_tracy_events(p_limit integer default 1, p_max_running integer default null)` | First reaps jobs still `running` 5 minutes after they were locked (back to `queued`, or `failed` after the third attempt with "This step took too long. Try again."). Then, unless `p_max_running` jobs are already running with a lock under 3 minutes old (the worker passes `DUALREP_WORKER_CONCURRENCY`, default 1; an advisory lock makes the count and the claim atomic), claims the oldest queued jobs, cards and embed jobs after all others (at most 10, and only as many as there is room for) with `FOR UPDATE SKIP LOCKED`: `running`, `locked_at = now()`, `attempts + 1`. The returned `attempts` is the fencing token |
 | `release_tracy_event(p_id uuid, p_attempts integer)` | Puts a claimed job back in the queue **without** counting the attempt (its `/health` check failed, or Tracy said it is busy), and adds 1 to `releases`. Only if `attempts` still matches. Returns whether it did |
-| `enqueue_tracy_event(p_user_id, p_job, p_stage, p_input, p_plan_id = null, p_source_id = null, p_free_limit = null, p_paid_limit = null, p_units = 1)` | Queues a job and enforces the monthly cap for its stage (called with named arguments). Limits are passed only for counted stages; the tier comes from `has_paid_access()`. Usage = the sum of `cap_units` of the user's jobs of that stage since the start of the month (UTC); a job cancelled before it ever ran gives its units back. Over the cap: P0001 with hint `dualrep_cap_reached` and detail `{stage, used, limit, resets_at}`, which the `study` function turns into 429 `cap_reached`. An advisory lock per user and stage makes the check atomic (the check is `private.check_tracy_cap`, shared with the next function). A negative `p_units` is 22023 |
-| `requeue_tracy_event(p_id uuid, p_free_limit = null, p_paid_limit = null)` | `retry_job`: puts a failed or cancelled job back in the queue (the same row: `queued`, 0 attempts, no error, no lock, `releases` 0, without `input.previous_errors`), or returns no row when it is neither. A counted job cancelled before it ran gave its units back, so it goes through the monthly cap again (the same error as `enqueue_tracy_event`) |
+| `enqueue_tracy_event(p_user_id, p_job, p_stage, p_input, p_plan_id = null, p_source_id = null, p_free_limit = null, p_paid_limit = null, p_units = 1)` | Queues a job and enforces the monthly cap for its stage (called with named arguments). Limits are passed only for counted stages; the tier comes from `has_paid_access()`. Usage = the sum of `cap_units` of the user's jobs of that stage whose units were taken (`counted_at`) since the start of the month (UTC); a job cancelled before it ever ran (`attempts = 0` and not `ran`) gives its units back. Over the cap: P0001 with hint `dualrep_cap_reached` and detail `{stage, used, limit, resets_at}`, which the `study` function turns into 429 `cap_reached`. An advisory lock per user and stage makes the check atomic (the check is `private.check_tracy_cap`, shared with the next function). A negative `p_units` is 22023 |
+| `requeue_tracy_event(p_id uuid, p_free_limit = null, p_paid_limit = null)` | `retry_job`: puts a failed or cancelled job back in the queue (the same row: `queued`, 0 attempts, no error, no lock, `releases` 0, without `input.previous_errors`; `ran` becomes true if it had attempts, so it stays counted), or returns no row when it is neither. A counted job cancelled before it ran gave its units back, so it goes through the monthly cap again (the same error as `enqueue_tracy_event`) and its `counted_at` becomes now: the units count in this month |
 | `apply_outline_approval(p_plan_id, p_keep jsonb, p_cut uuid[], p_jobs jsonb, p_outline_ids uuid[], p_approved_at text, p_ready_source_ids uuid[])` | `approve_outline`'s writes in one transaction: kept draft topics get their title and position and become `confirmed` (a topic no longer a draft keeps its status); cut topics are deleted **only while still `draft`**; the cards jobs are inserted (an existing id is left alone, a millisecond apart in the given order); the outline jobs get `output.approved_at`; sources with nothing kept become `ready` |
 | `orphaned_source_objects(p_limit integer default 100)` | Files in the `sources` bucket older than 3 days that no `source_files.storage_path` names (at most 1,000), for the daily sweep |
 
@@ -870,7 +877,7 @@ differences and why.
 | `tracy_events (id, user_id, job, status, input, output, accepted, created_at)` | Adds `error`, `attempts`, `locked_at`, `model`, `usage`; fixed `job` and `status` values; only light columns sync | DualRep owns the job queue ([TRACY_INTEGRATION.md](TRACY_INTEGRATION.md)). The large JSON stays on the server; the phone may only set `accepted`. |
 | `source_chunks.embedding` (pgvector, size not stated) | `vector(1536)` plus `embed_model`; HNSW cosine index; never synced | pgvector indexes stop at 2,000 dimensions and Gemini's default is 3072, so the size is pinned. `embed_model` says which rows to re-embed after a model change. |
 | Smaller additions | `profiles.fsrs_params`; `presets.kind`; `sources.status`; `study_plans.title`; `cards.page`; `card_links.created_by`; `workout_sessions.duration_minutes`; `created_at`/`updated_at` everywhere | Per-user FSRS settings; a stable name for each system preset; upload processing state; a plan name; "every card stores the page it came from"; who may edit a link; walk minutes. |
-| Study builder, outline review (Phase 2) | `topics.status` (`draft`, `confirmed`, `ready`); `cards.source_id` derived by a trigger; `tracy_events.stage`, `plan_id`, `source_id` (synced) and `cap_units`, `releases` (server only); `sources.status` owned by the server; a `storage_path` CHECK; the private `sources` Storage bucket; the queue functions and a pg_cron schedule | The phone shows the outline review, each source's progress and "p. 12, Lecture 3" from synced rows only (it never receives chunks); the monthly caps count sources and pages, not rows; a phone can't point the worker at someone else's file ([DECISIONS.md](DECISIONS.md) D36–D40). |
+| Study builder, outline review (Phase 2) | `topics.status` (`draft`, `confirmed`, `ready`); `cards.source_id` derived by a trigger; `tracy_events.stage`, `plan_id`, `source_id` (synced) and `cap_units`, `counted_at`, `ran`, `releases` (server only); `sources.status` owned by the server; a `storage_path` CHECK; the private `sources` Storage bucket; the queue functions and a pg_cron schedule | The phone shows the outline review, each source's progress and "p. 12, Lecture 3" from synced rows only (it never receives chunks); the monthly caps count sources and pages, not rows; a phone can't point the worker at someone else's file ([DECISIONS.md](DECISIONS.md) D36–D40). |
 | Postgres conventions (not stated) | `text` + CHECK instead of enums; `on delete cascade` from `auth.users`, `on delete set null` (never restrict) for links that can point at other people's rows; explicit grants; optional references and sharing normalized instead of refused | Easy to extend; Play's account-deletion rule (a delete never depends on anyone else's data); Supabase's 2026 grant change; offline writes are never dropped because of what others did. |
 
 ---

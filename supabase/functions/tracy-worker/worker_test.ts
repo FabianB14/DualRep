@@ -208,6 +208,24 @@ Deno.test('the gate: a course PDF and handwritten notes become one cumulative pl
   assertEquals(notesCards.map((c) => [c.topic_id === cells.id, c.page]).sort(), [[false, 1], [true, 2]]);
 });
 
+Deno.test('notes added right after an outline review are read before the queued cards jobs', async () => {
+  // One step at a time: in strict age order the photo would wait for every topic's cards (15-30
+  // minutes for a long course) at "Reading your material". Cards are background work.
+  const s = scenario({ scope: 'cumulative' });
+  scriptPdf(s);
+  await submitPdf(s);
+  await s.drain();
+  const drafts = [...s.store.topics.values()];
+  await s.call({ action: 'approve_outline', plan_id: PLAN, source_id: null, topics: drafts.map((t) => ({ id: t.id, keep: true })) });
+  assertEquals(s.store.jobsOf(SOURCE, 'cards').map((j) => j.status), ['queued', 'queued']);
+  s.store.upload(`${USER}/${SOURCE2}/1.jpg`, 'image/jpeg', 400_000);
+  await s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE2, kind: 'notes', title: 'Notes', files: [{ path: `${USER}/${SOURCE2}/1.jpg` }] });
+  s.tracy.tasks.dualrep_transcribe_notes = (input) =>
+    answer({ status: 'draft', page: { page: input.page, blank: false, transcript: 'Osmosis.', legibility: 'good', uncertain: [], diagrams: [] } });
+  const results = await s.drain();
+  assertEquals(results.map((x) => x.kind === 'step' && x.stage), ['transcribe', 'cards', 'cards']);
+});
+
 Deno.test('an outline that only adds to existing topics needs no review: its cards are made at once', async () => {
   const s = scenario({ scope: 'cumulative' });
   scriptPdf(s);
@@ -477,6 +495,24 @@ Deno.test('scanned pages over the monthly page limit are skipped with a note; th
   assertEquals(extract.error, "1 scanned page wasn't transcribed: this month's page limit is used up.");
   assertEquals(s.store.jobsOf(SOURCE, 'transcribe'), []);
   assertEquals(s.store.jobsOf(SOURCE, 'outline')[0].status, 'succeeded');
+});
+
+Deno.test('a long PDF cancelled between two windows still counts: the first window was read', async () => {
+  // Free plan, 1 source. The next window starts the job's attempts over; cancelling it while it waits
+  // must not give the source back, or "cancel after the first 20 pages, add another" never ends.
+  const s = scenario({ caps: { sources: { free: 1, paid: 30 }, pages: DEFAULT_CAPS.pages } });
+  scriptPdf(s);
+  await submitPdf(s);
+  const r = await s.step();
+  assertEquals(r.kind === 'step' && r.outcome, 'continue');
+  const extract = s.store.jobsOf(SOURCE, 'extract')[0];
+  assertEquals([extract.status, extract.attempts], ['queued', 0]);
+  assertEquals((await s.call({ action: 'cancel_job', job_id: extract.id })).status, 200);
+  const PDF2 = `${USER}/${SOURCE2}/1.pdf`;
+  s.store.upload(PDF2, 'application/pdf');
+  const refused = await s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE2, kind: 'pdf', title: 'More', files: [{ path: PDF2 }] })
+    .then(() => null, (e) => e as { code: string });
+  assertEquals(refused?.code, 'cap_reached');
 });
 
 Deno.test('a scan entirely over the page limit fails its outline with the reason', async () => {
