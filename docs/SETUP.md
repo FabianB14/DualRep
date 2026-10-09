@@ -945,7 +945,8 @@ workflow.
 ### Signing out loses unsent changes
 Signing out (Settings → **Sign out**) deletes the phone's copy of the data, **including writes that
 haven't uploaded yet**. The app warns you when that would happen. Get online and let "Waiting to
-upload" reach 0 first. It also stops a running study cycle and withdraws its alerts.
+upload" reach 0 first. It also finishes a running cycle or workout first (its end is sent to the
+server if the phone is online) and withdraws its alerts.
 
 ---
 

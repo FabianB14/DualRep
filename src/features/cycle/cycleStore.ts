@@ -182,14 +182,18 @@ export class CycleStore {
   /**
    * Sign-out: finishes a running cycle the way "Finish" does, so its rows are closed (the focus block's
    * end, the workout's length, or its skip) instead of staying open on the server for good once this
-   * phone's copy is cleared; waits for those writes to land on the phone; then stop(). A write that
-   * fails is not retried here (sign-out goes ahead). Never rejects.
+   * phone's copy is cleared; waits for those writes to land on the phone; then stop(). It first
+   * catches up with the clock, as the cycle screen and a fresh load do, so the result is the same
+   * whether or not the store was loaded before. A write still waiting is sent even when the cycle is
+   * already over (a workout the load or that tick closed as stale). A write that fails is not retried
+   * here (sign-out goes ahead). Never rejects.
    */
   async finishAndStop(): Promise<void> {
     try {
       await this.load();
-      if (!this.disposed && this.state && this.state.phase !== 'idle') {
-        this.finish();
+      if (!this.disposed && this.state) {
+        this.tick();
+        if (this.phase() !== 'idle') this.finish();
         this.kick();
         // Runs every pending effect in order, and returns early only when one fails.
         await this.effectsRun;

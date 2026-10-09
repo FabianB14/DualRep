@@ -394,10 +394,15 @@ Each entry: **Decision**, **Why**, **Alternatives considered**, **Revisit when**
     ended (its alert rang meanwhile), the cycle finishes instead.
   - A block's recorded end (`ended_at`) is its start plus the time actually focused, so pauses never
     count as focus time in History or Today. A workout's length runs from its start to its last set,
-    and a workout nobody touched for an hour is closed as it stands and the cycle finished.
+    and a workout nobody touched for an hour is closed as it stands and the cycle finished. Both end
+    at its last set, so the finish screen and History show the same minutes.
   - Signing out finishes a running cycle first, so its block, workout and transition are closed on
-    the server instead of left open for good. It waits for those writes, withdraws every alert, and
-    when online gives the upload queue up to 10 seconds, before the phone's data is cleared.
+    the server instead of left open for good. It first catches up with the clock, exactly as opening
+    the cycle screen would: a block that started on its own after the countdown is recorded, and a
+    workout left for an hour is closed. So the server ends up with the same rows whether or not the
+    app was restarted before signing out. It also sends a closing write still waiting on the phone
+    even when the cycle is already over. It waits for those writes, withdraws every alert, and when
+    online gives the upload queue up to 10 seconds, before the phone's data is cleared.
 - **Why:** an app restart, a killed process or a flat battery must never lose a logged set or write
   it twice, and Phase 1 adds no tables or columns to the database. The cycle belongs to this phone,
   not to the account. Keeping it in the same SQLite file as the loop's rows avoids a second storage

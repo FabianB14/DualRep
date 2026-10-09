@@ -1114,6 +1114,17 @@ describe('move-only ("Just train")', () => {
     expect(idle.summary).toMatchObject({ mode: 'move_only', startedAt: T0, finishedAt: T0 + 3 * MIN });
   });
 
+  it('a move-only workout left open after a skip: the summary and the row both count to its last set', () => {
+    let state: CycleState = log(cleared(trained()), T0 + 3 * MIN);
+    // The barbell is taken at 30 minutes: its other sets are skipped, and the user walks away.
+    state = cycleReducer(state, { type: 'skip_exercise', at: T0 + 30 * MIN, itemIndex: 0 });
+    expectPhase(state, 'move');
+    const idle = cycleReducer(cleared(state), { type: 'tick', at: T0 + 30 * MIN + CYCLE_RULES.moveStaleMs + 1 });
+    expectPhase(idle, 'idle');
+    expect(effect(idle, 'finish_move_block').durationMinutes).toBe(3);
+    expect(idle.summary).toMatchObject({ mode: 'move_only', startedAt: T0, finishedAt: T0 + 3 * MIN });
+  });
+
   it('a move-only skip with no sets ends in idle with a skip', () => {
     const idle = cycleReducer(cleared(trained()), { type: 'skip_move', at: T0 + MIN });
     expectPhase(idle, 'idle');

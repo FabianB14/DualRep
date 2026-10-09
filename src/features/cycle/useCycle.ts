@@ -75,9 +75,10 @@ export function resetCycleStore(): void {
 }
 
 /**
- * Sign-out: finishes a running cycle (as "Finish" would), so its focus block, workout and transition
- * are closed instead of left open on the server for good; waits for those writes to land on the
- * phone; stops the store; then withdraws every alert. Call before AuthProvider.signOut() clears the
+ * Sign-out: finishes a running cycle (as "Finish" would, after catching up with the clock), so its
+ * focus block, workout and transition are closed instead of left open on the server for good; waits
+ * for those writes, and any closing write still waiting from before, to land on the phone; stops the
+ * store; then withdraws every alert. Call before AuthProvider.signOut() clears the
  * local database (and give the upload queue a moment first, so the closing writes reach the server):
  * no write of this account may land after the clear, and no block-end alert may ring (or open the
  * cycle screen) for an account that is signed out. The cycle may be saved on the phone without its

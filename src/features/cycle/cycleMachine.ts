@@ -17,8 +17,8 @@
  * - move: the circuit, where the user is in it, each item's sets and the spotter's targets for its
  *   next set, the rest timer, and the effort rating of the focus block just finished. The workout's
  *   length runs from its start to its last logged set (time after it, such as a workout left open, is
- *   not counted). A move block nobody has touched for MOVE_STALE is closed as it stands (at its last
- *   set) and the cycle finished, rather than resumed hours later.
+ *   not counted). A move block nobody has touched for MOVE_STALE is closed as it stands and the cycle
+ *   finished, both at its last set, rather than resumed hours later.
  *   Micro circuits go round-robin (every station once, then the next round); full sessions do
  *   straight sets (all sets of an item, then the next). A rest-pause mini-set always comes right
  *   after the set it follows. The move block ends when every item is done, cut by the spotter or
@@ -970,9 +970,12 @@ function reduceFocus(state: FocusState, event: CycleEvent): CycleState {
 function reduceMove(state: MoveState, event: CycleEvent): CycleState {
   switch (event.type) {
     case 'tick': {
-      // MOVE_STALE: left open (the app closed mid-workout): close it at its last set and finish.
+      // MOVE_STALE: left open (the app closed mid-workout): close it at its last set and finish there,
+      // so a move-only summary counts the same minutes as the stored workout (as completeMove does).
       const lastTouched = state.lastStepAt ?? state.startedAt;
-      if (event.at - lastTouched > R.moveStaleMs) return finishCycle(closeMove(state, event.at), lastTouched);
+      if (event.at - lastTouched > R.moveStaleMs) {
+        return finishCycle(closeMove(state, event.at), moveEnd(state, lastTouched));
+      }
       return state.rest && isDone(state.rest, event.at) ? { ...state, rest: null } : state;
     }
     case 'log_set':

@@ -438,6 +438,53 @@ describe('effects', () => {
     expect(store.isDisposed).toBe(true);
   });
 
+  it('finishAndStop() sends the end of a workout that loading finds stale, before the store stops', async () => {
+    const study = await inMove();
+    const justTrain = await loaded();
+    await justTrain.store.startMoveOnly(PLAN);
+    await settle();
+    for (const before of [study, justTrain]) {
+      const move = state(before.store) as MoveState;
+      before.store.logSet();
+      before.io.clock += MIN;
+      before.store.logSet();
+      await settle();
+      expect((before.io.saved as CycleState).phase).toBe('move');
+      // The app was killed. Two hours later the user signs out without opening the cycle screen, so
+      // the store is loaded by the sign-out itself, and that load closes the workout as stale.
+      const later = before.io.clock + 2 * 60 * MIN;
+      const staleClosed = cycleReducer(before.io.saved as CycleState, { type: 'tick', at: later });
+      // Also a state saved with that closing write still waiting (killed again before it ran).
+      for (const saved of [before.io.saved, staleClosed]) {
+        const fake = fakeIo(roundTrip(saved));
+        fake.io.clock = later;
+        const store = new CycleStore(USER, fake.deps);
+        await store.finishAndStop();
+        expect(fake.repo.finishMoveBlock).toHaveBeenCalledWith(move.workoutId, 1, later);
+        expect(fake.io.saved).toMatchObject({ phase: 'idle', pending: [] });
+        expect(store.isDisposed).toBe(true);
+      }
+    }
+  });
+
+  it('finishAndStop() catches up with the clock first: a block the countdown started off-screen is recorded', async () => {
+    const { store, io, repo } = await inMove();
+    store.finishMove();
+    await settle();
+    const back = state(store) as ReturnState;
+    expect(back.phase).toBe('return');
+    // The user leaves the cycle screen (nothing ticks), studies, and signs out from Settings 10 minutes
+    // after the countdown ended: the next block started then, and it ends now, interrupted.
+    const startedAt = back.countdown.endsAt ?? 0;
+    io.clock = startedAt + 10 * MIN;
+    await store.finishAndStop();
+    expect(repo.startFocusBlock).toHaveBeenLastCalledWith(expect.objectContaining({ createSession: false, startedAt }));
+    const { blockId } = repo.startFocusBlock.mock.calls.at(-1)?.[0] ?? {};
+    expect(repo.endFocusBlock).toHaveBeenLastCalledWith(blockId, startedAt + 10 * MIN, true, startedAt + 10 * MIN);
+    expect(io.saved).toMatchObject({ phase: 'idle', pending: [] });
+    expect(store.isDisposed).toBe(true);
+  });
+
   it('finishAndStop() writes nothing when no cycle runs, and gives up (does not hang) when a write fails', async () => {
     const idle = await loaded();
     const saves = idle.deps.writeState.mock.calls.length;
