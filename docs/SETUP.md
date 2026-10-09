@@ -1254,10 +1254,9 @@ Tracy runs on Render. Its address looks like `https://<name>.onrender.com`: Rend
 top of the Tracy service's page (https://dashboard.render.com → the Tracy service). Write it down;
 it is `TRACY_URL` in step 4.
 
-Tracy is on Render's **Starter** instance (the paid step above Free: about $7 a month, 512 MB of
-memory, half a CPU). It never goes to sleep, so it answers straight away. To confirm the plan: the
-Tracy service → **Settings** → **Instance Type** (**verify** the label). If it says **Standard** (2 GB)
-or bigger instead, see `DUALREP_WORKER_CONCURRENCY` in step 4.
+Tracy is on Render's **Starter** instance: $7 a month, 0.5 CPU, 512 MB of memory (Render shows it
+as `0.5c-512mb`; confirmed 2026-10-09). It never goes to sleep, so it answers straight away. If you
+ever move it to **Standard** (2 GB) or bigger, see `DUALREP_WORKER_CONCURRENCY` in step 4.
 
 1. In a browser, open `https://<name>.onrender.com/health`.
 2. It should load within a few seconds. (Only on Render's **Free** instance does a service sleep
@@ -1772,7 +1771,7 @@ in Anthropic's console (**Usage**).
 |---|---|---|
 | Supabase | $0 (Free plan) | Limits that matter now: 500 MB database, 1 GB of file storage, 500,000 Edge Function calls a month (the every-minute schedule only calls the worker when there is work), 5 GB of downloads (egress). Tracy downloading the files counts as downloads: a scanned PDF is read in batches of 4 pages, and Tracy keeps the file it read last and only checks with Supabase that it hasn't changed, so a 25 MB scan should cost about 25 MB, not 25 MB per batch (**verify** in the dashboard's **Usage** after the first big scan). Over 5 GB in a month, Supabase restricts the project (sync and uploads stop until the next month): watch **Usage** in the Supabase dashboard if many large scans are added. A free project is paused after a week with little activity (**verify** the rule); restoring it is a click. |
 | PowerSync | $0 (Free plan) | As in Phase 0. |
-| Render (Tracy) | What you already pay for Tracy (Starter instance, about $7 a month; **verify** on your Render billing page) | Nothing new to buy. Starter never sleeps, so steps start at once. Scanned PDF pages are sent from Tracy to Claude as pictures (about 1.2 MB each), which counts toward your Render workspace's included outbound bandwidth; a 100-page scan is about 120 MB. Check **Billing → Bandwidth** on Render now and then (**verify** the menu name). |
+| Render (Tracy) | What you already pay for Tracy: the Starter instance, $7 a month | Nothing new to buy. Starter never sleeps, so steps start at once. Scanned PDF pages are sent from Tracy to Claude as pictures (about 1.2 MB each), which counts toward your Render workspace's included outbound bandwidth; a 100-page scan is about 120 MB. Check **Billing → Bandwidth** on Render now and then (**verify** the menu name). |
 | GitHub Actions | $0 | Each Deploy backend run uses a few minutes of the monthly allowance. |
 | Gemini (embeddings) | $0 (off) | If you turn it on, with billing: about $0.012 per 100-page PDF. |
 | **Anthropic (through Tracy)** | **pay per use** | See below. Studying costs nothing: reviews happen on the phone. |

@@ -327,7 +327,7 @@ audit log either way.
   Supabase's docs source during research, again in Phase 2 on 2026-10-09; the live page itself
   wasn't reachable.)
 - **Render plan:** Tracy runs on the **Starter** instance (confirmed by the founder on 2026-10-09):
-  about $7 a month, 512 MB of memory, 0.5 CPU, and it **never sleeps**. So the planner's 3-second
+  $7 a month, 512 MB of memory, 0.5 CPU (`0.5c-512mb`), and it **never sleeps**. So the planner's 3-second
   gate (Phase 3) isn't threatened by a cold start; calling the planner during the focus block, with
   the default circuit as a fallback, still covers slow answers. Memory is the same 512 MB as Free,
   which is why the worker runs one step at a time. (On a Free instance a service sleeps after 15
