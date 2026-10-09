@@ -5,7 +5,7 @@
  * hooks and progress rules run; the writes, the study function, the uploads and the router are mocks
  * whose calls the tests check. Nothing here touches the network or a native module.
  */
-import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { ComponentType } from 'react';
 import { Alert, type AlertButton } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -287,6 +287,28 @@ function cardRow(id: string, question: string, overrides: Record<string, unknown
     ...overrides,
   };
 }
+
+// Load every screen module once, before any test's 5 s clock starts. The first require of the app's
+// screens transforms a large module graph; on a CI runner that took over 5 s, which timed out the
+// first test, and its render then finished during later tests and broke all of them.
+const SCREENS = [
+  '../../app/(app)/index',
+  '../../app/(app)/settings',
+  '../../app/(app)/plans/index',
+  '../../app/(app)/plans/new',
+  '../../app/(app)/plans/[id]/index',
+  '../../app/(app)/plans/[id]/edit',
+  '../../app/(app)/plans/[id]/add',
+  '../../app/(app)/plans/[id]/check/[sourceId]',
+  '../../app/(app)/plans/[id]/outline',
+  '../../app/(app)/plans/[id]/cards/index',
+  '../../app/(app)/plans/[id]/cards/[cardId]',
+  '../../app/(app)/plans/[id]/map',
+];
+
+beforeAll(() => {
+  for (const path of SCREENS) screen(path);
+}, 60_000);
 
 beforeEach(() => {
   mockRows.clear();
