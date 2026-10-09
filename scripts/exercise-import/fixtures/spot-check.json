@@ -1,0 +1,274 @@
+[
+  {
+    "name": "Pullups",
+    "force": "pull",
+    "level": "beginner",
+    "mechanic": "compound",
+    "equipment": "body only",
+    "primaryMuscles": [
+      "lats"
+    ],
+    "secondaryMuscles": [
+      "biceps",
+      "middle back"
+    ],
+    "instructions": [
+      "Instruction text left out of this fixture (docs/DECISIONS.md D9)."
+    ],
+    "category": "strength",
+    "images": [
+      "Pullups/0.jpg",
+      "Pullups/1.jpg"
+    ],
+    "id": "Pullups"
+  },
+  {
+    "name": "Barbell Squat",
+    "force": "push",
+    "level": "beginner",
+    "mechanic": "compound",
+    "equipment": "barbell",
+    "primaryMuscles": [
+      "quadriceps"
+    ],
+    "secondaryMuscles": [
+      "calves",
+      "glutes",
+      "hamstrings",
+      "lower back"
+    ],
+    "instructions": [
+      "Instruction text left out of this fixture (docs/DECISIONS.md D9)."
+    ],
+    "category": "strength",
+    "images": [
+      "Barbell_Squat/0.jpg",
+      "Barbell_Squat/1.jpg"
+    ],
+    "id": "Barbell_Squat"
+  },
+  {
+    "name": "Goblet Squat",
+    "force": "push",
+    "level": "beginner",
+    "mechanic": "compound",
+    "equipment": "kettlebells",
+    "primaryMuscles": [
+      "quadriceps"
+    ],
+    "secondaryMuscles": [
+      "calves",
+      "glutes",
+      "hamstrings",
+      "shoulders"
+    ],
+    "instructions": [
+      "Instruction text left out of this fixture (docs/DECISIONS.md D9)."
+    ],
+    "category": "strength",
+    "images": [
+      "Goblet_Squat/0.jpg",
+      "Goblet_Squat/1.jpg"
+    ],
+    "id": "Goblet_Squat"
+  },
+  {
+    "name": "Farmer's Walk",
+    "force": null,
+    "level": "intermediate",
+    "mechanic": "compound",
+    "equipment": "other",
+    "primaryMuscles": [
+      "forearms"
+    ],
+    "secondaryMuscles": [
+      "abdominals",
+      "glutes",
+      "hamstrings",
+      "lower back",
+      "quadriceps",
+      "traps"
+    ],
+    "instructions": [
+      "Instruction text left out of this fixture (docs/DECISIONS.md D9)."
+    ],
+    "category": "strongman",
+    "images": [
+      "Farmers_Walk/0.jpg",
+      "Farmers_Walk/1.jpg"
+    ],
+    "id": "Farmers_Walk"
+  },
+  {
+    "name": "Rope Jumping",
+    "force": null,
+    "level": "intermediate",
+    "mechanic": null,
+    "equipment": "other",
+    "primaryMuscles": [
+      "quadriceps"
+    ],
+    "secondaryMuscles": [
+      "calves",
+      "hamstrings"
+    ],
+    "instructions": [
+      "Instruction text left out of this fixture (docs/DECISIONS.md D9)."
+    ],
+    "category": "cardio",
+    "images": [
+      "Rope_Jumping/0.jpg",
+      "Rope_Jumping/1.jpg"
+    ],
+    "id": "Rope_Jumping"
+  },
+  {
+    "name": "Plank",
+    "force": "static",
+    "level": "beginner",
+    "mechanic": "isolation",
+    "equipment": "body only",
+    "primaryMuscles": [
+      "abdominals"
+    ],
+    "secondaryMuscles": [],
+    "instructions": [
+      "Instruction text left out of this fixture (docs/DECISIONS.md D9)."
+    ],
+    "category": "strength",
+    "images": [
+      "Plank/0.jpg",
+      "Plank/1.jpg"
+    ],
+    "id": "Plank"
+  },
+  {
+    "name": "Dips - Triceps Version",
+    "force": "push",
+    "level": "beginner",
+    "mechanic": "compound",
+    "equipment": "body only",
+    "primaryMuscles": [
+      "triceps"
+    ],
+    "secondaryMuscles": [
+      "chest",
+      "shoulders"
+    ],
+    "instructions": [
+      "Instruction text left out of this fixture (docs/DECISIONS.md D9)."
+    ],
+    "category": "strength",
+    "images": [
+      "Dips_-_Triceps_Version/0.jpg",
+      "Dips_-_Triceps_Version/1.jpg"
+    ],
+    "id": "Dips_-_Triceps_Version"
+  },
+  {
+    "id": "Kettlebell_Halo_With_Overhead_Extension",
+    "name": "Kettlebell Halo with Overhead Extension",
+    "force": "push",
+    "level": "intermediate",
+    "mechanic": "compound",
+    "equipment": "kettlebells",
+    "primaryMuscles": [
+      "shoulders",
+      "triceps"
+    ],
+    "secondaryMuscles": [
+      "traps",
+      "middle back",
+      "abdominals"
+    ],
+    "instructions": [
+      "Instruction text left out of this fixture (docs/DECISIONS.md D9)."
+    ],
+    "category": "strength",
+    "images": []
+  },
+  {
+    "name": "Crunches",
+    "force": "pull",
+    "level": "beginner",
+    "mechanic": "isolation",
+    "equipment": "body only",
+    "primaryMuscles": [
+      "abdominals"
+    ],
+    "secondaryMuscles": [],
+    "instructions": [
+      "Instruction text left out of this fixture (docs/DECISIONS.md D9)."
+    ],
+    "category": "strength",
+    "images": [
+      "Crunches/0.jpg",
+      "Crunches/1.jpg"
+    ],
+    "id": "Crunches"
+  },
+  {
+    "name": "Bicycling, Stationary",
+    "force": null,
+    "level": "beginner",
+    "mechanic": null,
+    "equipment": "machine",
+    "primaryMuscles": [
+      "quadriceps"
+    ],
+    "secondaryMuscles": [
+      "calves",
+      "glutes",
+      "hamstrings"
+    ],
+    "instructions": [
+      "Instruction text left out of this fixture (docs/DECISIONS.md D9)."
+    ],
+    "category": "cardio",
+    "images": [
+      "Bicycling_Stationary/0.jpg",
+      "Bicycling_Stationary/1.jpg"
+    ],
+    "id": "Bicycling_Stationary"
+  },
+  {
+    "name": "Adductor/Groin",
+    "force": "static",
+    "level": "intermediate",
+    "mechanic": null,
+    "equipment": null,
+    "primaryMuscles": [
+      "adductors"
+    ],
+    "secondaryMuscles": [],
+    "instructions": [
+      "Instruction text left out of this fixture (docs/DECISIONS.md D9)."
+    ],
+    "category": "stretching",
+    "images": [
+      "Adductor_Groin/0.jpg",
+      "Adductor_Groin/1.jpg"
+    ],
+    "id": "Adductor_Groin"
+  },
+  {
+    "name": "Side Bridge",
+    "force": "static",
+    "level": "beginner",
+    "mechanic": null,
+    "equipment": "body only",
+    "primaryMuscles": [
+      "abdominals"
+    ],
+    "secondaryMuscles": [
+      "shoulders"
+    ],
+    "instructions": [],
+    "category": "strength",
+    "images": [
+      "Side_Bridge/0.jpg",
+      "Side_Bridge/1.jpg"
+    ],
+    "id": "Side_Bridge"
+  }
+]

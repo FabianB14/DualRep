@@ -37,6 +37,21 @@ export async function getUploadQueueCount(): Promise<number> {
   return stats.count;
 }
 
+/**
+ * Waits for the local writes to upload, for at most `timeoutMs`, while the phone is connected (offline
+ * it returns at once: nothing can be sent). Resolves with the number still waiting, 0 when all were
+ * sent. Sign-out uses it so that writes made just before it (the running cycle's closing writes) reach
+ * the server before the phone's data is cleared. Never rejects.
+ */
+export async function waitForUploads(timeoutMs: number, pollMs = 250): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const count = await getUploadQueueCount().catch(() => 0);
+    if (count === 0 || !db.currentStatus.connected || Date.now() >= deadline) return count;
+    await new Promise<void>((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
 /** Writes the server rejected for good (newest first); see SupabaseConnector.uploadData. */
 export function getUploadFailures(): Promise<UploadFailure[]> {
   return db.getAll<UploadFailure>(`SELECT * FROM ${UPLOAD_FAILURES_TABLE} ORDER BY created_at DESC`);

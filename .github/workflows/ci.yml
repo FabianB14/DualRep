@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   app:
-    name: App (typecheck, lint, tests, sync config)
+    name: App (typecheck, lint, tests, sync config, starter library)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -28,7 +28,9 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test -- --ci
+      - run: npm run test:scripts
       - run: npm run validate:sync
+      - run: npm run check:library
 
   database:
     name: Database (migrations + RLS tests, Postgres 16)
@@ -52,7 +54,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          # Pinned: resolving "latest" calls the GitHub API without a token and fails when the shared
+          # runner hits its rate limit (main's CI run 37833008329). Bump by hand now and then.
+          version: 2.119.0
+      - run: supabase --version
       - name: Start the local Supabase database (applies migrations and seed)
         run: supabase db start
       - name: Run the pgTAP tests

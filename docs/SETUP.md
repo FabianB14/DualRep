@@ -1,4 +1,4 @@
-# Setup: from zero to the Phase 0 gate
+# Setup: from zero to the Phase 0 and Phase 1 gates
 
 This guide takes you from a fresh Windows PC and an Android phone to the Phase 0 gate passing:
 
@@ -11,9 +11,13 @@ or a limit looks different, trust the vendor's page.
 
 Plan on an afternoon for sections 1–8 and an hour or two for the first build.
 
+**Phase 1 (the core loop)** adds one database migration, a new app build and a new gate: a study →
+lift → study cycle in airplane mode. Those steps are in
+[section 16](#16-phase-1-the-core-loop-on-your-phone).
+
 ## What it costs
 
-Everything in Phase 0 runs on free tiers.
+Everything in Phase 0 and Phase 1 runs on free tiers.
 
 | Service | What you use it for | Phase 0 cost | Notes |
 |---|---|---|---|
@@ -188,6 +192,9 @@ versions in a new PowerShell window, and on path B `java -version` prints 17.
 ## 4. Get the code
 
 ### First: put the Phase 0 code on `main`
+**Done on 2026-10-08** (pull request #2). Phase 1 was built on the same branch and goes to `main`
+the same way, with a new pull request ([section 16](#16-phase-1-the-core-loop-on-your-phone)).
+
 Phase 0 was built on the branch `claude/bold-fermi-oglgch`. Until that branch is merged, `main` (the
 branch a plain `git clone` gives you) has only the plan and none of the code, and the APK workflow in
 [section 10](#10-optional-the-github-actions-apk) has no **Run workflow** button. Merge it with a pull
@@ -232,7 +239,7 @@ git clone https://github.com/FabianB14/DualRep.git ~/dualrep   # add -b claude/b
 cd ~/dualrep
 npm run db:test
 ```
-It ends with `db-test: all 13 test files passed (523 tests)`.
+It ends with `db-test: all 14 test files passed (542 tests)`.
 
 **Line endings on Windows.** Git for Windows' default setting checks files out with Windows line
 endings, which breaks shell scripts in Linux. The repo's `.gitattributes` keeps `.sh`, `.sql`, `.mjs`,
@@ -292,6 +299,8 @@ in, so `db push` doesn't try to run it a second time:
 ```powershell
 npx supabase migration repair 20261008000000 --status applied
 ```
+If you have also pasted Phase 1's migration (section 16), name both:
+`npx supabase migration repair 20261008000000 20261008120000 --status applied`.
 
 #### Option 2: link the repo and push with the CLI
 In `C:\dev\dualrep`:
@@ -306,7 +315,8 @@ Then apply the schema:
 ```powershell
 npx supabase db push
 ```
-It lists `20261008000000_initial_schema.sql` and asks to confirm. Type `Y`.
+It lists `20261008000000_initial_schema.sql` (and, from Phase 1 on,
+`20261008120000_starter_library.sql`) and asks to confirm. Type `Y`.
 
 **Success (either option):** no errors, and in the dashboard:
 - **Table Editor** lists 23 tables (`profiles`, `entitlements`, `presets`, … `tracy_events`).
@@ -639,9 +649,10 @@ on pushes to `claude/` branches, that change `package.json`, `package-lock.json`
 
    These are **variables**, not secrets: the values ship inside the app anyway. No secrets are
    needed. Without them the APK opens on "Setup needed".
-2. **Run it:** **Actions → Android APK → Run workflow**, pick the variant. (GitHub shows the **Run
-   workflow** button only once `android.yml` is on the default branch, `main`: merge the Phase 0 pull
-   request first, [section 4](#first-put-the-phase-0-code-on-main).)
+2. **Run it:** **Actions → Android APK → Run workflow**. In the box that opens, **Use workflow from**
+   picks the branch to build (`main`, or a branch whose pull request isn't merged yet), and the
+   second field picks the variant. (GitHub shows the **Run workflow** button only once `android.yml`
+   is on the default branch, `main`; it has been there since 2026-10-08.)
    - `preview`: the JavaScript is inside the APK, so it runs on its own. Use this for the final gate
      check.
    - `development`: a dev client that needs Metro (`npm start`) on your PC.
@@ -692,8 +703,10 @@ A **preview** build needs none of this; just open it.
    check spam before you tap **Send a new code**. Supabase's built-in sender only sends a few emails
    per hour for the whole project, and every resend uses one up.
 4. **Check your email** screen: type the code and tap **Sign in**.
-5. The home screen says "Signed in as <your email>". On the **Sync** card, wait until **Connected**
-   says **Yes** and the status says **Up to date**. The first sync downloads the system presets.
+5. The app opens on **Today** (the home screen). Scroll down to **More** and open **Settings**: it
+   says "Signed in as <your email>". On its **Sync** card, wait until **Connected** says **Yes** and
+   the status says **Up to date**. The first sync downloads the system presets (and, once the Phase 1
+   migration is in, the starter exercises).
 
 **Success:** signed in, Sync card connected. If it stays "Connecting" or "Offline" while the phone is
 online, see [PowerSync won't connect](#powersync-wont-connect-the-sync-card-stays-connecting-or-offline-while-online).
@@ -712,7 +725,7 @@ PASS really means "saved offline, synced later":
 - PASS also needs the **PowerSync sync stream to be connected** at the end. The upload goes through
   Supabase, so a row in Postgres alone doesn't prove that sync works.
 
-On the home screen, tap **Run the sync check**. Then:
+On the home screen (**Today**), scroll down to **More** and tap **Sync check**. Then:
 
 1. **Turn on airplane mode.** Open quick settings and turn on airplane mode; turn Wi-Fi off too if it
    stays on. The pill under the instructions shows PowerSync's connection: right after switching it
@@ -749,10 +762,10 @@ airplane mode. A development build that reaches Metro over Wi-Fi can't load its 
 reopen it offline.
 1. Turn airplane mode on and create a test row (steps 1–2).
 2. **Swipe DualRep away** from the recent-apps screen. Don't use "Force stop" in Settings.
-3. Still in airplane mode, open DualRep again and tap **Run the sync check**. (On a development build
-   the launcher may open first: tap the development server, or enter `http://localhost:8081`.) The
-   steps start over, which is fine: the **Test rows on this phone** list still shows your row, and
-   the Sync card shows **Waiting to upload: 1**.
+3. Still in airplane mode, open DualRep again and open **Sync check** (under **More** on Today).
+   (On a development build the launcher may open first: tap the development server, or enter
+   `http://localhost:8081`.) The steps start over, which is fine: the **Test rows on this phone**
+   list still shows your row, and the Sync card shows **Waiting to upload: 1**.
 4. Turn airplane mode off. Watch **Waiting to upload** drop to 0, then confirm the row in Postgres
    ([section 13](#13-confirm-the-row-in-postgres)) using the id from the list.
 
@@ -930,5 +943,242 @@ workflow.
 | `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | An app with the same package name but a different signing key is installed (for example an EAS build vs the GitHub APK). Uninstall it from the phone first. |
 
 ### Signing out loses unsent changes
-Signing out deletes the phone's copy of the data, **including writes that haven't uploaded yet**. The
-app warns you when that would happen. Get online and let "Waiting to upload" reach 0 first.
+Signing out (Settings → **Sign out**) deletes the phone's copy of the data, **including writes that
+haven't uploaded yet**. The app warns you when that would happen. Get online and let "Waiting to
+upload" reach 0 first. It also finishes a running cycle or workout first (its end is sent to the
+server if the phone is online) and withdraws its alerts.
+
+---
+
+## 16. Phase 1: the core loop on your phone
+
+Phase 1 is the study → move → study loop: a focus block with a timer, a short workout that appears
+by itself when the timer ends, and the next focus block after it. This section gets it onto your
+phone and runs its gate:
+
+> **A full study, lift, study cycle works in airplane mode, once with a home setup and once with a
+> gym setup.**
+
+You need the Phase 0 setup working (the hosted Supabase project, PowerSync, the phone signed in).
+Everything here is free. Plan on about two hours: two short cycles and a 25-minute timer check.
+
+Do the steps in order. **Step 1 must come before the gate runs.**
+
+### Step 1: Add the starter library to the database
+A migration is a SQL file that changes the database. Phase 1 has one new migration,
+[`supabase/migrations/20261008120000_starter_library.sql`](../supabase/migrations/20261008120000_starter_library.sql).
+It adds no tables. It adds 90 exercises written by Interverse, the "starter library".
+
+The app already carries the same 90 exercises, so it works without this step. But the server needs
+them too: when a logged set uploads, the server checks that its exercise exists. If it doesn't yet,
+the set is still saved, but its link to the exercise is stored as empty (the name is kept), and that
+can't be fixed later. So apply this first.
+
+The whole file is about 640 lines, more than the SQL Editor takes in one paste (it stopped at about
+150 lines). So the same SQL is also split into **7 parts** of under 120 lines each, in the folder
+[`supabase/sql-editor/starter-library/`](../supabase/sql-editor/starter-library/). Each part is complete
+on its own; together they do exactly what the full file does.
+
+1. On GitHub, open the folder
+   [`supabase/sql-editor/starter-library/`](../supabase/sql-editor/starter-library/). Until the Phase 1
+   pull request is merged, switch the branch picker at the top left to `claude/bold-fermi-oglgch`.
+2. Click `part-1-of-7.sql`, then **Copy raw file** (two overlapping squares, top right of the file).
+3. In the Supabase dashboard, open your project, then **SQL Editor** (left sidebar) → **New query**.
+   Paste (Ctrl+V) and click **Run**. It says "Success. No rows returned".
+4. Do the same for parts 2 to 7: copy the part, then in the SQL Editor select everything in the editor
+   (Ctrl+A), paste over it and click **Run**. The order doesn't matter, and running a part twice is
+   harmless.
+5. Check it. Replace the editor's text with this and click **Run**:
+   ```sql
+   select count(*) from public.exercises where origin = 'interverse' and reviewed;   -- 90
+   ```
+   If it shows less than 90, one part was missed: run all 7 again.
+
+Unlike the first migration, running these twice is harmless: they rewrite the same 90 rows. If a
+part shows an error, take a screenshot of the message and get help.
+
+**PowerSync: nothing to do.** The sync config already sends every reviewed library exercise to every
+phone, so the 90 rows reach the phone by themselves at the next sync. No redeploy.
+
+**Supabase CLI, later:** the first time you use the CLI on this project
+([section 5, Option 2](#option-2-link-the-repo-and-push-with-the-cli)), tell it both migrations are
+already in, so `db push` doesn't run them again:
+```powershell
+npx supabase migration repair 20261008000000 20261008120000 --status applied
+```
+
+### Step 2: Build and install the Phase 1 app
+1. On GitHub: **Actions → Android APK → Run workflow**. Under **Use workflow from**, pick the branch
+   `claude/bold-fermi-oglgch` (once the Phase 1 pull request is merged, pick `main`). Leave the
+   variant on `preview`. Click **Run workflow**. It takes 10–15 minutes.
+   (A push to that branch that changes `package.json` also starts a build by itself. A green run of
+   that is just as good.)
+2. When it has a green check, open the run and download **`dualrep-preview-arm64-apk`** at the
+   bottom. Unzip it (right-click → Extract All).
+3. Install it **over** the old DualRep preview app. Either:
+   - copy `app-release.apk` to the phone (USB cable, or Google Drive) and open it there. Android asks
+     whether to update the app: tap **Update**; or
+   - with the phone plugged in: `adb install -r "<the unzipped folder>\app-release.apk"`.
+
+   You stay signed in, and the phone keeps its data. If Android says the app isn't installed, a
+   build with a different signing key is on the phone: see `INSTALL_FAILED_UPDATE_INCOMPATIBLE` in
+   [Troubleshooting](#local-build-errors-on-windows).
+4. Open DualRep **while online**. It opens on **Today**. Scroll down to **More** → **Settings**. On
+   the **Sync** card, wait for **Connected: Yes** and **Waiting to upload: 0**. That sync also
+   brings down the 90 starter exercises.
+
+**Success:** Today shows **Start a study block** and **Just train**.
+
+### Step 3: The gate, run 1, with a home setup
+This takes about 25 minutes. You don't have to train hard: tapping **Done** for each set is enough to
+prove the loop. Keep the phone in airplane mode for the whole run.
+
+1. **Go offline.** Turn on airplane mode, and turn Wi-Fi off too if it stays on. In Settings →
+   **Sync**, wait until **Connected** says **No**.
+2. **Start.** Go back to Today and tap **Start a study block**. On the start screen:
+   - **What are you studying?** is optional.
+   - **Focus block:** tap − until it says **10 min** (the shortest).
+   - **Where are you training?** If you have no setup yet, tap **Home, just my body**. If you already
+     have one, tap the **Setup** chip and pick a home setup.
+   - **Workout length:** leave it on **10 min**.
+   - Tap **Start focus block**. The first time, Android asks whether DualRep may send notifications.
+     Tap **Allow**. (If you tap no, the timer still works; the phone just won't ring when the block
+     ends.)
+3. **Focus.** The ring shows the time left, with a line under it like "Next: 10-min home circuit ·
+   Chair squat first". Lock the phone and put it down. Airplane mode doesn't stop the alert: it is
+   scheduled on the phone itself.
+4. **The handoff.** After 10 minutes the phone rings. Unlock it and tap the alert: DualRep opens on
+   the first exercise. (If you keep the app open instead, the ring turns into the exercise card by
+   itself when the time is up, with a short buzz. No tap needed.)
+5. **The workout.** The screen stays on. For each set:
+   - The card shows the exercise and its target, for example "10 reps" or "40 s".
+   - Tap **Done**. A rest countdown follows; **Skip rest** moves on.
+   - At least once, tap − two or three times before **Done** (a missed set). The spotter's note
+     appears: an easier next set, or more rest.
+   - Try **Swap** once and pick another exercise.
+   - Optional: the effort chips (Easy, Solid, All out), and "How was that focus block?" (1–5).
+6. **Back to studying.** When the circuit ends, the screen says "Next focus block in 0:30". Don't tap
+   anything. After 30 seconds the next focus block starts by itself. That is the second "study" of
+   the cycle. It starts even if the screen turns off during the countdown (a short screen timeout)
+   or you lock the phone: wake it and the block is already running, and its alert is already set.
+7. Optional, recommended once: **swipe DualRep away** from the recent-apps screen while the focus
+   block runs. Open it again: the block is still running, with the right time left.
+8. **Finish.** Tap **Finish** at the top. A summary shows the blocks, focus minutes and sets. Tap
+   **Back to Today**: Today's numbers count them. **History** lists the workout's sets by exercise
+   name, and the focus blocks.
+
+**Success:** all of this worked with airplane mode on, and no warning about saving appeared (see
+[If something goes wrong](#if-something-goes-wrong)).
+
+### Step 4: The gate, run 2, with a gym setup
+You don't need to be at a gym. Stay in airplane mode.
+
+1. **Add a gym setup.** Today → **More** → **Setups** → **Add a setup**. Under **Start from**, tap
+   **Full gym**. Tap **Save setup**.
+2. Optional: Settings → **Show weights in** → **kg**, to see the weight steps in kilograms.
+3. Today → **Start a study block**. Focus block **10 min**. Tap the **Setup** chip and pick **Gym**.
+   Under **Workout length**, pick **Full**, then **30 min** (a full session with straight sets, the
+   other kind of workout). Tap **Start focus block**.
+4. Run it as in step 3: the alert, the handoff, the sets (use **Skip rest** to move faster, and change
+   the weight with − or + at least once), the 30-second countdown into the next block, then
+   **Finish**.
+
+**Success:** the same as run 1, with gym exercises (barbell, machine and cable moves).
+
+### Step 5: Check the rows reached Postgres
+1. Turn airplane mode off (and Wi-Fi back on). In Settings → **Sync**, wait for **Waiting to
+   upload: 0**.
+2. Today → **More** → **Sync check**: there should be no **Upload problems** card. If there is, read
+   its code in [Troubleshooting](#the-row-never-reaches-postgres).
+3. In the Supabase **SQL Editor**, run these one at a time:
+   ```sql
+   -- Focus blocks from the last day: 2 per run (the first ended by the timer, the second by Finish)
+   select started_at, ended_at, planned_minutes, interrupted, effort_rating
+   from public.interval_blocks
+   where created_at > now() - interval '1 day'
+   order by started_at;
+
+   -- Handoffs: one per workout; accepted is true once a set was logged
+   select t.created_at, t.accepted, w.kind, w.duration_minutes
+   from public.transitions t
+   left join public.workout_sessions w on w.id = t.workout_session_id
+   where t.created_at > now() - interval '1 day'
+   order by t.created_at;
+
+   -- Sets: every row has a name, and linked is true
+   select w.logged_at, w.kind, s.set_index, s.exercise_name, s.exercise_id is not null as linked,
+          s.reps, s.target_reps, s.weight_lbs, s.rpe, s.set_type
+   from public.exercise_sets s
+   join public.workout_sessions w on w.id = s.workout_session_id
+   where s.created_at > now() - interval '1 day'
+   order by w.logged_at, s.set_index;
+   ```
+   - `interrupted` is true for a block ended early or by **Finish**.
+   - `linked` false means the sets uploaded before step 1's migration. The history still works (it
+     uses the name).
+   - Weights are stored in pounds, even when the app shows kg. A timed exercise keeps its seconds in
+     `reps`.
+
+**Success:** both runs are there. **The Phase 1 gate has passed.** Tick it in
+[ROADMAP.md](ROADMAP.md#your-manual-steps-for-the-gate-in-order).
+
+### Step 6: Measure the alert delay (the Timer check)
+Android may ring a scheduled alert late when the phone has been locked and still for a while (Doze
+mode, which saves battery). This check measures by how much on your phone. The result decides
+whether DualRep needs the optional exact-alarm setting ([DECISIONS.md](DECISIONS.md) D8 and D28).
+
+1. Make sure alerts are on: Settings → **End-of-block alerts** says **On**. If it says **Not set
+   up**, tap **Turn on alerts**. If it says **Off**, tap **Open system settings** and allow
+   notifications for DualRep.
+2. Today → **More** → **Timer check**. Pick **25 min** and tap **Schedule test alert**.
+3. **Unplug the phone** (Doze only starts on battery), lock it and leave it still, for example face
+   down on a table. Don't touch it until it rings. Online or in airplane mode makes no difference.
+4. When it rings, **tap the alert** (on the lock screen, or in the notification shade after
+   unlocking). The Timer check opens with the result: "Rang on time", or "Rang … late". Tap it
+   rather than swiping it away: a swiped alert can't be measured ("Result lost": run it again).
+5. Write the result in [ROADMAP.md](ROADMAP.md#your-manual-steps-for-the-gate-in-order) (Phase 1,
+   step 8): the date, the phone, and the delay. A second run at another time of day helps.
+
+What it means: if it rings within about a minute, the current timer stays as it is. If it is
+regularly later than that, the next step is the optional exact-alarm setting
+([ANDROID.md 1.3](ANDROID.md#13-exact-alarms-optional)).
+
+**1 min** is a quick try to see the screen work; it is too short for Doze to start.
+
+### Step 7 (optional): Load the exercise dataset
+This loads free-exercise-db's 876 exercises into the database as **unreviewed** rows. Nothing changes
+in the app until someone reviews rows (phones only receive reviewed library rows), so it is not
+needed for the gate. The workflow's **Run workflow** button appears only once the Phase 1 pull request
+is merged into `main` (step 8).
+
+1. GitHub → **Actions → Exercise import SQL → Run workflow** (branch `main`). It takes a few minutes.
+2. Download the artifact **`dualrep-exercise-import-sql`** at the bottom of the run and unzip it.
+3. Open `dualrep-exercise-import.sql` in Notepad, select all (Ctrl+A) and copy.
+4. Supabase **SQL Editor** → **New query** → paste → **Run**. It prints one row. The first time,
+   `inserted` is 876.
+
+Running it again later is safe: it never undoes a curator's fixes. The file is large (about 200 KB);
+it hasn't been tried in the SQL Editor yet. If the editor struggles, get help to run it with `psql`.
+How it works and how to review rows:
+[`scripts/exercise-import/README.md`](../scripts/exercise-import/README.md).
+
+### Step 8: Put the Phase 1 code on `main`
+When you are happy with the gate, merge it the same way as Phase 0
+([section 4](#first-put-the-phase-0-code-on-main)): **Pull requests → New pull request**, base
+`main`, compare `claude/bold-fermi-oglgch`, **Create pull request**, wait for the checks, then
+**Merge pull request**.
+
+If a check fails with "Failed to resolve latest Supabase CLI release: rate limit exceeded", that is
+GitHub's download limit, not the code: open the run and click **Re-run failed jobs**.
+
+### If something goes wrong
+| What you see | What to do |
+|---|---|
+| "Couldn't put a workout together for this setup" (Just train), or a focus block went straight to "Next focus block in 0:30" with no workout | No exercise fit that setup and preset. Try another setup or preset, and tell whoever maintains the code which ones failed. |
+| "Couldn't save on this phone. Trying again…" | The app retries by itself and the warning goes away when it works. If it stays for more than a minute, take a screenshot and get help. |
+| "A change was not saved: …" | A bug in the app's write code: that one change was skipped so the loop could go on. Send a screenshot to whoever maintains the code. |
+| The phone didn't ring when the block ended | Settings → **End-of-block alerts** must say **On**. Also check that DualRep's notifications aren't silenced in Android's settings. If you turned alerts on during a block, that block's alert is set as soon as you're back in DualRep (the cycle screen or Settings). The on-screen timer is right either way. |
+| The block ended but the workout didn't appear | Open DualRep (or tap the alert). The handoff happens as soon as the cycle screen is open. |
+| The next focus block didn't start after the workout | It starts when the 30-second countdown ends, even with the screen off or another app open; DualRep shows it the moment you open it, and its alert rings at its end. If you only come back more than 5 minutes after that block would have ended, the cycle finishes instead and shows its summary. |
+| Timer check: "No alert could be scheduled" | Notifications aren't allowed yet: do step 6.1 first. |
+| `linked` is false in step 5 | The sets uploaded before the step 1 migration. Nothing to fix; apply the migration before the next run. |

@@ -47,6 +47,9 @@ export const DB_FILENAME = 'dualrep.sqlite';
 /** Local-only dead-letter table written by the connector (see schema.ts). */
 export const UPLOAD_FAILURES_TABLE = 'upload_failures';
 
+/** Local-only key-value table for on-device state such as the running study/move cycle (see schema.ts). */
+export const LOCAL_STATE_TABLE = 'local_state';
+
 /** The Phase 0 gate writes its probe rows into this table (any user-private, client-writable table works). */
 export const SYNC_CHECK_TABLE = TABLE.study_sessions;
 

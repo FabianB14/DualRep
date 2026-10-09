@@ -26,9 +26,10 @@ describe('AppSchema', () => {
     expect(() => AppSchema.validate()).not.toThrow();
   });
 
-  it('has every registry table plus the local-only upload_failures log', () => {
-    expect([...byName.keys()].sort()).toEqual([...TABLE_NAMES, 'upload_failures'].sort());
+  it('has every registry table plus the local-only upload_failures log and local_state store', () => {
+    expect([...byName.keys()].sort()).toEqual([...TABLE_NAMES, 'local_state', 'upload_failures'].sort());
     expect(byName.get('upload_failures')!.localOnly).toBe(true);
+    expect(byName.get('local_state')!.localOnly).toBe(true);
     for (const name of TABLE_NAMES) expect(byName.get(name)!.localOnly).toBe(false);
   });
 

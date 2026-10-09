@@ -1,0 +1,77 @@
+# Builds the SQL that loads free-exercise-db into public.exercises (Phase 1; docs/DECISIONS.md D9).
+# Run it by hand (Actions → Exercise import SQL → Run workflow). It downloads the pinned exercises.json,
+# fails unless its sha256 is the pinned one, builds the SQL with scripts/exercise-import/build-import-sql.mjs,
+# proves it against every migration on a throwaway Postgres 16 (verify-import-sql.sh: first import,
+# re-import after curator edits, nothing changes on a third run), and uploads it as the artifact
+# `dualrep-exercise-import-sql`. Paste that file into the Supabase SQL Editor; running it again later
+# is safe (see scripts/exercise-import/README.md).
+# Nothing here touches the Supabase project: no secrets, read-only token.
+name: Exercise import SQL
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: exercise-import-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify the import SQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # Keep both in step with PINNED_SHA256 and DATASET_URL in scripts/exercise-import/build-import-sql.mjs
+      # (build-import-sql.test.mjs fails when they differ). The URL names a commit, not `main`, so the
+      # download does not move; the sha256 is what the import is pinned by.
+      DATASET_URL: https://raw.githubusercontent.com/yuhonas/free-exercise-db/f00c92c7dcf1216a928a52c3706c7ce8e2f71ed5/dist/exercises.json
+      DATASET_SHA256: 5bb747e3fc658f095a60dcbf6d53c96627acdcc6ffb6fffde86f7e26995d40bf
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download the pinned exercises.json
+        run: |
+          mkdir -p "$RUNNER_TEMP/dataset"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "$RUNNER_TEMP/dataset/exercises.json" "$DATASET_URL"
+      - name: Verify its sha256 (fails on any mismatch)
+        working-directory: ${{ runner.temp }}/dataset
+        run: echo "$DATASET_SHA256  exercises.json" | sha256sum --check --strict
+      - name: Build the SQL
+        run: |
+          node scripts/exercise-import/build-import-sql.mjs "$RUNNER_TEMP/dataset/exercises.json" \
+            --out dualrep-exercise-import.sql
+      - name: Install Postgres 16, pgvector and pgTAP
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16 postgresql-16-pgvector postgresql-16-pgtap
+      - name: Prove the SQL against every migration (throwaway database)
+        run: bash scripts/exercise-import/verify-import-sql.sh dualrep-exercise-import.sql
+      - name: Summary
+        run: |
+          {
+            echo "### Exercise import SQL"
+            echo "- Source: \`$DATASET_URL\`"
+            echo "- sha256: \`$DATASET_SHA256\` (verified)"
+            echo "- $(grep -m1 '^-- Exercises:' dualrep-exercise-import.sql | sed 's/^-- //') · $(wc -c < dualrep-exercise-import.sql) bytes"
+            echo
+            echo "Download the \`dualrep-exercise-import-sql\` artifact and paste the file into the Supabase SQL Editor."
+            echo
+            echo "<details><summary>Distributions after mapping (map-free-exercise-db.mjs)</summary>"
+            echo
+            echo '```json'
+            node scripts/exercise-import/map-free-exercise-db.mjs "$RUNNER_TEMP/dataset/exercises.json"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dualrep-exercise-import-sql
+          path: dualrep-exercise-import.sql
+          if-no-files-found: error
+          retention-days: 14

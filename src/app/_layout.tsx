@@ -16,6 +16,8 @@ import { LoadingView } from '@/components';
 import { db } from '@/db/database';
 import { SetupNeeded } from '@/features/setup/SetupNeeded';
 import { SyncLifecycle } from '@/features/sync/SyncLifecycle';
+import { configureNotifications } from '@/features/timer/notifications';
+import { useNotificationRouting } from '@/features/timer/useNotificationRouting';
 import { readEnv } from '@/lib/env';
 import { supabase } from '@/lib/supabase';
 import { ThemeProvider, useTheme } from '@/theme';
@@ -24,6 +26,12 @@ import { ThemeProvider, useTheme } from '@/theme';
 const env = readEnv();
 
 export default function RootLayout() {
+  useEffect(() => {
+    // Once per launch (later calls do nothing): the foreground behavior and the timers channel, so an
+    // alert scheduled in an earlier session still rings on the right channel.
+    void configureNotifications();
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
@@ -93,6 +101,7 @@ function RootNavigator() {
 
   return (
     <NavigationThemeProvider value={navigationTheme}>
+      {signedIn ? <NotificationRouting /> : null}
       <Stack
         screenOptions={{
           headerShown: false,
@@ -109,4 +118,14 @@ function RootNavigator() {
       </Stack>
     </NavigationThemeProvider>
   );
+}
+
+/**
+ * Opens the screen a tapped notification points to (the cycle, the timer check). Mounted only while
+ * signed in: those screens exist only then, and a tap that launched the app is handled once the
+ * signed-in navigator is up.
+ */
+function NotificationRouting(): null {
+  useNotificationRouting();
+  return null;
 }
