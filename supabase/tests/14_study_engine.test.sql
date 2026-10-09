@@ -6,7 +6,7 @@
 -- worker only when there is work and Vault holds its URL and secret.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(84);
+select plan(103);
 
 -- Runs one write and returns how many rows it changed. RLS hides other people's rows from UPDATE
 -- (0 rows, no error), so that is how "cannot modify" is asserted.
@@ -453,6 +453,10 @@ select results_eq(
   $$values ('queued', 0, null::timestamptz)$$,
   '... queued again, without counting the attempt'
 );
+select is(
+  (select releases from public.tracy_events where id = '90000000-0000-4000-8000-000000000003'), 1,
+  '... and counts the release (the worker fails a job that keeps finding Tracy unreachable)'
+);
 select results_eq(
   $$select id, attempts from public.claim_tracy_events(5)$$,
   $$values ('90000000-0000-4000-8000-000000000003'::uuid, 1)$$,
@@ -477,6 +481,32 @@ select results_eq(
 select is(
   public.release_tracy_event('90000000-0000-4000-8000-000000000003', 3), false,
   'a job that is not running cannot be released'
+);
+reset role;
+-- At most p_max_running jobs at once (job 2 is running now, locked a moment ago).
+insert into public.tracy_events (id, user_id, job, stage, status, created_at) values
+  ('90000000-0000-4000-8000-000000000005', '11111111-1111-4111-8111-111111111111', 'study_builder', 'outline',
+   'queued', now() - interval '1 minute'),
+  ('90000000-0000-4000-8000-000000000006', '11111111-1111-4111-8111-111111111111', 'study_builder', 'cards',
+   'queued', now() - interval '30 seconds');
+set local role service_role;
+select is_empty(
+  $$select * from public.claim_tracy_events(5, 1)$$,
+  'with one job running and room for one, nothing more is claimed (Tracy on Render free runs one at a time)'
+);
+select results_eq(
+  $$select id from public.claim_tracy_events(5, 2)$$,
+  $$values ('90000000-0000-4000-8000-000000000005'::uuid)$$,
+  'room for two: one more job is claimed, however many were asked for'
+);
+reset role;
+update public.tracy_events set locked_at = now() - interval '4 minutes'
+ where id in ('90000000-0000-4000-8000-000000000002', '90000000-0000-4000-8000-000000000005');
+set local role service_role;
+select results_eq(
+  $$select id from public.claim_tracy_events(5, 1)$$,
+  $$values ('90000000-0000-4000-8000-000000000006'::uuid)$$,
+  'a run locked more than 3 minutes ago (its worker is gone) no longer takes up a place'
 );
 reset role;
 
@@ -551,6 +581,13 @@ select lives_ok(
       p_free_limit => 1, p_paid_limit => 3)$$,
   'a job cancelled before it ever ran gives its unit back'
 );
+select throws_ok(
+  $$select * from public.requeue_tracy_event(
+      (select id from public.tracy_events where user_id = '22222222-2222-4222-8222-222222222222' and stage = 'extract'
+          and status = 'cancelled'), 1, 3)$$,
+  'P0001', 'monthly limit reached for extract',
+  'retrying a job whose unit was given back (cancelled before it ran) goes through the cap again'
+);
 reset role;
 update public.entitlements set tier = 'subscription', expires_at = null
  where user_id = '22222222-2222-4222-8222-222222222222';
@@ -559,6 +596,23 @@ select lives_ok(
   $$select public.enqueue_tracy_event('22222222-2222-4222-8222-222222222222', 'study_builder', 'extract', '{}',
       p_free_limit => 1, p_paid_limit => 3)$$,
   'a subscriber gets the paid limit'
+);
+reset role;
+update public.tracy_events set input = input || '{"previous_errors": ["topics[0] is missing"]}'
+ where user_id = '22222222-2222-4222-8222-222222222222' and stage = 'extract' and status = 'cancelled';
+set local role service_role;
+select results_eq(
+  $$select status, attempts, error, locked_at, releases, cap_units, input from public.requeue_tracy_event(
+      (select id from public.tracy_events where user_id = '22222222-2222-4222-8222-222222222222' and stage = 'extract'
+          and status = 'cancelled'), 1, 3)$$,
+  $$values ('queued', 0, null::text, null::timestamptz, 0, 1, '{"cursor_page": 1}'::jsonb)$$,
+  'under the limit the same job is queued again: fresh attempts, its unit taken again, no old notes'
+);
+select is_empty(
+  $$select * from public.requeue_tracy_event(
+      (select id from public.tracy_events where user_id = '22222222-2222-4222-8222-222222222222' and stage = 'extract'
+          and input = '{"cursor_page": 1}'), 1, 3)$$,
+  'only a failed or cancelled job can be queued again'
 );
 select results_eq(
   $$select cap_units from public.enqueue_tracy_event('22222222-2222-4222-8222-222222222222', 'study_builder',
@@ -579,11 +633,118 @@ select throws_ok(
 );
 reset role;
 
+-- Approving an outline: all of it in one transaction ------------------------------------------------------
+insert into public.topics (id, plan_id, title, position, status) values
+  ('e2000000-0000-4000-8000-000000000001', 'd1000000-0000-4000-8000-000000000001', 'Draft A', 3, 'draft'),
+  ('e2000000-0000-4000-8000-000000000002', 'd1000000-0000-4000-8000-000000000001', 'Draft B', 4, 'draft'),
+  ('e2000000-0000-4000-8000-000000000003', 'd1000000-0000-4000-8000-000000000001', 'Studied', 0, 'ready');
+insert into public.cards (id, topic_id, question, answer)
+values ('f2000000-0000-4000-8000-000000000001', 'e2000000-0000-4000-8000-000000000003', 'Q?', 'A.');
+insert into public.tracy_events (id, user_id, job, stage, status, plan_id, source_id, output) values
+  ('92000000-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111', 'study_builder', 'outline', 'succeeded',
+   'd1000000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000001',
+   '{"phase": "saved", "topics": [], "approved_at": null}');
+set local role service_role;
+select throws_ok(
+  $$select public.apply_outline_approval('d1000000-0000-4000-8000-000000000001',
+      '[{"id": "e2000000-0000-4000-8000-000000000001", "title": "Cells", "position": 5}]',
+      array['e2000000-0000-4000-8000-000000000002']::uuid[],
+      '[{"id": "92000000-0000-4000-8000-000000000002", "user_id": "11111111-1111-4111-8111-111111111111", "job": "study_builder",
+         "stage": "cards", "plan_id": "d1000000-0000-4000-8000-000000000001",
+         "source_id": "a1000000-0000-4000-8000-000000000001",
+         "input": {"topic_id": "e2000000-0000-4000-8000-000000000001"}},
+        {"id": "92000000-0000-4000-8000-000000000003", "user_id": "11111111-1111-4111-8111-111111111111", "job": "study_builder",
+         "stage": "cards", "plan_id": "d1000000-0000-4000-8000-000000000001",
+         "source_id": "a1000000-0000-4000-8000-000000000001",
+         "input": {"topic_id": "e2000000-0000-4000-8000-000000000001"}},
+        {"id": "92000000-0000-4000-8000-000000000004", "user_id": "11111111-1111-4111-8111-111111111111", "job": "handwriting",
+         "stage": "cards"}]',
+      array['92000000-0000-4000-8000-000000000001']::uuid[], '2026-10-09T12:00:00.000Z', '{}')$$,
+  '23514', null,
+  'a write that fails halfway (here a bad job row) ...'
+);
+select results_eq(
+  $$select id, title, status from public.topics where id::text like 'e2000000%' order by id$$,
+  $$values ('e2000000-0000-4000-8000-000000000001'::uuid, 'Draft A', 'draft'),
+           ('e2000000-0000-4000-8000-000000000002'::uuid, 'Draft B', 'draft'),
+           ('e2000000-0000-4000-8000-000000000003'::uuid, 'Studied', 'ready')$$,
+  '... changes nothing: the drafts are still there for the phone to send the review again'
+);
+select lives_ok(
+  $$select public.apply_outline_approval('d1000000-0000-4000-8000-000000000001',
+      '[{"id": "e2000000-0000-4000-8000-000000000001", "title": "Cells", "position": 5}]',
+      array['e2000000-0000-4000-8000-000000000002', 'e2000000-0000-4000-8000-000000000003']::uuid[],
+      '[{"id": "92000000-0000-4000-8000-000000000002", "user_id": "11111111-1111-4111-8111-111111111111", "job": "study_builder",
+         "stage": "cards", "plan_id": "d1000000-0000-4000-8000-000000000001",
+         "source_id": "a1000000-0000-4000-8000-000000000001",
+         "input": {"topic_id": "e2000000-0000-4000-8000-000000000001"}},
+        {"id": "92000000-0000-4000-8000-000000000003", "user_id": "11111111-1111-4111-8111-111111111111", "job": "study_builder",
+         "stage": "cards", "plan_id": "d1000000-0000-4000-8000-000000000001",
+         "source_id": "a1000000-0000-4000-8000-000000000001",
+         "input": {"topic_id": "e2000000-0000-4000-8000-000000000001"}}]', array['92000000-0000-4000-8000-000000000001']::uuid[],
+      '2026-10-09T12:00:00.000Z', array['a1000000-0000-4000-8000-000000000001']::uuid[])$$,
+  'the review is applied in one call'
+);
+select results_eq(
+  $$select id, title, position, status from public.topics where id::text like 'e2000000%' order by id$$,
+  $$values ('e2000000-0000-4000-8000-000000000001'::uuid, 'Cells', 5, 'confirmed'),
+           ('e2000000-0000-4000-8000-000000000003'::uuid, 'Studied', 0, 'ready')$$,
+  'the kept draft is confirmed with its name and place; the cut draft is gone; a topic that is no longer a draft is never cut'
+);
+select is(
+  (select count(*) from public.cards where id = 'f2000000-0000-4000-8000-000000000001'), 1::bigint,
+  '... so its cards stay'
+);
+select results_eq(
+  $$select id, status, attempts, created_at - now() from public.tracy_events
+     where id::text like '92000000%' and stage = 'cards' order by created_at$$,
+  $$values ('92000000-0000-4000-8000-000000000002'::uuid, 'queued', 0, interval '0'),
+           ('92000000-0000-4000-8000-000000000003'::uuid, 'queued', 0, interval '1 millisecond')$$,
+  'the cards jobs are queued in order'
+);
+select results_eq(
+  $$select output ->> 'approved_at', output ->> 'phase' from public.tracy_events
+     where id = '92000000-0000-4000-8000-000000000001'$$,
+  $$values ('2026-10-09T12:00:00.000Z', 'saved')$$,
+  'the outline is marked approved and keeps the rest of its saved answer'
+);
+select is(
+  (select status from public.sources where id = 'a1000000-0000-4000-8000-000000000001'), 'ready',
+  'a source with nothing kept is ready'
+);
+select lives_ok(
+  $$select public.apply_outline_approval('d1000000-0000-4000-8000-000000000001',
+      '[{"id": "e2000000-0000-4000-8000-000000000001", "title": "Cells", "position": 5}]', '{}',
+      '[{"id": "92000000-0000-4000-8000-000000000002", "user_id": "11111111-1111-4111-8111-111111111111", "job": "study_builder",
+         "stage": "cards", "plan_id": "d1000000-0000-4000-8000-000000000001",
+         "source_id": "a1000000-0000-4000-8000-000000000001",
+         "input": {"topic_id": "e2000000-0000-4000-8000-000000000001"}},
+        {"id": "92000000-0000-4000-8000-000000000003", "user_id": "11111111-1111-4111-8111-111111111111", "job": "study_builder",
+         "stage": "cards", "plan_id": "d1000000-0000-4000-8000-000000000001",
+         "source_id": "a1000000-0000-4000-8000-000000000001",
+         "input": {"topic_id": "e2000000-0000-4000-8000-000000000001"}}]', array['92000000-0000-4000-8000-000000000001']::uuid[],
+      '2026-10-09T12:00:00.000Z', '{}')$$,
+  'sending the same review again ...'
+);
+select is(
+  (select count(*) from public.tracy_events where id::text like '92000000%' and stage = 'cards'), 2::bigint,
+  '... queues nothing twice'
+);
+reset role;
+
 -- Privileges ---------------------------------------------------------------------------------------------
 select ok(
-  not has_function_privilege('authenticated', 'public.claim_tracy_events(integer)', 'EXECUTE')
-  and not has_function_privilege('authenticated', 'public.release_tracy_event(uuid, integer)', 'EXECUTE'),
-  'the phone cannot claim or release jobs'
+  not has_function_privilege('authenticated', 'public.claim_tracy_events(integer, integer)', 'EXECUTE')
+  and not has_function_privilege('authenticated', 'public.release_tracy_event(uuid, integer)', 'EXECUTE')
+  and not has_function_privilege('authenticated', 'public.requeue_tracy_event(uuid, integer, integer)', 'EXECUTE'),
+  'the phone cannot claim, release or requeue jobs'
+);
+select ok(
+  not has_function_privilege('authenticated',
+    'public.apply_outline_approval(uuid, jsonb, uuid[], jsonb, uuid[], text, uuid[])', 'EXECUTE')
+  and not has_function_privilege('anon',
+    'public.apply_outline_approval(uuid, jsonb, uuid[], jsonb, uuid[], text, uuid[])', 'EXECUTE'),
+  'the phone cannot apply an outline review directly (only the study function can, after checking ownership)'
 );
 select ok(
   not has_function_privilege('authenticated',
@@ -599,6 +760,11 @@ select ok(
   and not has_function_privilege('authenticated', 'private.kick_tracy_worker(text)', 'EXECUTE')
   and not has_function_privilege('anon', 'private.kick_tracy_worker(text)', 'EXECUTE'),
   'only the database (cron) runs the kick'
+);
+select ok(
+  not has_function_privilege('service_role', 'private.check_tracy_cap(uuid, text, integer, integer, integer)', 'EXECUTE')
+  and not has_function_privilege('authenticated', 'private.check_tracy_cap(uuid, text, integer, integer, integer)', 'EXECUTE'),
+  'the cap check runs only inside the queue functions'
 );
 select ok(
   not has_schema_privilege('anon', 'private', 'USAGE')

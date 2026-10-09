@@ -62,9 +62,10 @@
  *   topics: in the order wanted. Every draft topic of the outline(s) that is not listed is cut, like
  *   keep: false. source_id null = every outline of the plan waiting for review (the normal call: the
  *   phone cannot tell which source a draft came from). Kept topics are renamed, numbered after the
- *   plan's other topics and become 'confirmed'; cut ones are deleted. Cards are then made for each
- *   kept topic (and for existing topics the outline added material to): the topic turns 'ready' when
- *   its cards are in, the source turns 'ready' when all its cards jobs are done.
+ *   plan's other topics and become 'confirmed'; cut ones are deleted (only ever drafts). All of it
+ *   in one transaction: a request that fails changes nothing and can be sent again. Cards are then
+ *   made for each kept topic (and for existing topics the outline added material to): the topic
+ *   turns 'ready' when its cards are in, the source turns 'ready' when all its cards jobs are done.
  *   -> 202 { "ok": true, "plan_id": "…", "source_ids": ["…"], "kept": 6, "cut": 2,
  *            "job_ids": ["…"], "already_approved": false }
  *   Again after success -> 200 with "already_approved": true. No outline waiting -> 409 not_ready.
@@ -72,8 +73,9 @@
  *   An outline that only adds to existing topics (cumulative plans) never waits here: it proposes no
  *   draft, so the worker approves it itself and its cards are made straight away.
  *
- * retry_job: try a failed (or cancelled) step again: the same job goes back to the queue (it is not
- *   counted against the monthly limit again).
+ * retry_job: try a failed (or cancelled) step again: the same job goes back to the queue. It is not
+ *   counted against the monthly limit again, unless it was cancelled before it ever ran (its units
+ *   were given back then): such a job takes them again, and over the limit -> 429 cap_reached.
  *   { "action": "retry_job", "job_id": "<tracy_events.id>" }
  *   -> 202 { "ok": true, "job_id": "…", "status": "queued" }
  *   Not failed/cancelled, or the source has moved past this step -> 409 not_ready.

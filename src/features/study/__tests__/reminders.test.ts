@@ -4,6 +4,8 @@ import { Platform } from 'react-native';
 import {
   cancelReviewReminder,
   ensureReviewsChannel,
+  FOLLOW_UP_DAYS,
+  REVIEW_REMINDER_IDS,
   nextLocalTime,
   reminderContent,
   rescheduleReviewReminder,
@@ -106,6 +108,22 @@ describe('rescheduleReviewReminder', () => {
     );
   });
 
+  it('an ignored one-time reminder is followed by one on each of the next days, until the app reschedules', async () => {
+    // Monday: everything cleared, the next card is due Wednesday. The user dismisses Wednesday's
+    // reminder without opening the app: Thursday, Friday, … still remind, with the growing count.
+    const firstDue = at(14, 9);
+    repo.firstDueAfter.mockResolvedValue(firstDue);
+    repo.countDueCards.mockImplementation(async (_user: string, until: number) => (until < firstDue ? 0 : until < endOfDay(15) ? 2 : 5));
+    await expect(rescheduleReviewReminder(USER, SIX_PM, { now: at(12, 17) })).resolves.toEqual({ status: 'once', at: at(14, 18), count: 2 });
+    const scheduled = N.scheduleNotificationAsync.mock.calls.map(([request]) => request as { identifier: string; content: { body: string }; trigger: { type: string; date: number } });
+    expect(scheduled).toHaveLength(1 + FOLLOW_UP_DAYS);
+    expect(scheduled.map((r) => r.trigger.type)).toEqual(Array(1 + FOLLOW_UP_DAYS).fill('date'));
+    expect(scheduled.map((r) => r.trigger.date)).toEqual(Array.from({ length: 1 + FOLLOW_UP_DAYS }, (_, d) => at(14 + d, 18)));
+    expect(scheduled.map((r) => r.identifier)).toEqual([...REVIEW_REMINDER_IDS]);
+    expect(scheduled[0].content.body).toMatch(/^2 cards/);
+    expect(scheduled[1].content.body).toMatch(/^5 cards/);
+  });
+
   it('a card due exactly at the reminder time is in that reminder', async () => {
     repo.firstDueAfter.mockResolvedValue(at(12, 18));
     repo.countDueCards.mockImplementation(async (_user: string, until: number) => (until >= at(12, 18) ? 1 : 0));
@@ -121,7 +139,7 @@ describe('rescheduleReviewReminder', () => {
     repo.countDueCards.mockImplementation(async (_user: string, until: number) => (until >= at(13, 9, 2) ? 3 : 0));
     repo.firstDueAfter.mockResolvedValue(at(13, 9, 2));
     await expect(rescheduleReviewReminder(USER, NINE, { now: at(9, 9, 30) })).resolves.toEqual({ status: 'once', at: at(13, 9), count: 3 });
-    expect(N.scheduleNotificationAsync).toHaveBeenLastCalledWith(expect.objectContaining({ trigger: { type: 'date', date: at(13, 9), channelId: REVIEWS_CHANNEL_ID } }));
+    expect(N.scheduleNotificationAsync).toHaveBeenCalledWith(expect.objectContaining({ identifier: 'reviews-due', trigger: { type: 'date', date: at(13, 9), channelId: REVIEWS_CHANNEL_ID } }));
   });
 
   it('nothing ever due: no reminder at all', async () => {
@@ -136,7 +154,9 @@ describe('rescheduleReviewReminder', () => {
     await expect(rescheduleReviewReminder(null, SIX_PM)).resolves.toEqual({ status: 'off' });
     permission.mockResolvedValue('denied');
     await expect(rescheduleReviewReminder(USER, SIX_PM)).resolves.toEqual({ status: 'no_permission' });
-    expect(N.cancelScheduledNotificationAsync).toHaveBeenCalledTimes(4);
+    // Each time, every reminder id is withdrawn (the reminder and its follow-ups).
+    expect(N.cancelScheduledNotificationAsync).toHaveBeenCalledTimes(4 * REVIEW_REMINDER_IDS.length);
+    for (const id of REVIEW_REMINDER_IDS) expect(N.cancelScheduledNotificationAsync).toHaveBeenCalledWith(id);
     expect(N.scheduleNotificationAsync).not.toHaveBeenCalled();
   });
 

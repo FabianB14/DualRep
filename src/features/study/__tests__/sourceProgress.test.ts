@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import {
+  ALL_SKIPPED_MESSAGE,
   describeStep,
   GENERIC_ERROR,
   planNextStep,
@@ -95,6 +96,40 @@ describe('sourceStep', () => {
     expect(sourceStep(notes, files, skipped, 0)).toEqual({ step: 'check_transcripts', unconfirmed: 2 });
     const stillReading = [job('transcribe', 'succeeded'), { ...bad, status: 'cancelled' }, job('transcribe', 'running')];
     expect(sourceStep(notes, files, stillReading, 0)).toEqual({ step: 'reading', done: 2, total: 3 });
+  });
+
+  it('a failed cards job stands until it is retried, whatever another topic’s cards job did', () => {
+    // Cards jobs are one (or more) per topic: topic 2's failure must not hide behind topic 3's success,
+    // whichever was queued first, even once the source is ready.
+    const ready = { ...pdf, status: 'ready' };
+    const base = [job('extract', 'succeeded'), job('outline', 'succeeded')];
+    const failedFirst = job('cards', 'failed', { error: 'Tracy declined to work on this material.' });
+    const laterOk = job('cards', 'succeeded');
+    const expected = { step: 'failed', message: 'Tracy declined to work on this material.', jobId: failedFirst.id, canSkip: false };
+    expect(sourceStep(ready, [], [...base, failedFirst, laterOk], 0)).toEqual(expected);
+    expect(sourceStep(pdf, [], [...base, failedFirst, laterOk, job('cards', 'running')], 0)).toEqual(expected);
+    expect(planNextStep([{ sourceId: 's1', step: sourceStep(ready, [], [...base, failedFirst, laterOk], 0) }], 5)).toMatchObject({ kind: 'retry', jobId: failedFirst.id });
+    // Retried: the same row is queued again and the cards are being made.
+    expect(sourceStep(pdf, [], [...base, { ...failedFirst, status: 'queued' }, laterOk], 0)).toEqual({ step: 'making_cards', done: 1, total: 2 });
+  });
+
+  it('notes whose every page was skipped are not "being read" for ever: Try again on the last page', () => {
+    const one = job('transcribe', 'failed', { error: 'Tracy didn’t answer in time. Try again.' });
+    // The only page: it can be tried again, not skipped (that would leave nothing).
+    expect(sourceStep(notes, [file('f1', null)], [one], 0)).toEqual({ step: 'failed', message: 'Tracy didn’t answer in time. Try again.', jobId: one.id, canSkip: false });
+    // Skipped anyway (e.g. on another phone): a failure with Try again, never "Reading your material".
+    const skipped = { ...one, status: 'cancelled' };
+    const step = sourceStep(notes, [file('f1', null)], [skipped], 0);
+    expect(step).toEqual({ step: 'failed', message: ALL_SKIPPED_MESSAGE, jobId: one.id, canSkip: false });
+    expect(planNextStep([{ sourceId: 's2', step }], 0)).toMatchObject({ kind: 'retry', jobId: one.id });
+    // Two pages, both failed: the first can be skipped, the second (the last one left) cannot.
+    const a = job('transcribe', 'failed');
+    const b = job('transcribe', 'failed');
+    expect(sourceStep(notes, [file('f1', null), file('f2', null)], [a, b], 0)).toMatchObject({ jobId: b.id, canSkip: true });
+    expect(sourceStep(notes, [file('f1', null), file('f2', null)], [{ ...a, status: 'cancelled' }, b], 0)).toMatchObject({ jobId: b.id, canSkip: false });
+    // A scanned PDF's pages can always be skipped: its text stays.
+    const scan = job('transcribe', 'failed');
+    expect(sourceStep(pdf, [], [job('extract', 'succeeded'), scan], 0)).toMatchObject({ jobId: scan.id, canSkip: true });
   });
 
   it('keeps the pipeline’s note on a finished step', () => {

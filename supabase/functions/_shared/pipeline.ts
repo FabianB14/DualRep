@@ -31,6 +31,12 @@ export const STAGE_INFO: Record<Stage, { job: PipelineJob; needsTracy: boolean }
 
 /** Tries per step (the claim counts them; claim_tracy_events fails a stale job after the third). */
 export const MAX_ATTEMPTS = 3;
+/**
+ * Times in a row a job may find Tracy unreachable (/health failing) before it fails. Each release
+ * waits for the next cron minute, so this is about a quarter of an hour: far longer than a Render
+ * cold start (about a minute), so only a Tracy that is down (suspended, a wrong TRACY_URL) gets here.
+ */
+export const MAX_RELEASES = 15;
 /** dualrep_transcribe_pdf_pages takes at most 4 pages per call. */
 export const PDF_PAGES_PER_JOB = 4;
 /** dualrep_build_cards takes at most 40 chunks (each ≤ 1,600 chars here, so ≤ 64,000 < 100,000). */
@@ -56,6 +62,8 @@ export interface JobRow {
   error: string | null;
   attempts: number;
   locked_at: string | null;
+  /** Times in a row the job was put back because Tracy could not be reached (server-only). */
+  releases?: number;
   plan_id: string | null;
   source_id: string | null;
   created_at: string;
@@ -388,7 +396,7 @@ export interface ApprovalPlan {
   errors: string[];
   /** Kept draft topics: their final title and position; they become 'confirmed'. */
   keep: { id: string; title: string; position: number }[];
-  /** Cut draft topics (deleted). */
+  /** Cut draft topics (deleted; never a topic that is no longer a draft). */
   cut: string[];
   /** One entry per topic that needs cards, before batching (see cardsJobs). */
   cards: { source_id: string; topic_id: string; chunk_ids: string[]; summary: string }[];
@@ -438,7 +446,9 @@ export function planApproval(
       cards.push({ source_id: o.job.source_id!, topic_id: d.id, chunk_ids: t.chunk_ids, summary: t.summary });
     }
   }
-  const cut = [...drafts.keys()].filter((id) => live.has(id) && !kept.has(id));
+  // Only topics that are still drafts: one confirmed or ready by now has cards (and maybe weeks of
+  // reviews), which deleting it would take with it. apply_outline_approval checks this again.
+  const cut = [...drafts.keys()].filter((id) => live.get(id)?.status === 'draft' && !kept.has(id));
   for (const o of outlines) {
     for (const t of o.saved.topics) {
       if (t.existing_topic_id && live.has(t.existing_topic_id) && t.chunk_ids.length) {

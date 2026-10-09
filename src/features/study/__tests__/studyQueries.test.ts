@@ -280,9 +280,10 @@ describe('the queue queries', () => {
     const rows = await newRows(null);
     expect(rows.map((r) => r.card_id)).toEqual([card(7), card(5)]);
     expect(newCandidateFromRow(rows[0])).toMatchObject({ cardId: card(7), stateRow: null, sourceTitle: 'Notes week 2' });
-    expect((await newRows(S1)).map((r) => r.card_id)).toEqual([]);
+    // A hand-made card (5, no source) is in every source's queue, after the source's own cards.
+    expect((await newRows(S1)).map((r) => r.card_id)).toEqual([card(5)]);
     await setCardSuspended(U, card(6), false, NOW);
-    expect((await newRows(S2)).map((r) => r.card_id)).toEqual([card(6), card(7)]);
+    expect((await newRows(S2)).map((r) => r.card_id)).toEqual([card(6), card(7), card(5)]);
     expect(newCandidateFromRow((await newRows(S2))[0]).stateRow).toMatchObject({ state: 0 });
   });
 
@@ -316,6 +317,21 @@ describe('the queue queries', () => {
       newToday: 1, settings: { newPerBlock: 5, dailyNewCap: 20 }, interleaveBy: 'source', prioritizeNew: false,
     });
     expect(next).toMatchObject({ type: 'card', card: { cardId: card(1), reason: 'review' } });
+  });
+
+  it('a single-source plan asks its hand-made cards, and counts only what its blocks ask', async () => {
+    // A plan that was cumulative (Lecture 1, then Notes week 2), switched to single: blocks study the
+    // newest source with cards (resolveScope) plus hand-made cards, so only those are due or new.
+    await db.execute(`UPDATE study_plans SET scope = 'single' WHERE id = ?`, [P]);
+    const plan = planFromRow((await db.getAll<PlanRow>(PLAN_SQL, [U, NOW_ISO, U, P]))[0], U);
+    expect([plan.dueCount, plan.newCount]).toEqual([0, 2]); // card 1 (Lecture 1) is due but no block asks it; new: 7 and 5
+    expect((await db.get<{ n: number }>(DUE_COUNT_SQL, [U, iso(NOW + 10 * MIN)])).n).toBe(0);
+    expect((await db.get<{ due: string | null }>(FIRST_DUE_AFTER_SQL, [U, NOW_ISO])).due).toBe(iso(NOW + 2 * 24 * 60 * MIN)); // card 4 (Notes)
+    // The hand-made card, once answered, is due and asked like the rest.
+    state(card(5), U, { due: iso(NOW - MIN) });
+    expect((await dueRows(S2)).map((r) => r.card_id)).toEqual([card(5)]);
+    expect((await db.get<{ n: number }>(DUE_COUNT_SQL, [U, NOW_ISO])).n).toBe(1);
+    expect(planFromRow((await db.getAll<PlanRow>(PLAN_SQL, [U, NOW_ISO, U, P]))[0], U).dueCount).toBe(1);
   });
 
   it('sums a study session’s answers', async () => {

@@ -2,9 +2,11 @@
  * One step of one job per invocation (spec "Job pipeline"). index.ts wires the real clients; tests
  * pass fakes. No Deno APIs here.
  *
- *   claim the oldest queued job (claim_tracy_events: running, attempt counted, locked now)
+ *   claim the oldest queued job (claim_tracy_events: running, attempt counted, locked now), unless
+ *   `maxRunning` jobs are running already (Tracy on Render's free plan handles one heavy job at a time)
  *   └─ needs Tracy? GET /health (5 s). Asleep -> release_tracy_event (attempt not counted), stop:
- *      the health call wakes Render's free service and the next cron minute goes ahead.
+ *      the health call wakes Render's free service and the next cron minute goes ahead. After
+ *      MAX_RELEASES in a row Tracy is down rather than asleep, and the job fails with a message.
  *   └─ run the stage's step: read what it needs, make ONE call (Tracy ≤ 110 s, or Gemini), write rows
  *   └─ apply the outcome, fenced: only while the job is still `running` with this run's attempts and
  *      lock time, so a run presumed dead can never overwrite a job that was retried meanwhile
@@ -13,7 +15,7 @@
  *        retry     -> back to the queue (validator findings go to Tracy next time), until attempt 3
  *        fail      -> failed with a short, content-free error the phone shows next to "Try again"
  *        cancel    -> cancelled (the source, file or topic is gone)
- *        release   -> put back uncounted (Tracy asleep or behind an error page)
+ *        release   -> put back uncounted (Tracy asleep, or busy and did no work)
  *   └─ more work queued and progress made? kick this function again (hop + 1, at most MAX_HOPS in a
  *      row); otherwise pg_cron's next minute picks the work up.
  *
@@ -23,7 +25,7 @@
  */
 import { chunkHeading, chunkPageText, transcribedPageText, type TranscribedPage } from '../_shared/chunker.ts';
 import type { Caps } from '../_shared/config.ts';
-import { buildDigest, expandIds, readingOrder } from '../_shared/digest.ts';
+import { buildDigest, expandIds, outlineEntries, readingOrder, shrunkEntries } from '../_shared/digest.ts';
 import {
   type CallFailure,
   classifyGeminiFailure,
@@ -54,6 +56,7 @@ import {
   type JobRow,
   linkedExistingIds,
   MAX_ATTEMPTS,
+  MAX_RELEASES,
   maxCardsFor,
   maxTopicsFor,
   type OutlineInput,
@@ -90,6 +93,8 @@ export interface WorkerDeps {
   embed?: (texts: string[]) => Promise<CallResult<number[][]>>;
   /** Wakes this function again. */
   kick?: (hop: number) => Promise<unknown>;
+  /** How many jobs may run at once (DUALREP_WORKER_CONCURRENCY); null or unset = no limit. */
+  maxRunning?: number | null;
   /** One metadata line per step (never content). */
   log?: (entry: Record<string, unknown>) => void;
   now?: () => Date;
@@ -102,7 +107,7 @@ export interface WorkerDeps {
 export type Outcome =
   | { kind: 'done'; output: unknown; model?: string | null; usage?: unknown; note?: string | null; input?: Record<string, unknown> }
   | { kind: 'continue'; input: Record<string, unknown>; output?: unknown }
-  | { kind: 'retry'; message: string; previousErrors?: string[]; code?: string }
+  | { kind: 'retry'; message: string; previousErrors?: string[]; code?: string; input?: Record<string, unknown> }
   | { kind: 'fail'; message: string; code?: string }
   | { kind: 'cancel'; message: string | null }
   | { kind: 'release'; reason: string }
@@ -305,7 +310,10 @@ async function stepOutline({ deps, job, fence }: StepCtx): Promise<Outcome> {
       return { kind: 'fail', message: capped ? MESSAGES.pageCapUsed : MESSAGES.noText };
     }
     const ordinals = await chunkOrdinals(source.id, chunks);
-    const digest = buildDigest(readingOrder(chunks, (c) => ordinals.get(c.id) ?? Number.MAX_SAFE_INTEGER));
+    const digest = buildDigest(
+      readingOrder(chunks, (c) => ordinals.get(c.id) ?? Number.MAX_SAFE_INTEGER),
+      outlineEntries(job.input),
+    );
     const existing = plan.scope === 'cumulative'
       ? topics.filter((t) => t.status !== 'draft').slice(0, 200)
         .map((t) => ({ id: t.id, title: t.title.slice(0, 200), position: t.position }))
@@ -314,10 +322,17 @@ async function stepOutline({ deps, job, fence }: StepCtx): Promise<Outcome> {
       plan: { title: plan.title.slice(0, 200), scope: plan.scope, goal: plan.goal.slice(0, 1000), target_date: plan.target_date },
       existing_topics: existing,
       chunks: digest.entries,
-      max_topics: maxTopicsFor(chunks.length),
+      max_topics: Math.min(maxTopicsFor(chunks.length), digest.entries.length),
       previous_errors: previousErrors(job.input),
     }, job.id);
-    if (!res.ok) return fromTracy(res.failure, 'outline', source.kind);
+    if (!res.ok) {
+      const outcome = fromTracy(res.failure, 'outline', source.kind);
+      // The answer lists every entry once, so asking again with the same input fails the same way:
+      // after an answer cut off at its length limit, or one too slow to arrive, the next attempt
+      // sends half as many entries (neighbouring chunks grouped).
+      const smaller = answerTooLong(res.failure) ? shrunkEntries(digest.entries.length) : null;
+      return outcome.kind === 'retry' && smaller !== null ? { ...outcome, input: { max_entries: smaller } } : outcome;
+    }
     saved = await saveOutline(job.id, res.data.output, (ids) => expandIds(ids, digest.members));
     model = res.data.model;
     usage = res.data.usage;
@@ -347,6 +362,13 @@ async function stepOutline({ deps, job, fence }: StepCtx): Promise<Outcome> {
   }
   return { kind: 'done', output: saved, ...(model ? { model, usage } : {}) };
 }
+
+/**
+ * A failure that a shorter outline answer can avoid: cut off at max_tokens, or out of time (the
+ * worker's own wait, or Tracy's 105 s budget, which comes back as model_error).
+ */
+const answerTooLong = (f: CallFailure) =>
+  f.kind === 'timeout' || (f.kind === 'http' && (f.code === 'truncated' || f.code === 'model_error'));
 
 /** Whether the claimed job is still this run's (not cancelled, retried or reaped meanwhile). */
 async function stillOurs(deps: WorkerDeps, fence: Fence): Promise<boolean> {
@@ -459,12 +481,15 @@ async function apply(deps: WorkerDeps, job: JobRow, stage: Stage | null, fence: 
         input: withoutRetryNotes(outcome.input),
         // A new step: its own three attempts (the lock time still fences out an old run).
         attempts: 0,
+        releases: 0,
         error: null,
         ...(outcome.output !== undefined ? { output: outcome.output } : {}),
       });
     case 'retry': {
-      const input = outcome.previousErrors?.length ? { ...job.input, previous_errors: outcome.previousErrors } : job.input;
-      return await finish({ status: 'queued', input });
+      let input = outcome.input ? { ...job.input, ...outcome.input } : job.input;
+      if (outcome.previousErrors?.length) input = { ...input, previous_errors: outcome.previousErrors };
+      // Tracy was reached, so the count of releases in a row starts again.
+      return await finish({ status: 'queued', input, releases: 0 });
     }
     case 'done': {
       // Only while the job is still this run's (a cancel meanwhile must not start the next step).
@@ -492,7 +517,7 @@ async function apply(deps: WorkerDeps, job: JobRow, stage: Stage | null, fence: 
 /** Claims one job and runs one step of it. */
 export async function runOneStep(deps: WorkerDeps, hop = 0): Promise<StepResult> {
   const log = deps.log ?? (() => {});
-  const job = await deps.store.claimJob();
+  const job = await deps.store.claimJob(deps.maxRunning ?? null);
   if (!job) return { kind: 'idle' };
   const started = Date.now();
   const fence: Fence = { id: job.id, attempts: job.attempts, locked_at: job.locked_at };
@@ -519,6 +544,10 @@ export async function runOneStep(deps: WorkerDeps, hop = 0): Promise<StepResult>
   // The third attempt is the last: a retry then becomes a failure.
   if (outcome.kind === 'retry' && job.attempts >= MAX_ATTEMPTS) {
     outcome = { kind: 'fail', message: outcome.message, code: outcome.code };
+  }
+  // Put back again and again: Tracy is down, not asleep. Say so instead of "Reading…" for ever.
+  if (outcome.kind === 'release' && (job.releases ?? 0) + 1 >= MAX_RELEASES) {
+    outcome = { kind: 'fail', message: MESSAGES.tracyUnreachable, code: outcome.reason };
   }
   const applied = await apply(deps, job, stage, fence, outcome);
   // Kick again only after progress: after a release or a retry the next cron minute is the back-off.

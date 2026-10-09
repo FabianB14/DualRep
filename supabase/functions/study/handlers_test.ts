@@ -272,6 +272,39 @@ Deno.test('approve_outline sets aside drafts of an outline whose job did not fin
   ]);
 });
 
+Deno.test('approve_outline is all or nothing: a request cut short leaves the drafts to send again', async () => {
+  const s = scenario();
+  const drafts = await twoOutlines(s);
+  const review = { action: 'approve_outline', plan_id: PLAN, source_id: null, topics: drafts.map((t) => ({ id: t.id, keep: true })) };
+  s.store.failNext.applyApproval = true; // e.g. a statement timeout halfway through the writes
+  await assertRejects(() => s.call(review));
+  // Nothing changed: the review screen (draft topics only) still has every draft, nothing is queued.
+  assertEquals([...s.store.topics.values()].map((t) => t.status), ['draft', 'draft', 'draft', 'draft']);
+  assertEquals([...s.store.jobs.values()].filter((j) => j.stage === 'cards'), []);
+  assertEquals((s.store.jobs.get(await outlineJobId(SOURCE))!.output as { approved_at: string | null }).approved_at, null);
+  // The person taps Save again, and it all goes through.
+  const r = await s.call(review);
+  assertEquals([r.status, (r.body as { kept: number }).kept], [202, 4]);
+  assertEquals([...s.store.topics.values()].map((t) => t.status), ['confirmed', 'confirmed', 'confirmed', 'confirmed']);
+  assertEquals([...s.store.jobs.values()].filter((j) => j.stage === 'cards').length, 4);
+});
+
+Deno.test('approve_outline never deletes a topic that is no longer a draft', async () => {
+  // Weeks later, new material: the phone sends only the new drafts. A topic of an older outline that
+  // is not approved on the server (approved before this release, or confirmed by the phone) must not
+  // be taken for a cut draft, or its cards and reviews would go with it.
+  const s = scenario();
+  const drafts = await twoOutlines(s);
+  const [a1, b1, a2, b2] = drafts.map((t) => t.id);
+  s.store.topics.get(a1)!.status = 'ready';
+  s.store.cards.set('card-a1', { id: 'card-a1', topic_id: a1, plan_id: PLAN, source_chunk_id: [...s.store.chunks.keys()][0], page: 1, question: 'Q?', answer: 'A', card_type: 'basic' });
+  s.store.topics.get(b1)!.status = 'confirmed';
+  const r = await s.call({ action: 'approve_outline', plan_id: PLAN, source_id: null, topics: [{ id: a2, keep: true }, { id: b2, keep: false }] });
+  assertEquals((r.body as { kept: number; cut: number }).cut, 1);
+  assertEquals([...s.store.topics.values()].map((t) => [t.id, t.status]).sort(), [[a1, 'ready'], [a2, 'confirmed'], [b1, 'confirmed']].sort());
+  assert(s.store.cards.has('card-a1'));
+});
+
 // ---- retry_job / cancel_job ---------------------------------------------------------------------
 
 Deno.test('retry_job puts the same job back with fresh attempts; the source is processing again', async () => {
@@ -290,6 +323,25 @@ Deno.test('retry_job puts the same job back with fresh attempts; the source is p
   assertEquals(s.store.sources.get(SOURCE)?.status, 'processing');
   assertEquals(s.store.jobs.size, 1);
   await rejects(s.call({ action: 'retry_job', job_id: job.id }), 'not_ready');
+});
+
+Deno.test('retry_job: a step cancelled before it ran gave its units back, so retrying it is capped again', async () => {
+  // Free plan, 20 pages: queue 20 photos, cancel them while queued (units given back), queue 20
+  // more, then retry the first 20. That must not reach 40 transcriptions.
+  const s = scenario();
+  const many = (src: string) => Array.from({ length: 20 }, (_, i) => ({ path: `${USER}/${src}/${i + 1}.jpg` }));
+  for (const f of [...many(SOURCE), ...many(SOURCE2)]) s.store.upload(f.path, 'image/jpeg');
+  await s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE, kind: 'notes', title: 'A', files: many(SOURCE) });
+  for (const j of s.store.jobsOf(SOURCE, 'transcribe')) await s.call({ action: 'cancel_job', job_id: j.id });
+  assertEquals((await s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE2, kind: 'notes', title: 'B', files: many(SOURCE2) })).status, 202);
+  const first = s.store.jobsOf(SOURCE, 'transcribe')[0];
+  const err = await rejects(s.call({ action: 'retry_job', job_id: first.id }), 'cap_reached', 429);
+  assertEquals((err.body() as unknown as { used: number; limit: number }).used, 20);
+  assertEquals(s.store.jobs.get(first.id)?.status, 'cancelled');
+  // A step that had started (or failed) is counted already: trying it again needs no room.
+  const second = s.store.jobsOf(SOURCE2, 'transcribe')[0];
+  Object.assign(s.store.jobs.get(second.id)!, { status: 'failed', attempts: 3, error: 'x' });
+  assertEquals((await s.call({ action: 'retry_job', job_id: second.id })).status, 202);
 });
 
 Deno.test('cancel_job: skipping the last scanned page starts the outline; cancelling extraction stops the source', async () => {

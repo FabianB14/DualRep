@@ -12,6 +12,7 @@ import type { Config } from './config.ts';
 import { parseCapReached } from './errors.ts';
 import type { JobRow, JobStatus, NewJob, Stage, TopicRow } from './pipeline.ts';
 import type {
+  Approval,
   CardLinkRow,
   CardRow,
   ChunkRow,
@@ -104,8 +105,8 @@ class SupabaseStore implements Store {
 
   // ---- the job queue ----
 
-  async claimJob(): Promise<JobRow | null> {
-    const { data, error } = await this.db.rpc('claim_tracy_events', { p_limit: 1 });
+  async claimJob(maxRunning: number | null): Promise<JobRow | null> {
+    const { data, error } = await this.db.rpc('claim_tracy_events', { p_limit: 1, p_max_running: maxRunning });
     this.check('claim_tracy_events', error);
     const rows = (data ?? []) as JobRow[];
     return rows[0] ?? null;
@@ -178,6 +179,33 @@ class SupabaseStore implements Store {
       throw new DbError('enqueue_tracy_event', error);
     }
     return { ok: true as const, job: data as JobRow };
+  }
+
+  async requeueJob(id: string, limits: { free_limit: number | null; paid_limit: number | null }) {
+    const { data, error } = await this.db.rpc('requeue_tracy_event', {
+      p_id: id,
+      p_free_limit: limits.free_limit,
+      p_paid_limit: limits.paid_limit,
+    });
+    if (error) {
+      const cap = parseCapReached(error, 'extract');
+      if (cap) return { ok: false as const, cap };
+      throw new DbError('requeue_tracy_event', error);
+    }
+    return { ok: true as const, job: ((data ?? []) as JobRow[])[0] ?? null };
+  }
+
+  async applyApproval(a: Approval): Promise<void> {
+    const { error } = await this.db.rpc('apply_outline_approval', {
+      p_plan_id: a.plan_id,
+      p_keep: a.keep,
+      p_cut: a.cut,
+      p_jobs: a.jobs,
+      p_outline_ids: a.outline_ids,
+      p_approved_at: a.approved_at,
+      p_ready_source_ids: a.ready_source_ids,
+    });
+    this.check('apply_outline_approval', error);
   }
 
   async hasQueuedJobs(): Promise<boolean> {
@@ -355,21 +383,9 @@ class SupabaseStore implements Store {
     this.check('insert topics', error);
   }
 
-  async updateTopic(id: string, patch: Partial<Pick<TopicRow, 'title' | 'position' | 'status'>>): Promise<void> {
-    const { error } = await this.db.from('topics').update(patch).eq('id', id);
-    this.check('update topic', error);
-  }
-
   async setTopicStatusIf(id: string, from: TopicRow['status'], to: TopicRow['status']): Promise<void> {
     const { error } = await this.db.from('topics').update({ status: to }).eq('id', id).eq('status', from);
     this.check('update topic status', error);
-  }
-
-  async deleteTopics(ids: string[]): Promise<void> {
-    for (let i = 0; i < ids.length; i += 100) {
-      const { error } = await this.db.from('topics').delete().in('id', ids.slice(i, i + 100));
-      this.check('delete topics', error);
-    }
   }
 
   async planCards(planId: string, topicId: string, limit: number) {

@@ -209,6 +209,25 @@ function buttons(renderer: ReactTestRenderer, label: string): ReactTestInstance[
 
 const has = (renderer: ReactTestRenderer, label: string) => buttons(renderer, label).length > 0;
 
+/** The rating buttons grouped by the row (flexDirection: row) each one sits in, top to bottom. */
+function ratingRows(renderer: ReactTestRenderer, labels: string[]): string[][] {
+  const rowOf = (node: ReactTestInstance): ReactTestInstance | null => {
+    for (let p = node.parent; p; p = p.parent) {
+      const style = [p.props.style].flat(Infinity).reduce((all: object, s: unknown) => ({ ...all, ...(s as object) }), {}) as { flexDirection?: string };
+      if (typeof p.type === 'string' && style.flexDirection === 'row') return p;
+    }
+    return null;
+  };
+  const rows: { row: ReactTestInstance | null; labels: string[] }[] = [];
+  for (const label of labels) {
+    const row = rowOf(buttons(renderer, label)[0]);
+    const entry = rows.find((r) => r.row === row);
+    if (entry) entry.labels.push(label);
+    else rows.push({ row, labels: [label] });
+  }
+  return rows.map((r) => r.labels);
+}
+
 async function press(renderer: ReactTestRenderer, label: string) {
   const [button] = buttons(renderer, label);
   if (!button) throw new Error(`no button "${label}" in: ${textOf(renderer)}`);
@@ -259,6 +278,7 @@ describe('recall: quiz-first, self-graded', () => {
     expect(has(renderer, 'Missed it')).toBe(true);
     expect(has(renderer, 'Got it')).toBe(true);
     expect(has(renderer, 'Hard')).toBe(false);
+    expect(ratingRows(renderer, ['Missed it', 'Got it'])).toEqual([['Missed it', 'Got it']]);
     // The real scheduler: Again comes back within minutes, Good in days.
     const [gotIt] = buttons(renderer, 'Got it');
     expect(gotIt.props.accessibilityHint).toMatch(/^Comes back in \d+ days?$/);
@@ -295,6 +315,8 @@ describe('recall: quiz-first, self-graded', () => {
     const renderer = await render();
     await press(renderer, 'Show answer');
     for (const label of ['Again', 'Hard', 'Good', 'Easy']) expect(has(renderer, label)).toBe(true);
+    // Two a row (four in one row are too narrow for their words on a 360 dp phone).
+    expect(ratingRows(renderer, ['Again', 'Hard', 'Good', 'Easy'])).toEqual([['Again', 'Hard'], ['Good', 'Easy']]);
     await press(renderer, 'Easy');
     expect(repo.answerCard).toHaveBeenCalledWith(expect.objectContaining({ grade: 4, answerMode: 'self_graded' }));
     expect(textOf(renderer)).toContain('Easy. Back in 3 days.');

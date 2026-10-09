@@ -582,7 +582,7 @@ describe('Add material', () => {
     // Reorder: page 2 becomes page 1.
     await tap(renderer, 'Move Page 2 up');
     await tap(renderer, 'Add to plan');
-    expect(textOf(renderer)).toContain('You’ve used all 20 pages of notes for this month.');
+    expect(textOf(renderer)).toContain('You’ve used all 20 handwritten and scanned pages for this month.');
     const first = upload.addMaterial.mock.calls[0] as unknown as [unknown, { photos: { uri: string }[] }, { sourceId: string }];
     expect(first[1].photos.map((photo) => photo.uri)).toEqual(['file:///p2.jpg', 'file:///p1.jpg']);
     await tap(renderer, 'Add to plan');

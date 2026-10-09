@@ -8,6 +8,7 @@
 import type { CapReached } from '../errors.ts';
 import type { JobRow, JobStatus, NewJob, Stage, TopicRow } from '../pipeline.ts';
 import type {
+  Approval,
   CardLinkRow,
   CardRow,
   ChunkRow,
@@ -76,8 +77,14 @@ export class FakeStore implements Store {
 
   // ---- the job queue ----
 
-  claimJob(): Promise<JobRow | null> {
+  claimJob(maxRunning: number | null): Promise<JobRow | null> {
     this.maybeFail('claimJob');
+    // Like claim_tracy_events: a run locked less than 3 minutes ago holds a place.
+    const fresh = this.ms - 3 * 60_000;
+    const running = [...this.jobs.values()].filter((j) =>
+      j.status === 'running' && j.locked_at !== null && Date.parse(j.locked_at) > fresh
+    ).length;
+    if (maxRunning !== null && running >= maxRunning) return Promise.resolve(null);
     const next = [...this.jobs.values()].filter((j) => j.status === 'queued')
       .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))[0];
     if (!next) return Promise.resolve(null);
@@ -93,6 +100,7 @@ export class FakeStore implements Store {
     j.status = 'queued';
     j.attempts = Math.max(j.attempts - 1, 0);
     j.locked_at = null;
+    j.releases = (j.releases ?? 0) + 1;
     return Promise.resolve(true);
   }
 
@@ -143,19 +151,28 @@ export class FakeStore implements Store {
     return Promise.resolve(true);
   }
 
+  /** check_tracy_cap: null when `units` more fit this month, else the refusal. */
+  private capCheck(
+    userId: string,
+    stage: string | null,
+    units: number,
+    limits: { free_limit: number | null; paid_limit: number | null },
+  ): CapReached | null {
+    const used = [...this.jobs.values()]
+      .filter((j) => j.user_id === userId && j.stage === stage && (j.status !== 'cancelled' || j.attempts > 0))
+      .reduce((sum, j) => sum + j.cap_units, 0);
+    const limit = this.paidUsers.has(userId) ? limits.paid_limit : limits.free_limit;
+    if (limit !== null && used + units > limit) {
+      return { stage: stage as CapReached['stage'], used, limit, resets_at: '2026-11-01T00:00:00.000Z' };
+    }
+    return null;
+  }
+
   enqueueCounted(req: CountedEnqueue): Promise<{ ok: true; job: JobRow } | { ok: false; cap: CapReached }> {
     const counted = req.free_limit !== null || req.paid_limit !== null;
     if (counted) {
-      const used = [...this.jobs.values()]
-        .filter((j) => j.user_id === req.user_id && j.stage === req.stage && (j.status !== 'cancelled' || j.attempts > 0))
-        .reduce((sum, j) => sum + j.cap_units, 0);
-      const limit = this.paidUsers.has(req.user_id) ? req.paid_limit : req.free_limit;
-      if (limit !== null && used + req.units > limit) {
-        return Promise.resolve({
-          ok: false,
-          cap: { stage: req.stage as CapReached['stage'], used, limit, resets_at: '2026-11-01T00:00:00.000Z' },
-        });
-      }
+      const cap = this.capCheck(req.user_id, req.stage, req.units, req);
+      if (cap) return Promise.resolve({ ok: false, cap });
     }
     const job: FakeJob = {
       id: crypto.randomUUID(),
@@ -175,6 +192,49 @@ export class FakeStore implements Store {
     };
     this.jobs.set(job.id, job);
     return Promise.resolve({ ok: true, job: clone(job) });
+  }
+
+  requeueJob(
+    id: string,
+    limits: { free_limit: number | null; paid_limit: number | null },
+  ): Promise<{ ok: true; job: JobRow | null } | { ok: false; cap: CapReached }> {
+    const j = this.jobs.get(id);
+    if (!j || (j.status !== 'failed' && j.status !== 'cancelled')) return Promise.resolve({ ok: true, job: null });
+    if (j.status === 'cancelled' && j.attempts === 0 && j.cap_units > 0 && (limits.free_limit !== null || limits.paid_limit !== null)) {
+      const cap = this.capCheck(j.user_id, j.stage, j.cap_units, limits);
+      if (cap) return Promise.resolve({ ok: false, cap });
+    }
+    const { previous_errors: _drop, ...input } = j.input;
+    Object.assign(j, { status: 'queued', error: null, attempts: 0, locked_at: null, releases: 0, input });
+    return Promise.resolve({ ok: true, job: clone(j) });
+  }
+
+  applyApproval(a: Approval): Promise<void> {
+    // One transaction: a failure leaves everything as it was.
+    this.maybeFail('applyApproval');
+    for (const k of a.keep) {
+      const t = this.topics.get(k.id);
+      if (t && t.plan_id === a.plan_id) {
+        Object.assign(t, { title: k.title, position: k.position, status: t.status === 'draft' ? 'confirmed' : t.status });
+      }
+    }
+    this.deleteTopicRows(a.cut.filter((id) => this.topics.get(id)?.plan_id === a.plan_id && this.topics.get(id)?.status === 'draft'));
+    for (const job of a.jobs) {
+      if (!this.jobs.has(job.id)) {
+        this.jobs.set(job.id, { ...clone(job), status: 'queued', output: null, error: null, attempts: 0, locked_at: null, releases: 0, created_at: this.tick(), cap_units: 0 });
+      }
+    }
+    for (const id of a.outline_ids) {
+      const o = this.jobs.get(id);
+      if (o && o.stage === 'outline' && o.status === 'succeeded' && o.output) {
+        o.output = { ...(o.output as Record<string, unknown>), approved_at: a.approved_at };
+      }
+    }
+    for (const id of a.ready_source_ids) {
+      const src = this.sources.get(id);
+      if (src) src.status = 'ready';
+    }
+    return Promise.resolve();
   }
 
   hasQueuedJobs(): Promise<boolean> {
@@ -336,19 +396,14 @@ export class FakeStore implements Store {
     return Promise.resolve();
   }
 
-  updateTopic(id: string, patch: Partial<Pick<TopicRow, 'title' | 'position' | 'status'>>): Promise<void> {
-    const t = this.topics.get(id);
-    if (t) Object.assign(t, patch);
-    return Promise.resolve();
-  }
-
   setTopicStatusIf(id: string, from: TopicRow['status'], to: TopicRow['status']): Promise<void> {
     const t = this.topics.get(id);
     if (t && t.status === from) t.status = to;
     return Promise.resolve();
   }
 
-  deleteTopics(ids: string[]): Promise<void> {
+  /** Deletes topics, cascading to their cards and the cards' links (as the foreign keys do). */
+  deleteTopicRows(ids: string[]) {
     for (const id of ids) {
       this.topics.delete(id);
       for (const [k, c] of this.cards) {
@@ -358,7 +413,6 @@ export class FakeStore implements Store {
         }
       }
     }
-    return Promise.resolve();
   }
 
   planCards(planId: string, topicId: string, limit: number): Promise<{ id: string; question: string }[]> {

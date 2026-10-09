@@ -305,11 +305,14 @@ Use the `tracy_events.id` as Tracy's `request_id`, so a log line on either side 
   webhook. The worker answers 202 at once, does **one step** in the background, and calls itself
   again while work remains (at most 20 times in a row).
 - Claiming is `claim_tracy_events()` (`FOR UPDATE SKIP LOCKED`, plus reaping jobs stuck for 5
-  minutes); finishing is fenced on `status`, `attempts` and `locked_at`.
+  minutes), one job at a time across all users by default (`DUALREP_WORKER_CONCURRENCY`; Tracy on
+  Render's free plan can't hold two scanned-page renders at once); finishing is fenced on `status`,
+  `attempts` and `locked_at`.
 - `GET /health` (5 s) comes first; if Tracy is asleep the job goes back without counting an attempt
-  (`release_tracy_event`).
-- New columns `stage`, `plan_id`, `source_id` (synced) and `cap_units` (server only) let the phone
-  show progress per source and let `enqueue_tracy_event` enforce the monthly caps.
+  (`release_tracy_event`). After 15 such releases in a row it fails ("Tracy couldn't be reached for a
+  while. Try again later.").
+- New columns `stage`, `plan_id`, `source_id` (synced) and `cap_units`, `releases` (server only) let
+  the phone show progress per source and let `enqueue_tracy_event` enforce the monthly caps.
 - The study builder's steps: `extract` (per-page text through `/ai/extract`), `transcribe` (photos
   and scanned pages), `outline`, then one `cards` job per topic; optional `embed`.
 
@@ -374,7 +377,10 @@ The task lane touches none of memory, Brain or knowledge. Its only leaks are the
 only `dualrep_*` tasks and `/ai/extract`; one metadata line per call, never a conversation log; no
 Groq; tests prove the logs never hold the material. The worker sends Supabase **signed URLs** that
 last 600 s, and Tracy downloads only from `DUALREP_STORAGE_HOSTS`. No `dualrep` chat surface exists,
-so point 6 waits.
+so point 6 waits. Files are read in a separate process that Tracy stops past its memory limit (a
+small file that unpacks to hundreds of MB can no longer take Tracy down), and the last Storage file
+read stays in Tracy's memory (never on disk or in a log) for up to 10 minutes, so the next batch of
+scanned pages asks Supabase only whether it changed instead of downloading it again (D34).
 
 ---
 
@@ -543,15 +549,17 @@ What was proposed, and what was built:
 | Tracy says | The job |
 |---|---|
 | `invalid_output`, `no_output` | Retried (up to 3 attempts) with Tracy's findings as `previous_errors` |
-| `truncated` | Retried with "answer more briefly" |
+| `truncated` | Retried with "answer more briefly"; an outline also with half as many entries (100, then 50) |
 | `refused` | Fails at once: "Tracy declined to work on this material." |
 | `too_large`, `unsupported_type`, `pdf_encrypted`, `pdf_unreadable`, `doc_unreadable`, `no_text`, `page_out_of_range` | Fails at once with a sentence about the file |
-| `bad_url` | A link: fails ("This link can't be used…"). A stored file: fails with "The study builder isn't set up yet" (`DUALREP_STORAGE_HOSTS` is wrong) |
+| `bad_url` | A link: fails ("This link can't be used…"). A stored file or photo (from `/ai/extract` or a transcription task alike): fails with "The study builder isn't set up yet" (`DUALREP_STORAGE_HOSTS` is wrong) |
 | `fetch_failed`, `timeout` | A link: fails ("The web page couldn't be downloaded."). A stored file: retried |
 | 401 / 403 | Fails: "The study builder isn't set up yet" (the secrets don't match) |
 | Express's HTML 404 / 405 | Fails: "The study builder isn't set up yet" (the DualRep lane isn't deployed) |
-| HTML 502 / 503 / 504 (Render waking) or a failed `/health` | Released without counting the attempt; the next cron minute tries again |
-| Network error, timeout, other 5xx, 429 | Retried, up to 3 attempts |
+| A failed `/health` (Render asleep), or 503 `busy` (Tracy is reading another file) | Released without counting the attempt; the next cron minute tries again. After 15 in a row: fails ("Tracy couldn't be reached for a while. Try again later.") |
+| HTML 502 / 503 / 504 after a passing `/health` (Tracy died with the request, often out of memory) | Retried and **counted**, up to 3 attempts, so a file that crashes Tracy fails instead of crashing it every minute |
+| `model_error` or a timeout on an outline | Retried, with half as many outline entries |
+| Network error, timeout, other 5xx (`render_timeout` included), 429 | Retried, up to 3 attempts |
 
 **Deliberately not changed:** `/chat`, memory, knowledge, Brain, the Groq and Gemini chat paths, and
 `convert_asset`.

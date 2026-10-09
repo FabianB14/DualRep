@@ -10,8 +10,12 @@
  *   - cards due on the day of the next reminder → a DAILY trigger at hh:mm with "N cards are due". The
  *     text is fixed when scheduled; if the app is not opened, due counts only grow, so N stays a true
  *     lower bound (answers on another phone could make it an overstatement, which is minor);
- *   - none due that day → a one-time reminder at hh:mm on the day the first card falls due, or nothing
- *     at all when no card ever will. No nagging on days with nothing to do.
+ *   - none due that day → a reminder at hh:mm on the day the first card falls due and on each of the
+ *     13 days after it (one-time triggers), or nothing at all when no card ever will. No nagging on
+ *     days with nothing to do, and an ignored reminder is not the last one: cards that are not
+ *     answered stay due, so the following days remind again until the app runs and reschedules.
+ *     (A single one-time trigger would leave a user who dismissed it with no reminder at all while
+ *     reviews piled up, which is exactly when one is needed.)
  * Android computes the next local hh:mm itself, keeps the alarm across reboots, and uses an exact
  * alarm only when allowed (an inexact one is fine for a daily nudge), so no new permission is needed.
  *
@@ -37,8 +41,16 @@ export const REVIEWS_CHANNEL = {
   sound: 'default',
 } satisfies Notifications.NotificationChannelInput;
 
-/** Our id of the one reminder: scheduling again replaces it. */
+/** Our id of the reminder: scheduling again replaces it. */
 export const REVIEW_REMINDER_ID = 'reviews-due';
+/** One-time reminders on the days after the first due day (see the header). */
+export const FOLLOW_UP_DAYS = 13;
+const followUpId = (day: number) => `${REVIEW_REMINDER_ID}-${day}`;
+/** Every id this module schedules under, so a reschedule withdraws all of them. */
+export const REVIEW_REMINDER_IDS: readonly string[] = [
+  REVIEW_REMINDER_ID,
+  ...Array.from({ length: FOLLOW_UP_DAYS }, (_, i) => followUpId(i + 1)),
+];
 /** `data.kind` of the reminder (useNotificationRouting opens `data.url`, Home). */
 export const REVIEW_REMINDER_KIND = 'reviews-due';
 export const REVIEW_REMINDER_URL = '/';
@@ -93,12 +105,14 @@ export function ensureReviewsChannel(): Promise<void> {
   return channelReady;
 }
 
-/** Withdraws the scheduled reminder (one already in the shade stays). Never throws. */
+/** Withdraws the scheduled reminders (one already in the shade stays). Never throws. */
 export async function cancelReviewReminder(): Promise<void> {
-  try {
-    await Notifications.cancelScheduledNotificationAsync(REVIEW_REMINDER_ID);
-  } catch {
-    // Nothing scheduled, or no native module.
+  for (const id of REVIEW_REMINDER_IDS) {
+    try {
+      await Notifications.cancelScheduledNotificationAsync(id);
+    } catch {
+      // Nothing scheduled, or no native module.
+    }
   }
 }
 
@@ -147,11 +161,21 @@ export async function rescheduleReviewReminder(
     startOfDay.setHours(0, 0, 0, 0);
     const at = nextLocalTime(pref, startOfDay.getTime(), true);
     const then = Math.max(1, await countDue(userId, endOfLocalDay(at)));
-    await Notifications.scheduleNotificationAsync({
-      identifier: REVIEW_REMINDER_ID,
-      content: { ...reminderContent(then), data: { url: REVIEW_REMINDER_URL, kind: REVIEW_REMINDER_KIND }, sound: 'default' },
-      trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: at, channelId: REVIEWS_CHANNEL_ID },
-    });
+    const once = (identifier: string, count: number, date: number) =>
+      Notifications.scheduleNotificationAsync({
+        identifier,
+        content: { ...reminderContent(count), data: { url: REVIEW_REMINDER_URL, kind: REVIEW_REMINDER_KIND }, sound: 'default' },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date, channelId: REVIEWS_CHANNEL_ID },
+      });
+    await once(REVIEW_REMINDER_ID, then, at);
+    // The days after it: the same local time (setDate keeps it across a daylight-saving change), with
+    // the count due by then (counts only grow while nothing is answered).
+    for (let day = 1; day <= FOLLOW_UP_DAYS; day += 1) {
+      const date = new Date(at);
+      date.setDate(date.getDate() + day);
+      const when = date.getTime();
+      await once(followUpId(day), Math.max(then, await countDue(userId, endOfLocalDay(when))), when);
+    }
     return { status: 'once', at, count: then };
   } catch {
     return { status: 'failed' };

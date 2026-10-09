@@ -182,9 +182,9 @@ select set_eq(
     where p.pronamespace = 'public'::regnamespace and has_function_privilege('service_role', p.oid, 'EXECUTE')$$,
   array[
     'can_edit_plan', 'can_edit_source', 'can_read_card', 'can_read_exercise', 'can_read_plan',
-    'can_read_source', 'claim_tracy_events', 'enqueue_tracy_event', 'generate_invite_code',
-    'has_paid_access', 'is_group_member', 'is_group_owner', 'is_valid_split', 'orphaned_source_objects',
-    'release_tracy_event', 'shares_group_with'
+    'apply_outline_approval', 'can_read_source', 'claim_tracy_events', 'enqueue_tracy_event',
+    'generate_invite_code', 'has_paid_access', 'is_group_member', 'is_group_owner', 'is_valid_split',
+    'orphaned_source_objects', 'release_tracy_event', 'requeue_tracy_event', 'shares_group_with'
   ],
   'service_role can execute the access helpers and the job queue, but not the user-only RPCs or trigger functions'
 );

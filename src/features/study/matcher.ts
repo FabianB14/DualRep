@@ -14,11 +14,15 @@
  * - exact: equal after normalizing.
  * - close: every number matches exactly (9.8 is not 9.81, 1915 is not 1914), the first letter
  *   matches, and the spelling is off by at most a few edits (Damerau–Levenshtein, optimal string
- *   alignment: 0 edits up to 4 characters, 1 up to 8, 2 up to 15, then 15% of the length). Or the
- *   expected words appear, in order, inside an answer at most 2 words longer ("it's the
- *   mitochondria").
+ *   alignment: 0 edits up to 4 characters, 1 up to 8, 2 up to 15, then 15% of the length), unless
+ *   the two words start with opposite prefixes (hyper/hypo, exo/endo, ab/ad, …: "hypertonic" is
+ *   not a misspelling of "hypotonic"). Or the expected words appear, in order, inside an answer at
+ *   most 2 words longer whose extra words are filler ("it's the mitochondria", "in 1914"). Any other
+ *   extra word means the answer says something else too: "mitosis or meiosis" hedges between two,
+ *   "not true" negates, "oxidation and reduction" names both.
  * - wrong: anything else. The screen then shows the answer with "I missed it" (Again) and "Count it
- *   as right" (Good), so a false "wrong" costs one tap.
+ *   as right" (Good), so a false "wrong" costs one tap, while a false "close" is saved as Good at
+ *   once and pushes the card out by days. So when in doubt the matcher says wrong.
  *
  * Known false accepts (tested, see matcher.test.ts): a near-miss that is a different word, such as
  * "mitochondrion" for "mitochondria". The screen always shows the expected spelling after a close
@@ -48,6 +52,31 @@ export const MATCH_RULES = {
 } as const;
 
 const ARTICLES = new Set(['a', 'an', 'the']);
+/**
+ * The only extra words a containing answer may have (after normalizing: "it's" is "its"). Anything
+ * else, above all "or", "and", "not", "no", "vs" or a second term, changes what the answer says.
+ */
+const FILLER = new Set([
+  'its', 'it', 'is', 'are', 'was', 'were', 'in', 'of', 'called', 'known', 'as', 'thats', 'that',
+  'this', 'they', 'theyre', 'i', 'think',
+]);
+/**
+ * Prefixes with opposite meanings (each group is mutually exclusive). Two words that start with
+ * different prefixes of one group are different words, however few edits apart: hypertonic and
+ * hypotonic, exothermic and endothermic, absorption and adsorption, intercellular and
+ * intracellular. Only same-first-letter groups matter (a different first letter is wrong anyway).
+ */
+const OPPOSITE_PREFIXES: readonly (readonly string[])[] = [
+  ['hyper', 'hypo'],
+  ['endo', 'ecto', 'exo', 'en', 'ex'],
+  ['ab', 'ad'],
+  ['inter', 'intra'],
+  ['hetero', 'homo'],
+  ['micro', 'macro'],
+  ['pre', 'post'],
+  ['super', 'supra', 'sub'],
+  ['mono', 'multi'],
+];
 // Combining diacritical marks U+0300–U+036F, written as escapes (no \p{} on older Hermes).
 const COMBINING_MARKS = /[̀-ͯ]/g;
 const CAN_DECOMPOSE = (() => {
@@ -124,14 +153,6 @@ function numbersOf(normalized: string): string {
   return (normalized.match(/-?\d+(?:\.\d+)?/g) ?? []).join(' ');
 }
 
-function containsInOrder(haystack: string[], needle: string[]): boolean {
-  if (needle.length === 0 || needle.length > haystack.length) return false;
-  for (let start = 0; start + needle.length <= haystack.length; start += 1) {
-    if (needle.every((token, k) => haystack[start + k] === token)) return true;
-  }
-  return false;
-}
-
 /** Whether a card can be answered by typing: a short basic or cloze answer. */
 export function isTypable(card: { cardType: string; answer: string }): boolean {
   if (!MATCH_RULES.typableTypes.includes(card.cardType)) return false;
@@ -142,14 +163,43 @@ export function isTypable(card: { cardType: string; answer: string }): boolean {
   );
 }
 
+/** Where the expected words sit inside the answer (the first place), or -1. */
+function positionInOrder(haystack: string[], needle: string[]): number {
+  if (needle.length === 0 || needle.length > haystack.length) return -1;
+  for (let start = 0; start + needle.length <= haystack.length; start += 1) {
+    if (needle.every((token, k) => haystack[start + k] === token)) return start;
+  }
+  return -1;
+}
+
+/** The longest prefix of `word` in `group`, or null. */
+function prefixIn(word: string, group: readonly string[]): string | null {
+  let best: string | null = null;
+  for (const p of group) if (word.startsWith(p) && (best === null || p.length > best.length)) best = p;
+  return best;
+}
+
+/** Whether two different words start with opposite prefixes (see OPPOSITE_PREFIXES). */
+function oppositeWords(a: string, b: string): boolean {
+  if (a === b) return false;
+  return OPPOSITE_PREFIXES.some((group) => {
+    const pa = prefixIn(a, group);
+    const pb = prefixIn(b, group);
+    return pa !== null && pb !== null && pa !== pb;
+  });
+}
+
 function compare(got: string, expected: string): MatchResult {
   if (got === expected) return 'exact';
   if (numbersOf(got) !== numbersOf(expected)) return 'wrong';
   const gotTokens = got.split(' ');
   const expectedTokens = expected.split(' ');
-  if (gotTokens.length - expectedTokens.length <= MATCH_RULES.extraWords && containsInOrder(gotTokens, expectedTokens)) {
-    return 'close';
+  if (gotTokens.length - expectedTokens.length <= MATCH_RULES.extraWords) {
+    const at = positionInOrder(gotTokens, expectedTokens);
+    const extra = at < 0 ? [] : [...gotTokens.slice(0, at), ...gotTokens.slice(at + expectedTokens.length)];
+    if (at >= 0 && extra.every((token) => FILLER.has(token))) return 'close';
   }
+  if (gotTokens.some((token, i) => i < expectedTokens.length && oppositeWords(token, expectedTokens[i]))) return 'wrong';
   if (got[0] === expected[0] && osaDistance(got, expected) <= allowedEdits(expected.length)) return 'close';
   return 'wrong';
 }

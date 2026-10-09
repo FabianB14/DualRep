@@ -8,8 +8,13 @@
  *   fail     the step cannot succeed as it is (a bad file, a refusal): the job fails now.
  *   retry    worth another attempt (network, timeout, a 5xx, an answer the validator rejected): the job
  *            goes back to the queue, up to MAX_ATTEMPTS; `previousErrors` go to Tracy next time.
- *   release  the call never reached Tracy (Render's free service asleep, its proxy's HTML 502/503):
- *            put the job back without counting the attempt and stop until the next cron tick.
+ *   release  Tracy did no work on it (it said it is busy with another heavy job): put the job back
+ *            without counting the attempt and stop until the next cron tick. The worker also releases
+ *            a job whose /health check fails (Render's free service asleep), before any call.
+ * Render's own HTML 502/503/504 page after a passing /health check is NOT a release: the request
+ * reached Tracy and Tracy died or restarted under it (often out of memory on the free plan). It is
+ * counted like any other failure, so a file that crashes Tracy fails after three attempts instead
+ * of crashing it every minute for ever.
  */
 import type { Stage } from './pipeline.ts';
 
@@ -41,6 +46,7 @@ export const MESSAGES = {
   pageMissing: "A page couldn't be found in the PDF.",
   refused: 'Tracy declined to work on this material.',
   tooLong: 'This part was too long to process. Try again.',
+  tracyUnreachable: "Tracy couldn't be reached for a while. Try again later.",
   badAnswer: "Tracy's answer didn't pass the checks. Try again.",
   sourceGone: 'The material was deleted.',
   topicGone: 'The topic was deleted.',
@@ -58,8 +64,8 @@ export function classifyTracyFailure(
   if (f.kind === 'network') return { action: 'retry', message: MESSAGES.tracyBusy };
   if (f.kind === 'timeout') return { action: 'retry', message: MESSAGES.tracySlow };
   if (f.kind === 'not_json') {
-    // Render answers with its own HTML page while the service wakes or restarts.
-    if ([502, 503, 504].includes(f.status)) return { action: 'release', reason: `tracy_${f.status}` };
+    // Render's HTML page: Tracy went down while it had the request (see the top of this file).
+    if ([502, 503, 504].includes(f.status)) return { action: 'retry', message: MESSAGES.tracyBusy };
     // Express's own "Cannot POST" page: the Tracy on Render predates the DualRep lane (its pull
     // request isn't merged or deployed yet). Asking again won't help until it is.
     if (f.status === 404 || f.status === 405) return { action: 'fail', message: MESSAGES.notSetUp };
@@ -114,6 +120,8 @@ export function classifyTracyFailure(
       // Our request was wrong: retrying would send the same thing. Logged by the worker (code only).
       return { action: 'fail', message: MESSAGES.tracyBusy };
   }
+  // Tracy runs one PDF read or page render at a time and turned this one away before starting.
+  if (status === 503 && code === 'busy') return { action: 'release', reason: 'tracy_busy' };
   if (status === 503 && code && /unavailable$/.test(code)) {
     return { action: 'retry', message: MESSAGES.tracyBusy };
   }

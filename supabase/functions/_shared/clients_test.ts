@@ -1,6 +1,6 @@
 /** The Tracy and Gemini clients, the config parser and the HTTP helpers, against fake fetches. */
 import { assert, assertEquals } from 'jsr:@std/assert@1.0.13';
-import { DEFAULT_CAPS, missingSettings, parseCap, parseConfig } from './config.ts';
+import { DEFAULT_CAPS, missingSettings, parseCap, parseConcurrency, parseConfig } from './config.ts';
 import { EMBED_DIMENSIONS, embedDocuments, normalize } from './gemini.ts';
 import { bearerToken, secretsMatch } from './http.ts';
 import { kickWorker } from './kick.ts';
@@ -84,7 +84,7 @@ Deno.test('config: keys from the JSON dictionaries, legacy fallback, caps', () =
     SUPABASE_URL: 'https://ref.supabase.co/',
     SUPABASE_SECRET_KEYS: '{"default":"sb_secret_x"}',
     SUPABASE_ANON_KEY: 'legacy-anon',
-    TRACY_URL: 'https://tracy.onrender.com/ ',
+    TRACY_URL: 'https://tracy.onrender.com/health/ ',
     DUALREP_CAP_SOURCES_FREE: '10',
     DUALREP_CAP_PAGES_PAID: 'none',
     DUALREP_CAP_PAGES_FREE: 'lots',
@@ -100,6 +100,9 @@ Deno.test('config: keys from the JSON dictionaries, legacy fallback, caps', () =
   });
   assertEquals(missingSettings(cfg, ['tracySecret', 'workerSecret', 'secretKey']), ['TRACY_SERVICE_SECRET', 'DUALREP_WORKER_SECRET']);
   assertEquals([parseCap('0', 5), parseCap('', 5), parseCap(' Unlimited ', 5), parseCap('-1', 5)], [0, 5, null, 5]);
+  // One job at a time unless DUALREP_WORKER_CONCURRENCY says otherwise (1-10, or none).
+  assertEquals(cfg.workerConcurrency, 1);
+  assertEquals([parseConcurrency('3'), parseConcurrency('none'), parseConcurrency('0'), parseConcurrency('11'), parseConcurrency('x')], [3, null, 1, 1, 1]);
 });
 
 Deno.test('secretsMatch: equal secrets only; an unset secret never matches', async () => {

@@ -155,6 +155,16 @@ describe('error mapping', () => {
     expect((await failure(new FunctionsHttpError(json(409, { message: 'x' })))).kind).toBe('conflict');
   });
 
+  it('a study function that is not deployed is "not set up", not "not found, try again"', async () => {
+    // What Supabase itself answers when no function of that name is deployed, or its bundle is missing.
+    for (const code of ['NOT_FOUND', 'NOT_FOUND_FUNCTION_BLOB']) {
+      const error = await failure(new FunctionsHttpError(json(404, { code, message: 'Requested function was not found' })));
+      expect([error.kind, error.code, error.serverMessage]).toEqual(['not_configured', null, null]);
+    }
+    // The function's own 404 (a plan that has not synced yet) still is not_found.
+    expect((await failure(new FunctionsHttpError(json(404, { ok: false, code: 'not_found', error: 'x' })))).kind).toBe('not_found');
+  });
+
   it('a cap body without a readable reset time resets next month', async () => {
     const error = await failure(new FunctionsHttpError(json(429, { ok: false, code: 'cap_reached', stage: 'extract' })));
     expect(error.cap).toEqual({ stage: 'extract', used: 0, limit: 0, resetsAt: expect.any(Number) });
@@ -194,7 +204,9 @@ describe('messages', () => {
     const text = describeCap(cap);
     expect(text.startsWith('You’ve used all 5 sources for this month. More can be added from ')).toBe(true);
     expect(text).toContain(new Date(cap.resetsAt).toLocaleDateString(undefined, { month: 'long', day: 'numeric' }));
-    expect(describeCap({ ...cap, stage: 'transcribe', limit: 0 })).toMatch(/^You’ve used this month’s pages of notes\./);
+    expect(describeCap({ ...cap, stage: 'transcribe', limit: 0 })).toMatch(/^You’ve used this month’s handwritten and scanned pages\./);
+    // The page limit also covers scanned PDF pages: it never blames notes the person did not add.
+    expect(describeCap({ ...cap, stage: 'transcribe', limit: 20 })).toMatch(/^You’ve used all 20 handwritten and scanned pages for this month\./);
     expect(studyErrorMessage(new StudyApiError('cap_reached', { cap }))).toBe(text);
     expect(studyErrorMessage(new StudyApiError('cap_reached'))).toBe('You’ve reached this month’s limit. Try again next month.');
   });

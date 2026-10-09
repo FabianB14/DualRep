@@ -15,7 +15,7 @@ import type { SourceKind } from './contracts.ts';
 export type Fence = Pick<JobRow, 'id' | 'attempts' | 'locked_at'>;
 
 export type JobPatch = Partial<
-  Pick<JobRow, 'status' | 'input' | 'output' | 'error' | 'attempts' | 'locked_at'> & {
+  Pick<JobRow, 'status' | 'input' | 'output' | 'error' | 'attempts' | 'locked_at' | 'releases'> & {
     model: string | null;
     usage: unknown;
   }
@@ -98,11 +98,30 @@ export interface CountedEnqueue {
   units: number;
 }
 
+/** approve_outline's writes, applied in one transaction (apply_outline_approval). */
+export interface Approval {
+  plan_id: string;
+  /** Kept drafts: their final title and position; they become confirmed. */
+  keep: { id: string; title: string; position: number }[];
+  /** Cut drafts (a topic that is no longer a draft is never deleted). */
+  cut: string[];
+  /** Cards jobs to queue (derived ids: one that exists is left alone). */
+  jobs: NewJob[];
+  /** The outline jobs to mark approved. */
+  outline_ids: string[];
+  approved_at: string;
+  /** Sources with nothing kept: they are ready. */
+  ready_source_ids: string[];
+}
+
 export interface Store {
   // ---- the job queue (tracy_events) ----
-  /** claim_tracy_events(1): the oldest queued job, now running with its attempt counted. */
-  claimJob(): Promise<JobRow | null>;
-  /** release_tracy_event: back to the queue without counting the attempt. */
+  /**
+   * claim_tracy_events: the oldest queued job, now running with its attempt counted; null when none
+   * is queued or `maxRunning` jobs are running already (null = no limit).
+   */
+  claimJob(maxRunning: number | null): Promise<JobRow | null>;
+  /** release_tracy_event: back to the queue without counting the attempt (its `releases` + 1). */
   releaseJob(fence: Fence): Promise<boolean>;
   /** Updates a claimed job only while it is still this run's (running, same attempts and lock). */
   finishJob(fence: Fence, patch: JobPatch): Promise<boolean>;
@@ -115,6 +134,17 @@ export interface Store {
   insertJob(job: NewJob): Promise<boolean>;
   /** enqueue_tracy_event with a monthly cap. */
   enqueueCounted(req: CountedEnqueue): Promise<{ ok: true; job: JobRow } | { ok: false; cap: CapReached }>;
+  /**
+   * requeue_tracy_event (retry_job): a failed or cancelled job back to the queue with fresh attempts;
+   * job null when it is neither any more. A counted job whose units were given back (cancelled before
+   * it ran) goes through the monthly cap again with these limits.
+   */
+  requeueJob(
+    id: string,
+    limits: { free_limit: number | null; paid_limit: number | null },
+  ): Promise<{ ok: true; job: JobRow | null } | { ok: false; cap: CapReached }>;
+  /** apply_outline_approval: all of approve_outline's writes, or none. */
+  applyApproval(a: Approval): Promise<void>;
   hasQueuedJobs(): Promise<boolean>;
 
   // ---- sources, their files and Storage ----
@@ -151,10 +181,8 @@ export interface Store {
   getTopic(id: string): Promise<TopicRow | null>;
   /** Inserts topics, ignoring ids that exist already. */
   insertTopics(rows: TopicRow[]): Promise<void>;
-  updateTopic(id: string, patch: Partial<Pick<TopicRow, 'title' | 'position' | 'status'>>): Promise<void>;
   /** Sets a topic's status only while it is `from`. */
   setTopicStatusIf(id: string, from: TopicRow['status'], to: TopicRow['status']): Promise<void>;
-  deleteTopics(ids: string[]): Promise<void>;
   /** Up to `limit` cards of a plan, those of `topicId` first. */
   planCards(planId: string, topicId: string, limit: number): Promise<{ id: string; question: string }[]>;
   existingCardIds(ids: string[]): Promise<Set<string>>;

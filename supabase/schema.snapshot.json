@@ -1416,6 +1416,12 @@
           "type": "integer",
           "nullable": false,
           "has_default": true
+        },
+        {
+          "name": "releases",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
         }
       ]
     },

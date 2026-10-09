@@ -96,7 +96,7 @@ async function ownJob(d: StudyDeps, jobId: string): Promise<JobRow> {
 }
 
 function capError(cap: CapReached): StudyError {
-  const what = cap.stage === 'transcribe' ? 'pages of handwriting' : 'new material';
+  const what = cap.stage === 'transcribe' ? 'handwritten and scanned pages' : 'new material';
   const extra: Omit<CapReachedBody, 'ok' | 'code' | 'error'> = {
     stage: cap.stage,
     used: cap.used,
@@ -328,21 +328,23 @@ async function approveOutline(r: ApproveOutlineRequest, d: StudyDeps): Promise<S
   const plan = planApproval(pending.map((j) => ({ job: j, saved: j.output as SavedOutline })), topics, decisions);
   if (plan.errors.length) throw new StudyError('bad_request', 'The request is not valid.', { errors: plan.errors });
 
-  for (const k of plan.keep) await store.updateTopic(k.id, { title: k.title, position: k.position, status: 'confirmed' });
-  await store.deleteTopics(plan.cut);
   const jobs: NewJob[] = [];
   for (const entry of plan.cards) jobs.push(...(await cardsJobs(userId, r.plan_id, entry)));
-  for (const job of jobs) await store.insertJob(job);
-  // Marked last: a request cut short before this point is simply repeated by the phone.
-  const now = (d.now ?? (() => new Date()))().toISOString();
-  for (const o of pending) {
-    await store.updateJobIf(o.id, ['succeeded'], { output: { ...(o.output as SavedOutline), approved_at: now } });
-  }
   const sourceIds = [...new Set(pending.map((j) => j.source_id).filter((s): s is string => !!s))];
-  for (const s of sourceIds) {
+  // Every write in one transaction. A request cut short changes nothing, so the drafts stay on the
+  // phone's review screen and the person can send it again. (Written one call at a time, a failure
+  // halfway left kept topics confirmed with no cards job and the outline unapproved, and the review
+  // screen, which lists drafts only, had nothing left to send.)
+  await store.applyApproval({
+    plan_id: r.plan_id,
+    keep: plan.keep,
+    cut: plan.cut,
+    jobs,
+    outline_ids: pending.map((o) => o.id),
+    approved_at: (d.now ?? (() => new Date()))().toISOString(),
     // Nothing kept from this source's outline: it is done.
-    if (!jobs.some((j) => j.source_id === s)) await store.setSourceStatus(s, 'ready');
-  }
+    ready_source_ids: sourceIds.filter((s) => !jobs.some((j) => j.source_id === s)),
+  });
   if (jobs.length) await d.kick();
   return {
     status: jobs.length ? 202 : 200,
@@ -378,16 +380,13 @@ async function retryJob(r: JobRequest, d: StudyDeps): Promise<StudyResult> {
   if (stage === 'cards' && typeof job.input?.topic_id === 'string' && !(await store.getTopic(job.input.topic_id))) {
     throw new StudyError('not_ready', 'The topic of this step was deleted.');
   }
-  const { previous_errors: _drop, ...input } = job.input ?? {};
-  // The same job goes back to the queue: no new cap units, three fresh attempts.
-  const updated = await store.updateJobIf(job.id, ['failed', 'cancelled'], {
-    status: 'queued',
-    error: null,
-    attempts: 0,
-    locked_at: null,
-    input,
-  });
-  if (!updated) throw new StudyError('not_ready', 'Only a step that failed or was cancelled can be tried again.');
+  // The same job goes back to the queue with three fresh attempts. Its cap units count already,
+  // unless it was cancelled before it ever ran (they were given back): then it goes through the
+  // monthly limit again, or "cancel, add more, retry" would get past it.
+  const caps = stage === 'transcribe' ? d.config.caps.pages : stage === 'extract' ? d.config.caps.sources : null;
+  const res = await store.requeueJob(job.id, { free_limit: caps?.free ?? null, paid_limit: caps?.paid ?? null });
+  if (!res.ok) throw capError(res.cap);
+  if (!res.job) throw new StudyError('not_ready', 'Only a step that failed or was cancelled can be tried again.');
   if (job.source_id && (stage === 'extract' || stage === 'outline' || stage === 'transcribe')) {
     const source = await store.getSource(job.source_id);
     if (source?.status === 'failed') await store.setSourceStatus(source.id, 'processing');

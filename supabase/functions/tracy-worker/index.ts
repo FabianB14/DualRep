@@ -60,6 +60,7 @@ Deno.serve(async (req) => {
       caps: cfg.caps,
       embed: cfg.geminiKey ? (texts) => embedDocuments(texts, { apiKey: cfg.geminiKey }) : undefined,
       kick: (next) => kickWorker(cfg, { reason: 'kick', hop: next }),
+      maxRunning: cfg.workerConcurrency,
       log,
     }, hop);
   }

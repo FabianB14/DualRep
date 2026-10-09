@@ -175,6 +175,12 @@ Deno.test('planApproval: order, renames, cuts, phone deletions and existing topi
   assertEquals(cut.cut, [t1]);
   assertEquals(cut.cards, []);
 
+  // A topic of the outline that is no longer a draft (confirmed or ready, with cards) is never cut,
+  // even when the phone does not list it.
+  const studied = planApproval(outlines, topics.map((t) => (t.id === t1 ? { ...t, status: 'ready' as const } : t)), [{ id: t2, keep: true }]);
+  assertEquals(studied.cut, []);
+  assertEquals(studied.keep.map((k) => k.id), [t2]);
+
   assertEquals(planApproval(outlines, topics, [{ id: 'old-dna', keep: true }]).errors, ['topics[0].id is not a draft topic of this outline']);
   assertEquals(planApproval(outlines, topics, [{ id: t1, keep: true }, { id: t1, keep: false }]).errors, ['topics[1].id is listed twice']);
 });

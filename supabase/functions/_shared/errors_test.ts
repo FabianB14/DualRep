@@ -3,11 +3,13 @@ import { classifyGeminiFailure, classifyTracyFailure, MESSAGES, nextMonthUtc, pa
 
 const http = (status: number, code: string | null, errors?: string[]) => ({ kind: 'http' as const, status, code, errors });
 
-Deno.test('a sleeping Tracy (an HTML 502/503/504 page) is released, not counted', () => {
+Deno.test("Render's HTML 502/503/504 after the request was sent is counted (Tracy died under it); busy is released", () => {
   for (const status of [502, 503, 504]) {
-    assertEquals(classifyTracyFailure({ kind: 'not_json', status }, { stage: 'extract' }).action, 'release');
+    assertEquals(classifyTracyFailure({ kind: 'not_json', status }, { stage: 'extract' }), { action: 'retry', message: MESSAGES.tracyBusy });
   }
   assertEquals(classifyTracyFailure({ kind: 'not_json', status: 200 }, { stage: 'extract' }).action, 'retry');
+  // Tracy turned the call away before doing anything (one PDF read or render at a time).
+  assertEquals(classifyTracyFailure(http(503, 'busy'), { stage: 'transcribe' }), { action: 'release', reason: 'tracy_busy' });
 });
 
 Deno.test("a Tracy without the DualRep lane (Express's HTML 404) fails as not set up", () => {

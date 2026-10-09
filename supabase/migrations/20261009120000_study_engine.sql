@@ -8,10 +8,11 @@
 --
 --   1. Extensions (pg_cron, pg_net) and the `private` schema
 --   2. Columns the phone reads: topics.status, cards.source_id, tracy_events.stage / plan_id /
---      source_id (+ the server-only cap_units); sources.status becomes server-owned
+--      source_id (+ the server-only cap_units and releases); sources.status becomes server-owned
 --   3. source_files.storage_path must stay inside its own source's folder
 --   4. The private Storage bucket `sources` and its folder policies
---   5. The job queue: claim, release and enqueue (with the monthly caps), and the list of orphaned files
+--   5. The job queue: claim (at most N at once), release, enqueue and requeue (with the monthly caps),
+--      approve an outline in one go, and the list of orphaned files
 --   6. The schedule: pg_cron wakes the worker every minute when work is queued, plus daily chores
 --   7. Grants
 --
@@ -44,8 +45,9 @@ begin
 end;
 $$;
 
--- Functions only the database itself calls (from pg_cron). The Data API serves `public` and
--- `graphql_public` only (supabase/config.toml), and nobody but the owner may use this schema.
+-- Functions only the database itself calls (from pg_cron, or from inside the public definer
+-- functions). The Data API serves `public` and `graphql_public` only (supabase/config.toml), and
+-- nobody but the owner may use this schema.
 create schema if not exists private;
 revoke all on schema private from public, anon, authenticated, service_role;
 
@@ -147,11 +149,16 @@ create trigger keep_server_status
 --   cap_units  SERVER ONLY (not synced): how much of the user's monthly cap for this stage the job used
 --              (1 per source for extract, 1 per page or photo for transcribe; 0 = not counted). See
 --              enqueue_tracy_event in section 5.
+--   releases   SERVER ONLY (not synced): how many times in a row the job was put back because Tracy
+--              could not be reached (release_tracy_event). The worker fails the job after 15, so a
+--              Tracy that stays down (suspended, a wrong TRACY_URL) shows an error instead of
+--              "Reading…" for ever. Set back to 0 whenever Tracy is reached again.
 alter table public.tracy_events
   add column stage text check (stage in ('extract', 'transcribe', 'outline', 'cards', 'embed')),
   add column plan_id uuid references public.study_plans (id) on delete set null,
   add column source_id uuid references public.sources (id) on delete set null,
   add column cap_units integer not null default 0 check (cap_units >= 0),
+  add column releases integer not null default 0 check (releases >= 0),
   add constraint tracy_events_stage_matches_job check (
     stage is null
     or (job = 'study_builder' and stage in ('extract', 'outline', 'cards', 'embed'))
@@ -242,19 +249,40 @@ create policy "dualrep sources: delete own files" on storage.objects
 -- First it reaps: a job still 'running' 5 minutes after it was locked means its worker died (an Edge
 -- Function lives at most 150 s on the Free plan). It is queued again, or failed after its third attempt
 -- with a short, content-free error the phone shows next to "Try again".
-create function public.claim_tracy_events(p_limit integer default 1)
+-- p_max_running caps how many jobs run at once, across all users (the worker passes
+-- DUALREP_WORKER_CONCURRENCY, default 1; null = no cap). pg_cron starts a worker every minute while
+-- work is queued and every worker that makes progress starts the next one, so without a cap a backlog
+-- adds a parallel chain each minute, and Tracy on Render's free plan (512 MB, 0.1 CPU) runs out of
+-- memory with two scanned-page renders at once. A running job counts while its lock is under
+-- 3 minutes old (a worker lives at most 150 s, so an older lock is a dead run, reaped at 5 minutes).
+-- A transaction advisory lock makes "count, then claim" atomic between two workers.
+create function public.claim_tracy_events(p_limit integer default 1, p_max_running integer default null)
 returns setof public.tracy_events
 language plpgsql
 volatile
 security definer
 set search_path = ''
 as $$
+declare
+  slots integer := least(greatest(coalesce(p_limit, 1), 1), 10);
+  running integer;
 begin
   update public.tracy_events e
      set status = case when e.attempts >= 3 then 'failed' else 'queued' end,
          error = case when e.attempts >= 3 then 'This step took too long. Try again.' else e.error end,
          locked_at = null
    where e.status = 'running' and e.locked_at < now() - interval '5 minutes';
+
+  if p_max_running is not null then
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('dualrep.tracy_claim', 0));
+    select count(*)::integer into running
+      from public.tracy_events e
+     where e.status = 'running' and e.locked_at > now() - interval '3 minutes';
+    slots := least(slots, greatest(p_max_running - running, 0));
+    if slots = 0 then
+      return;
+    end if;
+  end if;
 
   -- UPDATE ... RETURNING has to sit in a CTE to be returned from plpgsql.
   return query
@@ -266,7 +294,7 @@ begin
          from public.tracy_events q
         where q.status = 'queued'
         order by q.created_at
-        limit least(greatest(coalesce(p_limit, 1), 1), 10)
+        limit slots
         for update skip locked
      )
     returning e.*
@@ -275,9 +303,10 @@ begin
 end;
 $$;
 
--- Puts a claimed job back in the queue WITHOUT counting the attempt: for when the job never reached
--- Tracy (Tracy asleep on Render's free plan, a 502/503 page in front of it). The next cron tick, a
--- minute later, tries again. Fenced like a finish: only the run that claimed the job (same attempts)
+-- Puts a claimed job back in the queue WITHOUT counting the attempt: only for a job that never
+-- reached Tracy (its /health check failed: Render's free service asleep or down). The next cron tick,
+-- a minute later, tries again. `releases` counts these in a row (the worker fails the job after 15:
+-- Tracy is down, not asleep). Fenced like a finish: only the run that claimed the job (same attempts)
 -- can release it. Returns whether it did.
 create function public.release_tracy_event(p_id uuid, p_attempts integer)
 returns boolean
@@ -288,29 +317,82 @@ set search_path = ''
 as $$
 begin
   update public.tracy_events e
-     set status = 'queued', attempts = greatest(e.attempts - 1, 0), locked_at = null
+     set status = 'queued', attempts = greatest(e.attempts - 1, 0), locked_at = null,
+         releases = e.releases + 1
    where e.id = p_id and e.status = 'running' and e.attempts = p_attempts;
   return found;
 end;
 $$;
 
--- Queues a job, enforcing the user's monthly cap for its stage.
---   * Counted stages (spec decision 5): extract (1 unit per source) and transcribe (1 unit per page or
---     photo). The caller passes the stage's free and paid limits (Edge Function env vars, so a limit
---     change needs no migration) and p_units. The user's tier comes from has_paid_access(), which
---     answers for any user when there is no user JWT (the service role).
---   * Uncounted: leave both limits null (outline, cards, embed, and the worker's own follow-ups such
---     as the next window of a long PDF). The job then stores cap_units = 0.
+-- The monthly cap check shared by enqueue_tracy_event and requeue_tracy_event (spec decision 5).
+--   * Counted stages: extract (1 unit per source) and transcribe (1 unit per page or photo). The
+--     caller passes the stage's free and paid limits (Edge Function env vars, so a limit change needs
+--     no migration) and the units. The user's tier comes from has_paid_access(), which answers for any
+--     user when there is no user JWT (the service role).
 --   * A limit of null for the user's tier (the other one set) counts the job but never refuses it.
 -- Usage this month (UTC) = the cap_units of the user's jobs of that stage. A job cancelled before the
 -- worker ever picked it up (attempts = 0) gives its units back; one cancelled later has cost something
--- and still counts. (So a retry should put the same job back in the queue rather than queue a new,
--- counted one.)
--- When used + p_units would pass the limit, nothing is queued and it raises P0001 with
--- hint 'dualrep_cap_reached' and a JSON detail {stage, used, limit, resets_at}, which PostgREST hands
--- the Edge Function (as HTTP 400); the study function answers 429 {code: 'cap_reached'} and the app
--- says when the cap resets. A per-user, per-stage advisory lock makes check-and-insert atomic, so two
--- requests at once cannot both slip under the limit.
+-- and still counts.
+-- When used + units would pass the limit it raises P0001 with hint 'dualrep_cap_reached' and a JSON
+-- detail {stage, used, limit, resets_at}, which PostgREST hands the Edge Function (as HTTP 400); the
+-- study function answers 429 {code: 'cap_reached'} and the app says when the cap resets. A per-user,
+-- per-stage advisory lock (held until the caller's transaction ends) makes check-and-write atomic, so
+-- two requests at once cannot both slip under the limit. Called only by the two definer functions
+-- below (as the owner); nobody else may use the private schema.
+create function private.check_tracy_cap(
+  p_user_id uuid,
+  p_stage text,
+  p_units integer,
+  p_free_limit integer,
+  p_paid_limit integer
+)
+returns void
+language plpgsql
+volatile
+set search_path = ''
+as $$
+declare
+  month_start timestamptz;
+  next_month timestamptz;
+  monthly_limit integer;
+  used integer;
+begin
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('dualrep.tracy_cap:' || p_user_id::text || ':' || coalesce(p_stage, ''), 0)
+  );
+  -- Month boundaries in UTC whatever the session's time zone (timestamptz + '1 month' would be
+  -- computed in the session's zone).
+  month_start := pg_catalog.date_trunc('month', now() at time zone 'UTC') at time zone 'UTC';
+  next_month := (pg_catalog.date_trunc('month', now() at time zone 'UTC') + interval '1 month')
+                at time zone 'UTC';
+  monthly_limit := case when public.has_paid_access(p_user_id) then p_paid_limit else p_free_limit end;
+  select coalesce(sum(e.cap_units), 0) into used
+    from public.tracy_events e
+   where e.user_id = p_user_id
+     and e.stage is not distinct from p_stage
+     and (e.status <> 'cancelled' or e.attempts > 0)
+     and e.created_at >= month_start;
+  if monthly_limit is not null and used + p_units > monthly_limit then
+    raise exception 'monthly limit reached for %', coalesce(p_stage, 'this job')
+      using errcode = 'P0001',
+            detail = pg_catalog.json_build_object(
+              'stage', p_stage,
+              'used', used,
+              'limit', monthly_limit,
+              'resets_at',
+              pg_catalog.to_char(next_month at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+            )::text,
+            hint = 'dualrep_cap_reached';
+  end if;
+end;
+$$;
+
+-- Queues a job, enforcing the user's monthly cap for its stage (private.check_tracy_cap).
+--   * Counted stages (extract, transcribe): the caller passes the stage's limits and p_units.
+--   * Uncounted: leave both limits null (outline, cards, embed, and the worker's own follow-ups such
+--     as the next window of a long PDF). The job then stores cap_units = 0.
+-- A retry puts the same job back in the queue (requeue_tracy_event) rather than queueing a new,
+-- counted one. Over the limit nothing is queued and the cap error is raised.
 create function public.enqueue_tracy_event(
   p_user_id uuid,
   p_job text,
@@ -331,10 +413,6 @@ as $$
 declare
   counted boolean := p_free_limit is not null or p_paid_limit is not null;
   units integer := coalesce(p_units, 1);
-  month_start timestamptz;
-  next_month timestamptz;
-  monthly_limit integer;
-  used integer;
   ev public.tracy_events;
 begin
   if units < 0 then
@@ -342,33 +420,7 @@ begin
   end if;
 
   if counted then
-    perform pg_catalog.pg_advisory_xact_lock(
-      pg_catalog.hashtextextended('dualrep.tracy_cap:' || p_user_id::text || ':' || coalesce(p_stage, ''), 0)
-    );
-    -- Month boundaries in UTC whatever the session's time zone (timestamptz + '1 month' would be
-    -- computed in the session's zone).
-    month_start := pg_catalog.date_trunc('month', now() at time zone 'UTC') at time zone 'UTC';
-    next_month := (pg_catalog.date_trunc('month', now() at time zone 'UTC') + interval '1 month')
-                  at time zone 'UTC';
-    monthly_limit := case when public.has_paid_access(p_user_id) then p_paid_limit else p_free_limit end;
-    select coalesce(sum(e.cap_units), 0) into used
-      from public.tracy_events e
-     where e.user_id = p_user_id
-       and e.stage is not distinct from p_stage
-       and (e.status <> 'cancelled' or e.attempts > 0)
-       and e.created_at >= month_start;
-    if monthly_limit is not null and used + units > monthly_limit then
-      raise exception 'monthly limit reached for %', coalesce(p_stage, p_job)
-        using errcode = 'P0001',
-              detail = pg_catalog.json_build_object(
-                'stage', p_stage,
-                'used', used,
-                'limit', monthly_limit,
-                'resets_at',
-                pg_catalog.to_char(next_month at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
-              )::text,
-              hint = 'dualrep_cap_reached';
-    end if;
+    perform private.check_tracy_cap(p_user_id, p_stage, units, p_free_limit, p_paid_limit);
   end if;
 
   insert into public.tracy_events (user_id, job, stage, plan_id, source_id, input, cap_units)
@@ -376,6 +428,102 @@ begin
           case when counted then units else 0 end)
   returning * into ev;
   return ev;
+end;
+$$;
+
+-- retry_job: puts a failed or cancelled job back in the queue, the same row (so no new cap units),
+-- with three fresh attempts, no error, no lock and without the previous attempt's validator notes.
+-- A counted job that was cancelled before the worker ever ran it (attempts = 0) gave its units back
+-- (see check_tracy_cap), so queueing it again takes them again: it goes through the monthly cap like
+-- a new job, under the same lock. Without that, "cancel while queued, submit more, retry the
+-- cancelled ones" would get past the cap. The caller passes the stage's limits (null, null for an
+-- uncounted stage). Returns the queued job, or no row when the job is not failed or cancelled (any
+-- more); raises the cap error when over the limit.
+create function public.requeue_tracy_event(
+  p_id uuid,
+  p_free_limit integer default null,
+  p_paid_limit integer default null
+)
+returns setof public.tracy_events
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  ev public.tracy_events;
+begin
+  select * into ev from public.tracy_events e where e.id = p_id for update;
+  if not found or ev.status not in ('failed', 'cancelled') then
+    return;
+  end if;
+  if ev.status = 'cancelled' and ev.attempts = 0 and ev.cap_units > 0
+     and (p_free_limit is not null or p_paid_limit is not null) then
+    perform private.check_tracy_cap(ev.user_id, ev.stage, ev.cap_units, p_free_limit, p_paid_limit);
+  end if;
+  return query
+  update public.tracy_events e
+     set status = 'queued', error = null, attempts = 0, locked_at = null, releases = 0,
+         input = e.input - 'previous_errors'
+   where e.id = p_id
+  returning e.*;
+end;
+$$;
+
+-- approve_outline's writes in one transaction (study/handlers.ts decides them, this applies them):
+--   * kept draft topics get their final title and position and become confirmed (a topic that is no
+--     longer a draft keeps its status: it may have its cards already);
+--   * cut topics are deleted, but only while they are still drafts: a confirmed or ready topic has
+--     cards, and maybe weeks of reviews, which the delete would cascade to;
+--   * the cards jobs are queued (derived ids, so one queued before is left alone), in the given order;
+--   * each outline is marked approved, and each source with nothing kept is ready.
+-- All or nothing. Written one call at a time, a failure halfway left kept topics confirmed with no
+-- cards job and the outline unapproved, and the phone (which reviews draft topics only) had nothing
+-- left to send again.
+create function public.apply_outline_approval(
+  p_plan_id uuid,
+  p_keep jsonb,             -- [{"id", "title", "position"}]
+  p_cut uuid[],
+  p_jobs jsonb,             -- [{"id", "user_id", "job", "stage", "plan_id", "source_id", "input"}]
+  p_outline_ids uuid[],
+  p_approved_at text,
+  p_ready_source_ids uuid[]
+)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+begin
+  update public.topics t
+     set title = k.title,
+         position = k.position,
+         status = case when t.status = 'draft' then 'confirmed' else t.status end
+    from pg_catalog.jsonb_to_recordset(coalesce(p_keep, '[]'::jsonb)) as k(id uuid, title text, position integer)
+   where t.id = k.id and t.plan_id = p_plan_id;
+
+  delete from public.topics t
+   where t.id = any(coalesce(p_cut, '{}'::uuid[])) and t.plan_id = p_plan_id and t.status = 'draft';
+
+  -- One statement gives every row the same now(); a millisecond apart keeps the given order (the
+  -- worker claims the oldest first, and the phone syncs milliseconds).
+  insert into public.tracy_events (id, user_id, job, stage, plan_id, source_id, input, created_at)
+  select j.id, j.user_id, j.job, j.stage, j.plan_id, j.source_id, coalesce(j.input, '{}'::jsonb),
+         now() + (x.n - 1) * interval '1 millisecond'
+    from pg_catalog.jsonb_array_elements(coalesce(p_jobs, '[]'::jsonb)) with ordinality as x(v, n)
+   cross join lateral pg_catalog.jsonb_to_record(x.v)
+         as j(id uuid, user_id uuid, job text, stage text, plan_id uuid, source_id uuid, input jsonb)
+  on conflict (id) do nothing;
+
+  update public.tracy_events e
+     set output = e.output || pg_catalog.jsonb_build_object('approved_at', p_approved_at)
+   where e.id = any(coalesce(p_outline_ids, '{}'::uuid[])) and e.stage = 'outline'
+     and e.status = 'succeeded' and e.output is not null;
+
+  update public.sources s
+     set status = 'ready'
+   where s.id = any(coalesce(p_ready_source_ids, '{}'::uuid[]));
 end;
 $$;
 
@@ -487,8 +635,8 @@ $$;
 -- =================================================================================================
 
 -- The queue is the Edge Functions' business: service_role only.
-revoke all on function public.claim_tracy_events(integer) from public, anon, authenticated;
-grant execute on function public.claim_tracy_events(integer) to service_role;
+revoke all on function public.claim_tracy_events(integer, integer) from public, anon, authenticated;
+grant execute on function public.claim_tracy_events(integer, integer) to service_role;
 revoke all on function public.release_tracy_event(uuid, integer) from public, anon, authenticated;
 grant execute on function public.release_tracy_event(uuid, integer) to service_role;
 revoke all on function
@@ -496,6 +644,14 @@ revoke all on function
   from public, anon, authenticated;
 grant execute on function
   public.enqueue_tracy_event(uuid, text, text, jsonb, uuid, uuid, integer, integer, integer)
+  to service_role;
+revoke all on function public.requeue_tracy_event(uuid, integer, integer) from public, anon, authenticated;
+grant execute on function public.requeue_tracy_event(uuid, integer, integer) to service_role;
+revoke all on function
+  public.apply_outline_approval(uuid, jsonb, uuid[], jsonb, uuid[], text, uuid[])
+  from public, anon, authenticated;
+grant execute on function
+  public.apply_outline_approval(uuid, jsonb, uuid[], jsonb, uuid[], text, uuid[])
   to service_role;
 revoke all on function public.orphaned_source_objects(integer) from public, anon, authenticated;
 grant execute on function public.orphaned_source_objects(integer) to service_role;
@@ -506,3 +662,6 @@ revoke all on function public.keep_server_source_status() from public, anon, aut
 
 -- Only the database (pg_cron, as the owner) wakes the worker.
 revoke all on function private.kick_tracy_worker(text) from public, anon, authenticated, service_role;
+-- The cap check runs only inside enqueue_tracy_event and requeue_tracy_event (as the owner).
+revoke all on function private.check_tracy_cap(uuid, text, integer, integer, integer)
+  from public, anon, authenticated, service_role;

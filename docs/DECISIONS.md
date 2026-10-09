@@ -603,7 +603,8 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
   - Before a step that needs Tracy it calls `GET /health` (5 s). If Tracy is asleep (Render's free
     plan), the job goes back in the queue without counting an attempt
     (`release_tracy_event`), and the next minute tries again. The health call itself wakes Tracy.
-  - Tracy stores nothing and logs only metadata. DualRep's tasks never fall back to Groq.
+  - Tracy stores nothing on disk and logs only metadata (it keeps the last Storage file it read in
+    memory for a few minutes, see D34). DualRep's tasks never fall back to Groq.
 - **Why:** DualRep's service-role key never leaves DualRep, and its data never rests on Tracy. One
   short step per call fits the Free plan's limits, and the jobs table doubles as the phone's
   progress view.
@@ -696,9 +697,26 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
     stores only its own fixed sentences in `tracy_events.error`, which syncs to the phone
     ([D37](#d37-the-job-queue-claiming-fencing-retries-and-repeatable-ids-2026-10-09)).
   - **`DUALREP_STORAGE_HOSTS` fails closed:** Tracy downloads files only from the hosts it lists
-    (`<project-ref>.supabase.co`). Unset, every PDF, Word and photo job is refused.
+    (`<project-ref>.supabase.co`). Unset, every PDF, Word and photo job is refused, with the same
+    code (`bad_url`) whether the call was `/ai/extract` or a transcription, so the phone always says
+    "The study builder isn't set up yet" for it. A pasted `https://…/` is reduced to its host, and
+    `/diag` says whether every entry looks like a host.
   - **`/ai/extract` pages through long PDFs:** at most 100 pages per call, and it stops starting
-    new pages after 60 s; `last_page` says where it stopped, and the worker continues from there.
+    new pages after 60 s (or 3 million characters); `last_page` says where it stopped, and the
+    worker continues from there.
+  - **Untrusted files are read in a child process** (review fix, 2026-10-09): PDFs and Word files,
+    and the rendering of scanned pages, run in a separate Node process that Tracy stops past 350 MB
+    of memory (`EXTRACT_MAX_MEMORY_MB`) or its time limit. A 100 KB Word file can unpack to 100 MB
+    and a 300 KB PDF to a 300 MB page; read inside Tracy, that took the whole service down (and
+    Interverse and `/chat` with it). Such a file now fails with "The file is too large to read." One
+    file is read at a time; a second request meanwhile gets 503 `busy`, and the worker tries again
+    a minute later without counting it. Scanned pages are rendered one at a time as JPEG (a few
+    hundred KB each, about half the CPU of PNG), within 45 s, so the model keeps most of the task's
+    time.
+  - **The last Storage file stays in Tracy's memory** for up to 10 minutes, and each new request
+    for it asks Storage only whether it changed (`If-None-Match`; Storage still checks the signed
+    URL). A 200-page scan is transcribed in 50 batches of 4 pages; downloading the whole file each
+    time used about 1.3 GB of the project's 5 GB monthly downloads.
 - **Why:** [TRACY_INTEGRATION.md §7](TRACY_INTEGRATION.md#7-data-boundary-keep-dualrep-data-out-of-tracys-stores):
   DualRep's material must never land in Tracy's memory, knowledge, logs or a third provider.
 - **Alternatives:** sharing Interverse's secret (no way to revoke or limit DualRep alone).
@@ -737,9 +755,14 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
     unable to both slip under the limit.
   - Over the cap the function answers 429 `cap_reached` with `{stage, used, limit, resets_at}`,
     and the app says, for example, "You've used all 5 sources for this month. More can be added
-    from November 1." Hitting the cap during `submit_source` undoes the whole submit (its uploaded files
-    are swept after 3 days). Scanned PDF pages past the page cap are skipped, with a note on the
-    source.
+    from November 1." (for pages: "… handwritten and scanned pages …", because PDF pages without a
+    text layer use the same limit as photos of notes). Hitting the cap during `submit_source` undoes
+    the whole submit (its uploaded files are swept after 3 days). Scanned PDF pages past the page
+    cap are skipped, with a note on the source; they are only read by adding the file again.
+  - **Try again (`retry_job`) checks the cap too** when the job's units were given back (it was
+    cancelled before it ran): `requeue_tracy_event` puts the same job back under the same lock, or
+    answers `cap_reached`. Without that, "queue, cancel while queued, add more, then retry the
+    cancelled ones" got past the limit (review fix, 2026-10-09).
   - The tier comes from `has_paid_access()`, so beta access ([SETUP §14](SETUP.md#14-give-yourself-beta-access-for-testing))
     gets the paid limits.
 - **Why:** each source and page costs real money at Anthropic
@@ -761,11 +784,22 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
     that has since been retried. `locked_at` is in the fence so a long PDF can reset `attempts` for
     each new window and get three tries per window.
   - **Retries:** an answer Tracy's checks rejected goes back to Tracy with the findings as
-    `previous_errors`; a cut-off answer goes back with "answer more briefly". A refusal, a bad file
-    or a wrong secret fails at once. Network errors, timeouts and 5xx retry, up to 3 attempts. An
-    HTML 502/503/504 page (Render waking) or a failed `/health` releases the job without counting
-    the attempt. Express's own 404/405 page ("the DualRep lane isn't deployed yet") fails at once
-    with "The study builder isn't set up yet. Try again later."
+    `previous_errors`; a cut-off answer goes back with "answer more briefly" (and an outline with
+    half as many entries, see D38). A refusal, a bad file or a wrong secret fails at once. Network
+    errors, timeouts and 5xx retry, up to 3 attempts. Express's own 404/405 page ("the DualRep lane
+    isn't deployed yet") fails at once with "The study builder isn't set up yet. Try again later."
+  - **Released, not counted:** only a job that never reached Tracy: its `/health` check failed
+    (Render's free service asleep), or Tracy answered 503 `busy` (it reads one file at a time). The
+    database counts these in a row (`tracy_events.releases`); after 15 (about a quarter of an
+    hour) Tracy is down rather than asleep and the job fails with "Tracy couldn't be reached for a
+    while. Try again later." Render's HTML 502/503/504 page after a passing `/health` means Tracy
+    died with the request (often out of memory) and **is** counted, so a file that crashes Tracy
+    fails after three tries. (Before the review fix both were released uncounted: such a file
+    crashed Tracy every minute for ever, and as the oldest queued job it held up everyone's.)
+  - **One step at a time:** `claim_tracy_events(p_limit, p_max_running)` claims nothing while
+    `DUALREP_WORKER_CONCURRENCY` jobs (default 1) are running with a lock under 3 minutes old. The
+    every-minute cron and the self-kicks otherwise added a parallel chain each minute during a
+    backlog, and two scanned-page renders at once exceed Render's free 512 MB.
   - **Fixed messages:** every `error` the phone shows is one of a fixed list of English sentences
     (`MESSAGES` in [`supabase/functions/_shared/errors.ts`](../supabase/functions/_shared/errors.ts)).
     They never contain the material, a URL or a model's words.
@@ -805,15 +839,28 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
   - **An outline that only adds to topics the plan already has** (common in a growing course) has
     no drafts to review, so the worker approves it itself and goes on to cards.
   - `approve_outline` sets aside the drafts of an outline whose job didn't finish; they are
-    reviewed with it later.
+    reviewed with it later. Its writes (confirm kept topics, delete cut drafts, queue the cards
+    jobs, mark the outline approved) happen in one transaction (`apply_outline_approval`), and it
+    only ever deletes topics that are still drafts. Written one call at a time, a failure halfway
+    left kept topics confirmed with no cards job, and the next approval of new material deleted
+    them, with their cards and reviews (review fix, 2026-10-09).
   - **Cards:** one job per kept topic (at most 40 chunks each), plus one for each existing topic
     the outline added material to. Up to 300 of the plan's existing cards go along, so the builder
     can link to them and avoid repeats. A topic is `ready` when its cards jobs are done and at least
     one succeeded; a source is `ready` when none of its cards jobs is open. A failed or cancelled
     extract or outline marks the source `failed`, and **Try again** puts it back to `processing`.
   - **Sizes:** at most ceil(chunks / 5) topics (1–30) and ceil(1.5 × chunks) cards per topic
-    (2–20); card types question, fill-the-gap and explain-why. A source of more than 600 chunks is
-    outlined in groups of neighbouring chunks.
+    (2–20); card types question, fill-the-gap and explain-why.
+  - **The outline's input is kept small**, because its answer must list every entry once and has
+    to fit Tracy's output budget (thinking included, within 105 s): entries are sent as short
+    references (`c1`, `c2`, …, about 3 tokens each instead of about 25 for a UUID), at most 200 of
+    them (a source of more than 200 chunks, about a 70-page PDF, is outlined in groups of
+    neighbouring chunks), and an answer that was cut off or too slow is asked again with half as
+    many entries (100, then 50), never with the same input. (Before the review fix a 100-page
+    course PDF could never be outlined: 300 UUIDs did not fit.)
+  - A failed cards job shows on its source ("Couldn't finish", **Try again**) until it is retried,
+    even when other topics' cards were made; notes whose every page was skipped show "Every page
+    was skipped" with **Try again**, and the last page that isn't skipped can't be skipped.
   - Signed Storage URLs for Tracy last 600 s, and the worker checks a file's path is inside its
     owner's and source's folder before signing it.
 - **Why:** the plan says transcriptions are confirmed before any cards are made, and the outline is
@@ -975,7 +1022,11 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
     for short answers. Alternatives in an answer are separated by `;` or `|`. Two rules on top of
     the research version: every number must match exactly (decimal points and minus signs kept, so
     9.8 is not 9.81), and a spelling slip only counts as close when the first letter matches (so
-    "affect" for "effect" is wrong).
+    "affect" for "effect" is wrong). Review fixes: an answer that contains the expected words may
+    add only filler words ("it's the mitochondria", "in 1914"); "mitosis or meiosis", "not true" or
+    "oxidation and reduction" are wrong, because a close answer is saved as Good at once. And words
+    that start with opposite prefixes (hyper/hypo, exo/endo, ab/ad, inter/intra, …) are never a
+    spelling slip of each other.
   - A right or close answer is saved as Good ("Counted as right. Spelling: …" for a close one). A
     wrong one shows the answer with **I missed it** (Again) or **Count it as right** (Good). An empty
     answer counts as "I don't know". Typed answers never give Hard or Easy.
@@ -1019,6 +1070,12 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
     zero-tap.
   - Cards of `draft` topics are never studied; `confirmed` ones are (a slow worker never hides cards
     that exist).
+  - Cards made by hand (no source) are in every block of their plan, whichever source it studies.
+    The due and new counts on Home, the plan and the reminder count only what a block asks: in a
+    single-source plan, its hand-made cards and its studied source's (review fix, 2026-10-09).
+  - A card just answered stays out of the queue until both the block's answers and its own due row
+    show the answer (the two live queries refresh separately), so a learning card is never asked
+    twice in a second.
 - **Why:** the plan's quiz-first block (due cards → new material → closing self-test) without
   risking the Phase 1 loop, which is already tested offline end to end.
 - **Alternatives:** study steps inside the timer machine (a new state version and every Phase 1
@@ -1051,9 +1108,10 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
   - Channel `reviews-v1` (default importance), one notification id (`reviews-due`). It says "Cards
     to review: N cards are due. A 10-minute block clears a lot of them." The lock screen shows only
     the count, never a card.
-  - If cards are due by the next reminder time: a daily reminder with that count. If not: one
-    reminder at the reminder time on the day the first card falls due. If no card will ever be due:
-    none.
+  - If cards are due by the next reminder time: a daily reminder with that count. If not: a
+    reminder at the reminder time on the day the first card falls due and on each of the 13 days
+    after it (unanswered cards stay due, so a dismissed reminder is not the last one; review fix,
+    2026-10-09). If no card will ever be due: none.
   - It is set again when the app starts, when it returns to the foreground, when card states change
     (at most every 30 s), after each study block, and when the setting changes. It never throws.
   - No background sync and no exact alarm: a reminder a little late is fine.

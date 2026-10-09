@@ -26,6 +26,17 @@ const T = TABLE;
 const NOT_DRAFT = `COALESCE(t.status, 'ready') <> 'draft'`;
 /** An unsuspended state row that has been answered. Needs `s`. */
 const ANSWERED = `COALESCE(s.suspended, 0) = 0 AND s.state <> 0`;
+/**
+ * The card is one its plan's focus blocks ask (queue.ts resolveScope), so "due" in the plan, Home
+ * and reminder counts means "a block will ask it": every card of a cumulative plan; in a
+ * single-source plan, hand-made cards (no source) and the cards of the source it studies, its newest
+ * source with cards (the only one, for a plan that was never cumulative). Needs `c` and `p`.
+ */
+const IN_SCOPE = `(p.scope = 'cumulative' OR c.source_id IS NULL OR c.source_id = (
+    SELECT ps2.source_id FROM ${T.plan_sources} ps2
+    WHERE ps2.plan_id = c.plan_id
+      AND EXISTS (SELECT 1 FROM ${T.cards} c2 WHERE c2.plan_id = ps2.plan_id AND c2.source_id = ps2.source_id)
+    ORDER BY ps2.added_at DESC, ps2.source_id LIMIT 1))`;
 
 // ------------------------------------------------------------------------------------------------
 // Plans
@@ -53,10 +64,11 @@ function plansSql(where: string): string {
   (SELECT COUNT(*) FROM ${T.cards} c LEFT JOIN ${T.topics} t ON t.id = c.topic_id
      WHERE c.plan_id = p.id AND ${NOT_DRAFT}) AS card_count,
   (SELECT COUNT(*) FROM ${T.card_states} s JOIN ${T.cards} c ON c.id = s.card_id LEFT JOIN ${T.topics} t ON t.id = c.topic_id
-     WHERE c.plan_id = p.id AND s.user_id = ? AND ${ANSWERED} AND s.due <= ? AND ${NOT_DRAFT}) AS due_count,
+     WHERE c.plan_id = p.id AND s.user_id = ? AND ${ANSWERED} AND s.due <= ? AND ${NOT_DRAFT} AND ${IN_SCOPE}) AS due_count,
   (SELECT COUNT(*) FROM ${T.cards} c LEFT JOIN ${T.topics} t ON t.id = c.topic_id
      LEFT JOIN ${T.card_states} s ON s.card_id = c.id AND s.user_id = ?
-     WHERE c.plan_id = p.id AND ${NOT_DRAFT} AND (s.id IS NULL OR (s.state = 0 AND COALESCE(s.suspended, 0) = 0))) AS new_count
+     WHERE c.plan_id = p.id AND ${NOT_DRAFT} AND ${IN_SCOPE}
+       AND (s.id IS NULL OR (s.state = 0 AND COALESCE(s.suspended, 0) = 0))) AS new_count
 FROM ${T.study_plans} p${where}
 ORDER BY p.updated_at DESC, p.id`;
 }
@@ -313,19 +325,21 @@ ORDER BY l.created_at, l.id`;
 // Due counts (Home, the reminder)
 // ------------------------------------------------------------------------------------------------
 
-/** Params: user id, until (ISO). Cards due by then across every plan. */
+/** Params: user id, until (ISO). Cards due by then across every plan (only cards a block asks). */
 export const DUE_COUNT_SQL = `SELECT COUNT(*) AS n
 FROM ${T.card_states} s
 JOIN ${T.cards} c ON c.id = s.card_id
+JOIN ${T.study_plans} p ON p.id = c.plan_id
 LEFT JOIN ${T.topics} t ON t.id = c.topic_id
-WHERE s.user_id = ? AND ${ANSWERED} AND s.due <= ? AND ${NOT_DRAFT}`;
+WHERE s.user_id = ? AND ${ANSWERED} AND s.due <= ? AND ${NOT_DRAFT} AND ${IN_SCOPE}`;
 
 /** Params: user id, after (ISO). The first due time after then, across every plan (null when none). */
 export const FIRST_DUE_AFTER_SQL = `SELECT MIN(s.due) AS due
 FROM ${T.card_states} s
 JOIN ${T.cards} c ON c.id = s.card_id
+JOIN ${T.study_plans} p ON p.id = c.plan_id
 LEFT JOIN ${T.topics} t ON t.id = c.topic_id
-WHERE s.user_id = ? AND ${ANSWERED} AND s.due > ? AND ${NOT_DRAFT}`;
+WHERE s.user_id = ? AND ${ANSWERED} AND s.due > ? AND ${NOT_DRAFT} AND ${IN_SCOPE}`;
 
 /** Params: user id. Changes when a card state changes (a sync, an answer): the reminder watches it. */
 export const CARD_STATES_VERSION_SQL = `SELECT MAX(updated_at) AS v, COUNT(*) AS n FROM ${T.card_states} WHERE user_id = ?`;
@@ -354,7 +368,9 @@ const STATE_COLUMNS = `s.id AS state_id, s.state, s.due, s.stability, s.difficul
 
 /**
  * Params: user id, plan id, source id or null, the same source id, until (ISO: the block's end, so
- * learning steps that come due inside the block are included). Learning first, then by due.
+ * learning steps that come due inside the block are included). Learning first, then by due. A
+ * hand-made card has no source, so it is in every source's queue (it would otherwise never be asked
+ * in a single-source plan).
  */
 export const QUEUE_DUE_SQL = `SELECT s.card_id, ${STATE_COLUMNS}, ${QUEUE_CARD_COLUMNS}
 FROM ${T.card_states} s
@@ -362,7 +378,7 @@ JOIN ${T.cards} c ON c.id = s.card_id
 LEFT JOIN ${T.topics} t ON t.id = c.topic_id
 LEFT JOIN ${T.sources} src ON src.id = c.source_id
 WHERE s.user_id = ? AND ${ANSWERED} AND c.plan_id = ?
-  AND (? IS NULL OR c.source_id = ?)
+  AND (? IS NULL OR c.source_id = ? OR c.source_id IS NULL)
   AND ${NOT_DRAFT}
   AND s.due <= ?
 ORDER BY CASE WHEN s.state IN (1, 3) THEN 0 ELSE 1 END, s.due
@@ -370,7 +386,8 @@ LIMIT 400`;
 
 /**
  * Params: user id, plan id, source id or null, the same source id. Cards never answered, in the
- * order they are introduced: newest source first (cumulative plans), then outline order.
+ * order they are introduced: newest source first (cumulative plans), then outline order. Hand-made
+ * cards (no source) are in every source's queue, after the source's own.
  */
 export const QUEUE_NEW_SQL = `SELECT c.id AS card_id, ${STATE_COLUMNS}, ${QUEUE_CARD_COLUMNS}
 FROM ${T.cards} c
@@ -379,7 +396,7 @@ LEFT JOIN ${T.card_states} s ON s.card_id = c.id AND s.user_id = ?
 LEFT JOIN ${T.plan_sources} ps ON ps.plan_id = c.plan_id AND ps.source_id = c.source_id
 LEFT JOIN ${T.sources} src ON src.id = c.source_id
 WHERE c.plan_id = ? AND (s.id IS NULL OR (s.state = 0 AND COALESCE(s.suspended, 0) = 0))
-  AND (? IS NULL OR c.source_id = ?)
+  AND (? IS NULL OR c.source_id = ? OR c.source_id IS NULL)
   AND ${NOT_DRAFT}
 ORDER BY ps.added_at DESC, t.position, c.created_at, c.id
 LIMIT 50`;

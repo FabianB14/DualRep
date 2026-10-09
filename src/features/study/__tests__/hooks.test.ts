@@ -188,6 +188,29 @@ describe('useStudyQueue', () => {
     expect(latest().newLeft).toBe(4);
   });
 
+  it('a just-answered learning card is not asked again when the answers refresh before the due rows', () => {
+    // L1 is in learning and due; nothing else is due and no new card is left.
+    const learning = { ...stateRow('L1', 1, NOW - MIN), last_review: new Date(NOW - 11 * MIN).toISOString() };
+    mockRows.set(QUEUE_DUE_SQL, [learning]);
+    const { latest, rerender } = render(() => useStudyQueue({ ...options, remainingMs: 15 * MIN }));
+    expect(latest().next).toMatchObject({ type: 'card', card: { cardId: 'L1' } });
+    act(() => latest().markAnswered('L1', 'rev-1'));
+    expect(latest().next?.type).not.toBe('card');
+    // The block's answers refresh first; the due query still shows L1's row from before the answer.
+    const answer = { id: 'rev-1', card_id: 'L1', prev_state: 1, rating: 3, reviewed_at: new Date(NOW).toISOString(), duration_ms: 4000, source_id: 's1', topic_id: 't1' };
+    mockRows.set(BLOCK_ANSWERS_SQL, [answer]);
+    rerender();
+    expect(latest().next?.type).not.toBe('card');
+    // The due query catches up (L1's next step is in 10 minutes): nothing to ask, nothing left out.
+    mockRows.set(QUEUE_DUE_SQL, [{ ...learning, due: new Date(NOW + 10 * MIN).toISOString(), last_review: new Date(NOW).toISOString() }]);
+    rerender();
+    expect(latest().next?.type).not.toBe('card');
+    // Ten minutes on, its step is due: the refreshed row is asked again, as it should be.
+    mockRows.set(QUEUE_DUE_SQL, [{ ...learning, due: new Date(NOW).toISOString(), last_review: new Date(NOW).toISOString() }]);
+    rerender();
+    expect(latest().next).toMatchObject({ type: 'card', card: { cardId: 'L1', reason: 'learning' } });
+  });
+
   it('keeps the self-test’s start once the queue begins it, and uses a stored one', () => {
     const answered = { id: 'rev-1', card_id: 'n1', prev_state: 0, rating: 3, reviewed_at: new Date(NOW - 10 * MIN).toISOString(), duration_ms: 5000, source_id: 's1', topic_id: 't1' };
     mockRows.set(BLOCK_ANSWERS_SQL, [answered, { ...answered, id: 'rev-2', card_id: 'r9', prev_state: 2 }]);

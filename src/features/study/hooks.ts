@@ -346,20 +346,37 @@ export function useStudyQueue(options: StudyQueueOptions): StudyQueue {
   );
 
   // Cards answered a moment ago whose rows have not refreshed yet: cardId → reviewId, per block. A
-  // card stops being left out as soon as its review is among the block's answers.
+  // card is left out until BOTH live queries show the answer: the block's answers (its review is
+  // there) and the card's own due/new row (its last review is at or after that review). The queries
+  // refresh on their own, so either can come first; going by the answers alone, a stale due row could
+  // ask a learning card again a second after it was answered (and record a second answer).
   const blockId = options.blockId;
   const [answered, setAnswered] = useState<{ blockId: string | null; cards: ReadonlyMap<string, string> }>({
     blockId: null,
     cards: new Map(),
   });
   const exclude = useMemo(() => {
-    const reviewIds = new Set(answers.data.map((a) => a.id));
+    const reviewedAt = new Map(answers.data.map((a) => [a.id, parseIso(a.reviewed_at)]));
+    // The last review each candidate row shows (null: a row from before the card's first answer).
+    const shownLastReview = new Map<string, number | null>();
+    for (const candidate of [...dueList, ...freshList]) {
+      shownLastReview.set(candidate.cardId, candidate.stateRow ? parseIso(candidate.stateRow.last_review) : null);
+    }
     const cards = new Set<string>();
     if (answered.blockId === blockId) {
-      for (const [cardId, reviewId] of answered.cards) if (!reviewIds.has(reviewId)) cards.add(cardId);
+      for (const [cardId, reviewId] of answered.cards) {
+        const at = reviewedAt.get(reviewId);
+        if (at === undefined || at === null) {
+          cards.add(cardId); // the block's answers have not caught up
+          continue;
+        }
+        if (!shownLastReview.has(cardId)) continue; // not due or new any more: nothing to leave out
+        const last = shownLastReview.get(cardId) ?? null;
+        if (last === null || last < at) cards.add(cardId); // its row is from before the answer
+      }
     }
     return cards;
-  }, [answered, answers.data, blockId]);
+  }, [answered, answers.data, blockId, dueList, freshList]);
   const markAnswered = useCallback(
     (cardId: string, reviewId: string) => {
       setAnswered((current) => ({

@@ -208,15 +208,21 @@ const KIND_BY_CODE: Partial<Record<string, StudyApiErrorKind>> = {
   server_error: 'server',
 };
 
-function kindForStatus(status: number, hasBody: boolean): StudyApiErrorKind {
+/**
+ * The kind for a status, when the body is not the function's own. `own` = the function answered
+ * (its bodies always say `ok: false`). Anything else came from the platform in front of it: a 404
+ * then means no `study` function is deployed (Supabase answers {"code":"NOT_FOUND"} or
+ * NOT_FOUND_FUNCTION_BLOB, upper case), never "this plan was not found".
+ */
+function kindForStatus(status: number, own: boolean): StudyApiErrorKind {
   if (status === 401) return 'signed_out';
   if (status === 429) return 'cap_reached';
-  if (status === 404 && !hasBody) return 'not_configured'; // no such function deployed
+  if (status === 404 && !own) return 'not_configured'; // no such function deployed
   if (status === 400 || status === 422) return 'bad_request';
   if (status === 403) return 'forbidden';
   if (status === 404) return 'not_found';
   if (status === 409) return 'conflict';
-  if (status === 503 && !hasBody) return 'not_configured';
+  if (status === 503 && !own) return 'not_configured';
   return 'server';
 }
 
@@ -270,14 +276,17 @@ export async function toStudyApiError(error: unknown, signal?: AbortSignal): Pro
     } catch {
       body = null;
     }
-    const code = typeof body?.code === 'string' ? body.code : null;
-    const kind = (code ? KIND_BY_CODE[code] : undefined) ?? kindForStatus(status, body !== null && code !== null);
+    // Only the function's own body (ok: false) carries its code and message; the platform's JSON
+    // ({"code":"NOT_FOUND","message":"Requested function was not found"}) does not.
+    const own = body !== null && body.ok === false ? body : null;
+    const code = typeof own?.code === 'string' ? own.code : null;
+    const kind = (code ? KIND_BY_CODE[code] : undefined) ?? kindForStatus(status, own !== null);
     return new StudyApiError(kind, {
       status,
       code,
-      serverMessage: typeof body?.error === 'string' ? body.error : null,
-      errors: Array.isArray(body?.errors) ? (body.errors as unknown[]).filter((e): e is string => typeof e === 'string') : [],
-      cap: kind === 'cap_reached' && body ? capFrom(body) : null,
+      serverMessage: typeof own?.error === 'string' ? own.error : null,
+      errors: Array.isArray(own?.errors) ? (own.errors as unknown[]).filter((e): e is string => typeof e === 'string') : [],
+      cap: kind === 'cap_reached' && own ? capFrom(own) : null,
     });
   }
   if (signal?.aborted) return new StudyApiError('cancelled');
@@ -351,9 +360,13 @@ function formatDay(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
 }
 
-/** The cap in plain words: "You've added 5 sources this month, the most for your plan. …" */
+/**
+ * The cap in plain words: "You've used all 5 sources for this month. …". The page limit covers
+ * photos of notes and the scanned pages of PDFs (pages without a text layer are transcribed too),
+ * so it never says "pages of notes": a scanned PDF can use it up before any notes are added.
+ */
 export function describeCap(cap: CapInfo): string {
-  const what = cap.stage === 'extract' ? 'sources' : 'pages of notes';
+  const what = cap.stage === 'extract' ? 'sources' : 'handwritten and scanned pages';
   const used = cap.limit > 0 ? `You’ve used all ${cap.limit} ${what} for this month.` : `You’ve used this month’s ${what}.`;
   return `${used} More can be added from ${formatDay(cap.resetsAt)}.`;
 }

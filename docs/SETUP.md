@@ -1362,9 +1362,13 @@ variables** → **Actions**. On the **Secrets** tab, click **New repository secr
 can leave out for now:
 
 - `DUALREP_CAP_SOURCES_FREE`, `DUALREP_CAP_SOURCES_PAID`, `DUALREP_CAP_PAGES_FREE`,
-  `DUALREP_CAP_PAGES_PAID`: the monthly limits per person. Unset means 5 sources and 20 pages of
-  notes a month on the free tier, 30 and 200 with a subscription or beta access. `none` means no
-  limit ([DECISIONS.md](DECISIONS.md) D36).
+  `DUALREP_CAP_PAGES_PAID`: the monthly limits per person. Unset means 5 sources and 20 pages a
+  month on the free tier, 30 and 200 with a subscription or beta access. "Pages" are photos of notes
+  **and** the scanned pages of PDFs (see step 7). `none` means no limit
+  ([DECISIONS.md](DECISIONS.md) D36).
+- `DUALREP_WORKER_CONCURRENCY`: how many study-builder steps may run at the same time, for everyone
+  together. Unset means 1, which is right for Tracy on Render's free plan: two scanned-PDF pages
+  being read at once can use up its memory. With a paid Render plan you could try `2`.
 - `SUPABASE_PROJECT_REF`: only if `EXPO_PUBLIC_SUPABASE_URL` is a custom domain.
 
 **Success:** the Secrets tab lists `SUPABASE_ACCESS_TOKEN` and `TRACY_SERVICE_SECRET`. The
@@ -1485,8 +1489,14 @@ PowerSync checks that the columns exist.
 **Success:** Today has a **Study** group with a **Study plans** row ("Turn your course material
 into cards"), and Settings has **Answering cards** and **Daily review reminder**.
 
-Optional: to try more than 5 sources or 20 pages of notes this month, give yourself beta access
-([section 14](#14-give-yourself-beta-access-for-testing)); the higher limits (30 and 200) then apply.
+**Before day 1, give yourself beta access** ([section 14](#14-give-yourself-beta-access-for-testing)),
+so the higher limits (30 sources and 200 pages a month) apply. This is not optional for the gate.
+The 20 free pages a month are shared by photos of notes **and** every PDF page that has no text
+layer: scanned pages, but also slides that are only a diagram or a picture. Such pages are read
+from their image, and each one uses a page. A course PDF can use up all 20 before you add your
+notes, and then the notes in step 8.6 are refused. Worse, the PDF's own picture pages over the
+limit are skipped for good: "Try again" can't bring them back, only adding the file again after the
+limit is raised (which uses another source).
 
 ### Step 8: The gate, day 1: one plan from a PDF and a page of notes
 
@@ -1676,7 +1686,8 @@ long the steps took.
 | `/diag` has no `dualrepLane` | The tracy-ai pull request isn't merged or deployed yet (step 3b). |
 | `configured: false` / `storageHostsSet: false` | Add `SERVICE_SECRET_DUALREP` / `DUALREP_STORAGE_HOSTS` (step 3a). |
 | Tracy's log says "SERVICE_SECRET_DUALREP equals SERVICE_SECRET…" | The two must differ: make a new Tracy secret (step 2), then update Render and GitHub and run Deploy backend. |
-| Tracy keeps restarting, or reading big PDFs is very slow | Render's free plan has little memory and CPU. Try a smaller PDF first. If it persists: on Render, set `EXTRACT_MAX_PAGES` to `40`, or move Tracy to a paid plan. |
+| Tracy keeps restarting, or reading big PDFs is very slow | Render's free plan has little memory and CPU. Tracy reads each PDF in a separate process that it stops when it uses too much memory (the file then fails with "The file is too large to read."), and the study builder sends it one step at a time. If Tracy still restarts: on Render, set `EXTRACT_MAX_PAGES` to `40`, or move Tracy to a paid plan. A file that crashes Tracy now fails after three tries instead of being sent again every minute. |
+| `/diag` says `storageHostsLookValid: false` | `DUALREP_STORAGE_HOSTS` has a typo: it must be just `<project-ref>.supabase.co` (a pasted `https://…/` is cleaned up for you, anything else is not). |
 
 **Adding material** (the "Not added" box on Add material, or "That didn't work" on the plan):
 
@@ -1685,7 +1696,7 @@ long the steps took.
 | "No internet connection. Adding and preparing material needs the internet; studying doesn't." | Go online and tap the button again. What you picked is kept. |
 | "Adding material isn't set up on the server yet. Try again later." | The `study` function isn't deployed: step 5c. |
 | "Your session has expired. Sign in again, then try again." | Sign out and in again (online, after **Waiting to upload: 0**). |
-| "You've used all 5 sources for this month. More can be added from November 1." (or "… pages of notes …") | The monthly limit. For testing: beta access ([section 14](#14-give-yourself-beta-access-for-testing)), or a higher `DUALREP_CAP_…` variable (step 4c) and Deploy backend again. |
+| "You've used all 5 sources for this month. More can be added from November 1." (or "… handwritten and scanned pages …") | The monthly limit. The page limit counts photos of notes and the PDF pages that had to be read from their image (scans, picture-only slides), so a scanned PDF can use it up before any notes. For testing: beta access ([section 14](#14-give-yourself-beta-access-for-testing)), or a higher `DUALREP_CAP_…` variable (step 4c) and Deploy backend again. |
 | "This plan isn't on the server yet. Wait a moment for it to sync, then try again." | A plan made offline hasn't uploaded. Settings → **Sync** must say **Connected: Yes** and **Waiting to upload: 0**. |
 | "… is larger than 25 MB." / "Only PDF and Word (.docx) files can be added." / "Up to 20 photos per set of notes…" | The limits. Split a big PDF, or save an old `.doc` as `.docx`. |
 | "Use a web address that starts with https://." | Links must be public `https://` pages. |
@@ -1696,13 +1707,17 @@ long the steps took.
 | The reason under it | What it means | What to do |
 |---|---|---|
 | "The study builder isn't set up yet. Try again later." | Tracy refused the worker: the tracy-ai pull request isn't live, `TRACY_SERVICE_SECRET` (GitHub) differs from `SERVICE_SECRET_DUALREP` (Render), or `DUALREP_STORAGE_HOSTS` isn't exactly `<project-ref>.supabase.co` | Check `/diag` (step 3c) and both secrets. After changing the GitHub secret, run Deploy backend again. Then **Try again**. |
-| "Tracy couldn't finish this step. Try again." / "Tracy didn't answer in time. Try again." | Three attempts failed (Tracy down, slow or restarting) | Open Tracy's `/health`, then **Try again**. If the very first job fails like this while Tracy is awake, the safety fallback may not mix with Tracy's request format (not yet tested live): add `TRACY_TASK_FALLBACKS` = `off` on Render (step 3a), wait for the restart, then **Try again**. |
+| "Tracy couldn't finish this step. Try again." / "Tracy didn't answer in time. Try again." | Three attempts failed (Tracy slow, or restarting while it worked on this file) | Open Tracy's `/health`, then **Try again**. If the same file fails like this every time, Tracy may be running out of memory on it: see "Tracy keeps restarting" above. If the very first job fails like this while Tracy is awake, the safety fallback may not mix with Tracy's request format (not yet tested live): add `TRACY_TASK_FALLBACKS` = `off` on Render (step 3a), wait for the restart, then **Try again**. |
+| "Tracy couldn't be reached for a while. Try again later." | For about a quarter of an hour, every try found Tracy not answering at all (its `/health` failed): Render suspended it, or `TRACY_URL` is wrong | Open Tracy's `/health` in a browser (step 1). If it doesn't answer, check the service on Render. If it does, check the `TRACY_URL` variable (step 4c) and run Deploy backend again. Then **Try again**. |
 | "This step took too long. Try again." | A step was cut off three times | **Try again**. If it repeats on a big PDF, see "Tracy keeps restarting" above. |
 | "Tracy declined to work on this material." | Anthropic's safety checks refused it (possible with some biology, medicine, chemistry or security material) | Try a different part of the course. If proper course material keeps being refused, you can set `TRACY_TASK_MODEL_STRONG` to `claude-haiku-4-5` on Render for it, tap **Try again**, and switch back afterwards. |
 | "This PDF is password-protected. Upload a copy without a password." / "This PDF couldn't be read." / "No readable text was found." | The file itself | Use another copy of the file. |
-| "Tracy's answer didn't pass the checks. Try again." / "This part was too long to process. Try again." | The model's answer was rejected or cut off three times | **Try again**. |
-| "This month's page limit is used up, so the scanned pages weren't read." | A scanned PDF needed more pages than the monthly limit | Beta access or a higher `DUALREP_CAP_PAGES_…` (above). |
-| Any reason, on a page of notes or a scanned page, with **Skip this page** below it | That page's transcription failed | **Try again**, or **Skip this page** to go on without it. |
+| "Tracy's answer didn't pass the checks. Try again." | The model's answer was rejected three times | **Try again**. |
+| "This part was too long to process. Try again." | The outline (or a topic's cards) came back cut off three times. For an outline, each try already sent a shorter summary of the material (big documents are summarised a few passages at a time) | **Try again**: it starts from the shortest summary. If it repeats, split the PDF into two files and add them one at a time. |
+| "This month's page limit is used up, so the scanned pages weren't read." (or, under **Ready**, "4 scanned pages weren't transcribed: this month's page limit is used up.") | A PDF had more pages without a text layer (scans, picture-only slides) than the monthly page limit allowed | Beta access or a higher `DUALREP_CAP_PAGES_…` (above). Pages skipped for the limit are not read later by **Try again**: after raising the limit, add the file again as new material (that uses another source). |
+| "Every page was skipped, so there is nothing to study yet." | Every page of these notes was skipped | **Try again** reads the last skipped page again. |
+| Any reason, on a page of notes or a scanned page, with **Skip this page** below it | That page's transcription failed | **Try again**, or **Skip this page** to go on without it. The last page of a set of notes that isn't skipped can't be skipped (there would be nothing left): **Try again**. |
+| Any reason on a source that was already **Ready** | One topic's cards couldn't be made (other topics have theirs) | **Try again** for that topic. Until then the topic shows "Making cards" with no cards. |
 
 **A source stays on "Waiting to start" for more than 5 minutes:** the worker isn't being woken. In
 the SQL Editor:
@@ -1724,6 +1739,7 @@ ticked. Supabase dashboard → **Edge Functions** → `tracy-worker` → **Logs*
 | "A page could not be transcribed. Try it again or skip it first." | On the plan, **Try again** or **Skip this page** for that page. |
 | "There is nothing to study in these pages yet. Type the notes into the transcript first." | Every page is empty: type the notes in, then **Confirm**. |
 | "There is no outline to review yet." / "No outline to review" | It was already saved, or the outline isn't made yet. Go back to the plan. |
+| "Not saved" after **Save and make cards** | Nothing was changed (the save is all or nothing). Check you are online and tap **Save and make cards** again. |
 
 **Studying and the reminder:**
 
@@ -1732,7 +1748,9 @@ ticked. Supabase dashboard → **Edge Functions** → `tracy-worker` → **Logs*
 | The start screen shows only the "What are you studying?" text box | No study plan is on this phone yet: make one under **Study plans**. |
 | "Your material is being prepared." in the focus block | Its cards aren't made yet; the block runs as a plain timer. |
 | "Couldn't save that answer on this phone. Try again." | Tap the answer again; the same answer is never saved twice. If it stays, take a screenshot and get help. |
-| The reminder didn't ring | Settings → **Daily review reminder** must be on, and notifications allowed ("Notifications are off for DualRep…" shows if not). It rings only on days with cards due. |
+| The reminder didn't ring | Settings → **Daily review reminder** must be on, and notifications allowed ("Notifications are off for DualRep…" shows if not). It rings only on days with cards due. If you ignore it, it rings again the following days (up to two weeks) until you open the app. |
+| A card I wrote by hand never comes up | It is asked in every block of its plan, after the material's own new cards. If it still doesn't, check it isn't in a topic that is still a draft. |
+| A typed answer like "mitosis or meiosis" was marked wrong | On purpose: an answer that names two things, says "not …", or uses the opposite prefix ("hypertonic" for "hypotonic") is not counted as right by itself. Tap **Count it as right** if it was. |
 | **Take a photo** is missing | The phone runs Android 9 or older: use the gallery. |
 
 ### What Phase 2 costs each month
@@ -1743,7 +1761,7 @@ in Anthropic's console (**Usage**).
 
 | Service | Cost | Notes |
 |---|---|---|
-| Supabase | $0 (Free plan) | Limits that matter now: 500 MB database, 1 GB of file storage, 500,000 Edge Function calls a month (the every-minute schedule only calls the worker when there is work), 5 GB of downloads. A free project is paused after a week with little activity (**verify** the rule); restoring it is a click. |
+| Supabase | $0 (Free plan) | Limits that matter now: 500 MB database, 1 GB of file storage, 500,000 Edge Function calls a month (the every-minute schedule only calls the worker when there is work), 5 GB of downloads (egress). Tracy downloading the files counts as downloads: a scanned PDF is read in batches of 4 pages, and Tracy keeps the file it read last and only checks with Supabase that it hasn't changed, so a 25 MB scan should cost about 25 MB, not 25 MB per batch (**verify** in the dashboard's **Usage** after the first big scan). Over 5 GB in a month, Supabase restricts the project (sync and uploads stop until the next month): watch **Usage** in the Supabase dashboard if many large scans are added. A free project is paused after a week with little activity (**verify** the rule); restoring it is a click. |
 | PowerSync | $0 (Free plan) | As in Phase 0. |
 | Render (Tracy) | $0 (free plan) | Sleeps after 15 idle minutes and takes about a minute to wake; the worker copes with that by itself. A paid instance never sleeps and reads PDFs faster (**verify** the price on render.com). |
 | GitHub Actions | $0 | Each Deploy backend run uses a few minutes of the monthly allowance. |

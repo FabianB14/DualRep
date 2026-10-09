@@ -13,10 +13,15 @@
  *   source ready               → done
  * Embedding jobs are optional background work: they never show and never block.
  *
- * A failed job counts until a later job of the same stage (the next window of a long PDF) is queued,
- * running or done (a failed page transcription counts until it is retried or skipped); Try again (retry_job) puts the same job back in the queue. A cancelled job is a
- * skipped page (transcription) or a stopped step (the source is then failed, and Try again restarts
- * that job). Contract: supabase/functions/study/index.ts, "What the phone follows".
+ * A failed extraction or outline job counts until a later job of its stage (the next window of a
+ * long PDF) is queued, running or done. A failed page transcription or cards job counts until it is
+ * retried (or, a page, skipped): those are one job per page or per topic, so another page's or
+ * topic's success never covers it. Try again (retry_job) puts the same job back in the queue. A
+ * cancelled job is a skipped page (transcription) or a stopped step (the source is then failed, and
+ * Try again restarts that job). Notes whose every page was skipped have nothing left to read: that
+ * is a failure too, with Try again on the last skipped page. The last page that is not skipped can't
+ * be skipped (it would leave the notes with nothing). Contract: supabase/functions/study/index.ts,
+ * "What the phone follows".
  */
 
 export type ProgressSource = { id: string; kind: string | null; status: string | null; title: string | null };
@@ -54,6 +59,9 @@ function order(value: string | number | null): number {
 
 export const GENERIC_ERROR = 'Something went wrong while preparing this material.';
 export const STOPPED_MESSAGE = 'Stopped before it was finished.';
+export const ALL_SKIPPED_MESSAGE = 'Every page was skipped, so there is nothing to study yet.';
+/** Stages with one job per page or topic: a failure stands until that job itself is retried. */
+const PER_ITEM_STAGES = new Set(['transcribe', 'cards']);
 
 /**
  * The step a source is at. `draftTopics` = draft topics in the plan (they wait for the outline
@@ -72,16 +80,20 @@ export function sourceStep(
   const open = (list: ProgressJob[]) => list.filter((job) => OPEN.has(job.status ?? ''));
   const succeeded = (list: ProgressJob[]) => list.filter((job) => job.status === 'succeeded');
 
-  // A failure stands until a later job of its stage is open or done; page transcriptions are one job
-  // per page, so another page's success never covers a failed one.
+  // A failure stands until a later job of its stage is open or done; page transcriptions and cards
+  // are one job per page or topic, so another page's or topic's success never covers a failed one.
   const failed = [...live].reverse().find(
     (job) =>
       job.status === 'failed' &&
-      (job.stage === 'transcribe' ||
+      (PER_ITEM_STAGES.has(job.stage ?? '') ||
         !live.some((later) => later.stage === job.stage && later.status !== 'failed' && order(later.createdAt) > order(job.createdAt))),
   );
   if (failed) {
-    return { step: 'failed', message: failed.error?.trim() || GENERIC_ERROR, jobId: failed.id, canSkip: failed.stage === 'transcribe' };
+    // Skipping a page is offered while another page of the notes is still in (skipping the last one
+    // would leave nothing to study); a scanned PDF's text stays whatever is skipped.
+    const otherPage = live.some((job) => job.stage === 'transcribe' && job.id !== failed.id);
+    const canSkip = failed.stage === 'transcribe' && (source.kind !== 'notes' || otherPage);
+    return { step: 'failed', message: failed.error?.trim() || GENERIC_ERROR, jobId: failed.id, canSkip };
   }
   if (source.status === 'failed') {
     // Stopped (cancel_job on its extraction or outline): Try again puts that job back in the queue.
@@ -104,6 +116,11 @@ export function sourceStep(
   const outline = ofStage('outline');
   if (source.kind === 'notes' && outline.length === 0 && files.length > 0) {
     const transcribed = files.filter((file) => file.transcript !== null);
+    if (transcribed.length === 0 && skipped > 0 && skipped >= files.length) {
+      // Every page skipped: Try again puts the last one back (retry_job takes a cancelled job).
+      const last = [...transcribe].reverse().find((job) => job.status === 'cancelled');
+      return { step: 'failed', message: ALL_SKIPPED_MESSAGE, jobId: last?.id ?? null, canSkip: false };
+    }
     // A page whose transcription was skipped has no transcript and never will.
     const allRead = files.length - transcribed.length <= skipped;
     if (!allRead) return { step: 'reading', done: transcribed.length + skipped, total: files.length };

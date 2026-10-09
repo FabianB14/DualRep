@@ -9,9 +9,9 @@ import { DEFAULT_CAPS } from '../_shared/config.ts';
 import { MESSAGES } from '../_shared/errors.ts';
 import { chunkId, embedJobId, outlineJobId } from '../_shared/ids.ts';
 import { MAX_HOPS } from '../_shared/kick.ts';
-import type { CardsOutput, ExtractResponse, OutlineOutput } from '../_shared/pipeline.ts';
+import { type CardsOutput, type ExtractResponse, MAX_RELEASES, type OutlineOutput } from '../_shared/pipeline.ts';
 import { answer, failure } from '../_shared/testing/fake_tracy.ts';
-import { PLAN, scannedPage, scenario, SOURCE, SOURCE2, textPage, USER } from '../_shared/testing/scenario.ts';
+import { OTHER, PLAN, scannedPage, scenario, SOURCE, SOURCE2, textPage, USER } from '../_shared/testing/scenario.ts';
 import { runOneStep, sweepOrphans } from './worker.ts';
 
 const PDF = `${USER}/${SOURCE}/1.pdf`;
@@ -264,13 +264,92 @@ Deno.test('Tracy asleep: the job is put back uncounted and no kick follows', asy
   assertEquals(s.kicks, []);
 });
 
-Deno.test("Render's HTML error page in front of Tracy releases the job too", async () => {
+Deno.test('Tracy unreachable for a quarter of an hour: the job fails with a message instead of waiting for ever', async () => {
   const s = scenario();
   await submitPdf(s);
-  s.tracy.onExtract = () => failure({ kind: 'not_json', status: 503 });
+  s.tracy.awake = false; // suspended by Render, or TRACY_URL points at the wrong place
+  const results = await s.drain(MAX_RELEASES + 5);
+  assertEquals(results.map((x) => x.kind === 'step' && x.outcome), [...Array(MAX_RELEASES - 1).fill('release'), 'fail']);
+  const job = s.store.jobsOf(SOURCE, 'extract')[0];
+  assertEquals([job.status, job.error], ['failed', MESSAGES.tracyUnreachable]);
+  assertEquals(s.store.sources.get(SOURCE)?.status, 'failed');
+  assertEquals(s.tracy.calls.length, 0);
+});
+
+Deno.test('reaching Tracy again starts the count of releases over', async () => {
+  const s = scenario();
+  scriptPdf(s);
+  await submitPdf(s);
+  s.tracy.awake = false;
+  await s.drain(MAX_RELEASES - 2);
+  s.tracy.awake = true;
+  s.tracy.onExtract = () => failure({ kind: 'network' });
+  const reached = await s.step();
+  assertEquals(reached.kind === 'step' && reached.outcome, 'retry');
+  assertEquals(s.store.jobsOf(SOURCE, 'extract')[0].releases, 0);
+  s.tracy.awake = false;
+  const r = await s.drain(3);
+  assertEquals(r.map((x) => x.kind === 'step' && x.outcome), ['release', 'release', 'release']);
+});
+
+Deno.test("Render's HTML error page after a passing /health is counted: a file that crashes Tracy fails and stops blocking the queue", async () => {
+  const s = scenario();
+  await submitPdf(s);
+  // Another user's PDF, submitted later.
+  const PLAN2 = '50000000-0000-4000-8000-000000000002';
+  s.store.addPlan({ id: PLAN2, owner_id: OTHER });
+  const PDF2 = `${OTHER}/${SOURCE2}/1.pdf`;
+  s.store.upload(PDF2, 'application/pdf');
+  await s.call({ action: 'submit_source', plan_id: PLAN2, source_id: SOURCE2, kind: 'pdf', title: 'Other', files: [{ path: PDF2 }] }, OTHER);
+  s.tracy.onExtract = (b) =>
+    b.url.includes(SOURCE)
+      ? failure({ kind: 'not_json', status: 502 }) // Tracy runs out of memory on this file; Render answers
+      : { ok: true, data: { format: 'pdf', total_pages: 1, first_page: 1, last_page: 1, pages: [textPage(1, 2)] } };
+  for (let minute = 0; minute < 10; minute++) await s.step();
+  const poison = s.store.jobsOf(SOURCE, 'extract')[0];
+  assertEquals([poison.status, poison.attempts, poison.error], ['failed', 3, MESSAGES.tracyBusy]);
+  assertEquals(s.tracy.callsOf('extract').filter((c) => String(c.body.url).includes(SOURCE)).length, 3);
+  assertEquals(s.store.jobsOf(SOURCE2, 'extract')[0].status, 'succeeded');
+});
+
+Deno.test('Tracy busy with another heavy job: put back uncounted', async () => {
+  const s = scenario();
+  await submitPdf(s);
+  s.tracy.onExtract = () => failure({ kind: 'http', status: 503, code: 'busy' });
   const r = await s.step();
   assertEquals(r.kind === 'step' && r.outcome, 'release');
-  assertEquals(s.store.jobsOf(SOURCE, 'extract')[0].attempts, 0);
+  assertEquals([s.store.jobsOf(SOURCE, 'extract')[0].attempts, s.store.jobsOf(SOURCE, 'extract')[0].releases], [0, 1]);
+});
+
+Deno.test('at most maxRunning jobs at once: a worker started while one runs finds nothing to claim', async () => {
+  const s = scenario();
+  scriptPdf(s);
+  await submitPdf(s);
+  s.store.upload(`${USER}/${SOURCE2}/1.pdf`, 'application/pdf');
+  await s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE2, kind: 'pdf', title: 'Two', files: [{ path: `${USER}/${SOURCE2}/1.pdf` }] });
+  // While the first extraction waits on Tracy, the cron minute starts another worker.
+  let second: Awaited<ReturnType<typeof runOneStep>> | null = null;
+  s.tracy.onExtract = async () => {
+    if (!second) second = await runOneStep({ ...s.worker, maxRunning: 1 });
+    return { ok: true, data: { format: 'pdf', total_pages: 1, first_page: 1, last_page: 1, pages: [textPage(1, 1)] } };
+  };
+  await runOneStep({ ...s.worker, maxRunning: 1 });
+  assertEquals(second, { kind: 'idle' });
+  assertEquals(s.tracy.callsOf('extract').length, 1);
+  // Without a limit the second worker would have taken the other job.
+  const t = scenario();
+  scriptPdf(t);
+  t.store.upload(PDF, 'application/pdf');
+  t.store.upload(`${USER}/${SOURCE2}/1.pdf`, 'application/pdf');
+  await t.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE, kind: 'pdf', title: 'One', files: [{ path: PDF }] });
+  await t.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE2, kind: 'pdf', title: 'Two', files: [{ path: `${USER}/${SOURCE2}/1.pdf` }] });
+  let other: Awaited<ReturnType<typeof runOneStep>> | null = null;
+  t.tracy.onExtract = async () => {
+    if (!other) other = await runOneStep({ ...t.worker, maxRunning: null });
+    return { ok: true, data: { format: 'pdf', total_pages: 1, first_page: 1, last_page: 1, pages: [textPage(1, 1)] } };
+  };
+  await runOneStep({ ...t.worker, maxRunning: null });
+  assertEquals((other as unknown as { kind: string }).kind, 'step');
 });
 
 Deno.test("rejected answers are retried with the validator's findings, then fail with a fixed message", async () => {
@@ -288,6 +367,46 @@ Deno.test("rejected answers are retried with the validator's findings, then fail
   assertEquals([outline.status, outline.error, outline.attempts], ['failed', MESSAGES.badAnswer, 3]);
   // The outline is on the critical path: the source has failed (the phone shows "Try again").
   assertEquals(s.store.sources.get(SOURCE)?.status, 'failed');
+});
+
+Deno.test('outline: short references instead of chunk ids, and a shorter digest after an answer that was cut off', async () => {
+  const s = scenario();
+  await submitPdf(s);
+  // A long course PDF: 300 passages.
+  s.tracy.onExtract = () => ({ ok: true, data: { format: 'pdf', total_pages: 1, first_page: 1, last_page: 1, pages: [textPage(1, 300)] } });
+  let calls = 0;
+  s.tracy.tasks.dualrep_build_outline = (input) => {
+    calls += 1;
+    const ids = (input.chunks as { id: string }[]).map((c) => c.id);
+    if (calls < 3) return failure({ kind: 'http', status: 502, code: calls === 1 ? 'truncated' : 'model_error' });
+    return answer({
+      topics: [{ key: 't1', title: 'All of it', summary: '', existing_topic_id: null, chunk_ids: ids }],
+      unassigned_chunk_ids: [],
+    } satisfies OutlineOutput);
+  };
+  await s.drain();
+  const sent = s.tracy.callsOf('dualrep_build_outline').map((c) => c.body.chunks as { id: string }[]);
+  // Never the same input twice: 150 entries (pairs of neighbours), then 75, then 50.
+  assertEquals(sent.map((c) => c.length), [150, 75, 50]);
+  assertEquals(sent[0].slice(0, 3).map((c) => c.id), ['c1', 'c2', 'c3']);
+  assert(sent.every((c) => (s.tracy.callsOf('dualrep_build_outline')[0].body.max_topics as number) <= c.length));
+  // The answer's references expand back to every one of the 300 passages.
+  const outline = s.store.jobs.get(await outlineJobId(SOURCE))!;
+  assertEquals(outline.status, 'succeeded');
+  const saved = outline.output as { topics: { chunk_ids: string[] }[] };
+  assertEquals(new Set(saved.topics[0].chunk_ids), new Set([...s.store.chunks.keys()]));
+  assertEquals(saved.topics[0].chunk_ids.length, 300);
+});
+
+Deno.test('outline: an answer still cut off at the smallest digest fails with the length message', async () => {
+  const s = scenario();
+  await submitPdf(s);
+  s.tracy.onExtract = () => ({ ok: true, data: { format: 'pdf', total_pages: 1, first_page: 1, last_page: 1, pages: [textPage(1, 20)] } });
+  s.tracy.tasks.dualrep_build_outline = () => failure({ kind: 'http', status: 502, code: 'truncated' });
+  await s.drain();
+  const sent = s.tracy.callsOf('dualrep_build_outline').map((c) => (c.body.chunks as unknown[]).length);
+  assertEquals(sent, [20, 20, 20]); // 20 passages are already under the smallest digest
+  assertEquals(s.store.jobs.get(await outlineJobId(SOURCE))?.error, MESSAGES.tooLong);
 });
 
 Deno.test('a refusal fails at once; the error never carries the material', async () => {

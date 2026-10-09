@@ -324,7 +324,7 @@ reviews runs correctly.
       the timer, alert and handoff unchanged (D45, D46)
 - [x] Concept links and the map view (`card_links`, D48)
 - [x] Daily "reviews due" reminder (D47)
-- [x] Monthly caps per user: 5 sources and 20 pages of notes a month free, 30 and 200 paid (D36)
+- [x] Monthly caps per user: 5 sources and 20 pages (photos of notes and scanned PDF pages) a month free, 30 and 200 paid (D36)
 - [x] **Deploy backend** workflow (D39), and a CI job that type-checks, lints and tests the Edge
       Functions with Deno
 - [ ] ~~On-the-go audio mode~~: moved to [Phase 2B](#phase-2b-audio-study-mode)
@@ -404,7 +404,7 @@ All of [TRACY_INTEGRATION.md §10](TRACY_INTEGRATION.md#10-tracy-ai-changes-for-
       variable away (D33). **Still open:** compare the two on a real course after the gate
 - [x] Gemini API key and project owned by DualRep: optional, off by default, and only with billing on
       (D35)
-- [x] Monthly upload caps for the free tier: 5 sources and 20 pages of notes a month to start (D36).
+- [x] Monthly upload caps for the free tier: 5 sources and 20 pages (photos of notes and scanned PDF pages) a month to start (D36).
       **Still open:** set them from beta usage (Phase 5)
 - [ ] Keep syncing `reviews` down to the phone, or make it upload-only later to save space
 - [ ] New cards in the early self-test: a card answered "Got it" seconds after it was first shown

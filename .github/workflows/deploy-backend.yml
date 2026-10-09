@@ -2,7 +2,8 @@
 #   1. records the migrations that were pasted into the SQL Editor by hand (only when that is safe);
 #   2. `supabase db push` (the CLI mints a temporary login role with the access token and, because
 #      GitHub's runners are IPv4-only, connects through the project's session pooler);
-#   3. the Edge Functions' secrets (TRACY_URL, TRACY_SERVICE_SECRET, optional GEMINI_API_KEY and caps);
+#   3. the Edge Functions' secrets (TRACY_URL, TRACY_SERVICE_SECRET, optional GEMINI_API_KEY, caps and
+#      worker concurrency);
 #   4. the cron -> tracy-worker shared secret: an Edge Function secret plus a copy in Vault, written
 #      through the Management API (created on the first run, replaced when asked);
 #   5. `supabase functions deploy --use-api` (bundled by Supabase, no Docker);
@@ -20,6 +21,8 @@
 #              SUPABASE_PROJECT_REF  (optional: only if the URL above is a custom domain)
 #              DUALREP_CAP_SOURCES_FREE / _PAID, DUALREP_CAP_PAGES_FREE / _PAID (optional monthly caps;
 #              unset = 5 / 30 sources and 20 / 200 pages; "none" = no limit)
+#              DUALREP_WORKER_CONCURRENCY (optional: steps running at once for everyone; unset = 1,
+#              right for Tracy on Render's free plan)
 name: Deploy backend
 
 on:
@@ -144,6 +147,7 @@ jobs:
           DUALREP_CAP_SOURCES_PAID: ${{ vars.DUALREP_CAP_SOURCES_PAID }}
           DUALREP_CAP_PAGES_FREE: ${{ vars.DUALREP_CAP_PAGES_FREE }}
           DUALREP_CAP_PAGES_PAID: ${{ vars.DUALREP_CAP_PAGES_PAID }}
+          DUALREP_WORKER_CONCURRENCY: ${{ vars.DUALREP_WORKER_CONCURRENCY }}
         run: |
           missing=()
           [[ "$TRACY_URL" =~ ^https://[^[:space:]/]+(/[^[:space:]]*)?$ ]] || missing+=("variable TRACY_URL (https://…)")
@@ -160,7 +164,8 @@ jobs:
           set_names=()
           unset_names=()
           for name in TRACY_URL TRACY_SERVICE_SECRET GEMINI_API_KEY \
-                      DUALREP_CAP_SOURCES_FREE DUALREP_CAP_SOURCES_PAID DUALREP_CAP_PAGES_FREE DUALREP_CAP_PAGES_PAID; do
+                      DUALREP_CAP_SOURCES_FREE DUALREP_CAP_SOURCES_PAID DUALREP_CAP_PAGES_FREE DUALREP_CAP_PAGES_PAID \
+                      DUALREP_WORKER_CONCURRENCY; do
             value="${!name}"
             if [ -n "$value" ]; then
               if [[ "$value" == *$'\n'* ]]; then echo "::error::$name contains a line break."; exit 1; fi

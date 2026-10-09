@@ -114,6 +114,10 @@ describe('checkTypedAnswer', () => {
     ['golgi aparatus', 'Golgi apparatus', 'close'],
     ['apparatus golgi', 'Golgi apparatus', 'wrong'],
     ['xitochondria', 'mitochondria', 'wrong'], // a first-letter slip is never "close"
+    ['i think its the mitochondria', 'mitochondria', 'wrong'], // still 3 extra words
+    ['i think mitochondria', 'mitochondria', 'close'], // filler around the one answer
+    ['hypotonc', 'hypotonic', 'close'], // a typo after a shared prefix is still a typo
+    ['endothermc', 'endothermic', 'close'],
   ];
 
   it.each(table)('%j against %j is %s', (typed, expected, result) => {
@@ -140,6 +144,24 @@ describe('checkTypedAnswer', () => {
     ['nucleolus', 'nucleus'],
     ['bacterium', 'bacteria'],
     ['1066', '1067'],
+    // Hedged, negated or both-ways answers: the expected words are there, but the answer says more.
+    ['ribosome or mitochondria', 'mitochondria'],
+    ['mitosis or meiosis', 'mitosis'],
+    ['meiosis not mitosis', 'mitosis'],
+    ['not true', 'true'],
+    ['false not true', 'true'],
+    ['increase or decrease', 'increase'],
+    ['oxidation and reduction', 'reduction'],
+    ['mitochondria vs nucleus', 'mitochondria'],
+    ['no mitochondria', 'mitochondria'],
+    // Opposite prefixes are different words, not misspellings.
+    ['hypertonic', 'hypotonic'],
+    ['hyperthyroidism', 'hypothyroidism'],
+    ['exothermic', 'endothermic'],
+    ['endergonic', 'exergonic'],
+    ['absorption', 'adsorption'],
+    ['intracellular', 'intercellular'],
+    ['hypertonic solution', 'hypotonic solution'],
   ];
   it.each(rejected)('rejected: %j for %j', (typed, expected) => {
     expect(checkTypedAnswer(typed, expected).result).toBe('wrong');

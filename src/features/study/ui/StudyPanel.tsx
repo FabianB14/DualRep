@@ -301,26 +301,34 @@ function CardView({ open, saving, buttons, onQuiz, onShowAnswer, onType, onCheck
       ) : null}
 
       {stage === 'revealed' ? (
-        <View style={{ flexDirection: 'row', gap: space[2] }}>
-          {buttons.map((button) => {
-            const hint = ratingHint(open, button.grade);
-            return (
-              <View key={button.grade} style={{ flex: 1, gap: space[1], alignItems: 'stretch' }}>
-                <Button
-                  label={button.label}
-                  variant={button.grade === RATING.good ? 'primary' : 'secondary'}
-                  disabled={saving}
-                  accessibilityHint={hint ? `Comes back in ${hint}` : undefined}
-                  onPress={() => onRate(button.grade)}
-                />
-                {hint ? (
-                  <Text variant="caption" tone="secondary" align="center" importantForAccessibility="no">
-                    {hint}
-                  </Text>
-                ) : null}
-              </View>
-            );
-          })}
+        // At most two buttons a row: four in one row leave each label about 25 dp on a 360 dp phone
+        // (after the screen, card and button padding), and "Again" needs about 42 dp at 16 sp, so
+        // the words broke mid-word ("Aga/in") or were cut off with a larger font. Two a row leave
+        // about 99 dp each. Four buttons: Again and Hard, then Good and Easy.
+        <View style={{ gap: space[2] }}>
+          {buttonRows(buttons).map((row) => (
+            <View key={row[0].grade} style={{ flexDirection: 'row', gap: space[2] }}>
+              {row.map((button) => {
+                const hint = ratingHint(open, button.grade);
+                return (
+                  <View key={button.grade} style={{ flex: 1, gap: space[1], alignItems: 'stretch' }}>
+                    <Button
+                      label={button.label}
+                      variant={button.grade === RATING.good ? 'primary' : 'secondary'}
+                      disabled={saving}
+                      accessibilityHint={hint ? `Comes back in ${hint}` : undefined}
+                      onPress={() => onRate(button.grade)}
+                    />
+                    {hint ? (
+                      <Text variant="caption" tone="secondary" align="center" importantForAccessibility="no">
+                        {hint}
+                      </Text>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
+          ))}
         </View>
       ) : null}
 
@@ -332,6 +340,13 @@ function CardView({ open, saving, buttons, onQuiz, onShowAnswer, onType, onCheck
       ) : null}
     </View>
   );
+}
+
+/** The rating buttons in rows of at most two (see the comment where they are drawn). */
+function buttonRows<T>(buttons: readonly T[]): T[][] {
+  const rows: T[][] = [];
+  for (let i = 0; i < buttons.length; i += 2) rows.push(buttons.slice(i, i + 2));
+  return rows;
 }
 
 /** A plan without cards yet: its next step, and the block stays a plain timer. */
