@@ -386,7 +386,8 @@ select lives_ok(
 select lives_ok(
   $$insert into public.source_files (id, source_id, owner_id, group_id, storage_path)
     values ('41000000-0000-4000-8000-000000000005', '40000000-0000-4000-8000-000000000005',
-            '10000000-0000-4000-8000-000000000005', '30000000-0000-4000-8000-000000000001', 'eve/notes/p1.jpg')
+            '10000000-0000-4000-8000-000000000005', '30000000-0000-4000-8000-000000000001',
+            '10000000-0000-4000-8000-000000000005/40000000-0000-4000-8000-000000000005/p1.jpg')
     on conflict (id) do update set id = excluded.id, source_id = excluded.source_id,
       owner_id = excluded.owner_id, group_id = excluded.group_id, storage_path = excluded.storage_path$$,
   '... and its file'

@@ -1,0 +1,12 @@
+{
+  // Tooling only (deno check / deno test, locally and in CI). The Supabase CLI never deploys this
+  // file: it reads a deno.json from each function's own folder, and the functions need none because
+  // every npm/jsr import carries its exact version. "nodeModulesDir": "none" keeps Deno from
+  // resolving npm: imports out of the app's node_modules (the repo root has a package.json), so the
+  // check sees what the hosted runtime will download.
+  "nodeModulesDir": "none",
+  "lock": false,
+  "compilerOptions": {
+    "strict": true
+  }
+}

@@ -216,6 +216,12 @@
           "type": "timestamp",
           "nullable": false,
           "has_default": true
+        },
+        {
+          "name": "source_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
         }
       ]
     },
@@ -1291,6 +1297,12 @@
           "type": "timestamp",
           "nullable": false,
           "has_default": true
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "has_default": true
         }
       ]
     },
@@ -1378,6 +1390,48 @@
         {
           "name": "updated_at",
           "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "stage",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "plan_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "source_id",
+          "type": "uuid",
+          "nullable": true,
+          "has_default": false
+        },
+        {
+          "name": "cap_units",
+          "type": "integer",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "counted_at",
+          "type": "timestamp",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "ran",
+          "type": "boolean",
+          "nullable": false,
+          "has_default": true
+        },
+        {
+          "name": "releases",
+          "type": "integer",
           "nullable": false,
           "has_default": true
         }

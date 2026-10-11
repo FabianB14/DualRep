@@ -58,3 +58,29 @@ content_path = "./supabase/templates/magic_link.html"
 [auth.email.template.confirmation]
 subject = "Your DualRep sign-in code"
 content_path = "./supabase/templates/confirmation.html"
+
+[edge_runtime]
+enabled = true
+# `per_worker` hot-reloads `supabase functions serve` during local development.
+policy = "per_worker"
+# The Deno major version for local serving and Docker bundling (CLI 2.119 accepts 1 or 2). Deploys from
+# the Deploy backend workflow bundle on Supabase's side (`functions deploy --use-api`).
+deno_version = 2
+
+# Edge Functions (supabase/functions/<name>/index.ts; folders starting with `_` are shared code, never
+# deployed). verify_jwt is written out for each function because a deploy otherwise keeps whatever the
+# deployed function already has (or turns it on for a new one). Both are off on purpose: the gateway's
+# check also admits the publishable key, which ships inside the app, so it proves nothing.
+
+# The app's one user-facing function (submit_source, confirm_transcripts, approve_outline, retry_job,
+# cancel_job). It verifies the caller's JWT in code (auth.getClaims) before doing anything.
+[functions.study]
+enabled = true
+verify_jwt = false
+
+# Called by pg_cron through pg_net, and by itself, with the x-dualrep-worker-secret header (the
+# DUALREP_WORKER_SECRET Edge Function secret = the dualrep_worker_secret Vault secret), never with a
+# user JWT. It refuses any request without that secret.
+[functions.tracy-worker]
+enabled = true
+verify_jwt = false

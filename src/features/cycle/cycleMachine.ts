@@ -32,6 +32,15 @@
  *   rang meanwhile), the cycle finishes instead of recording a block nobody was there for.
  * - idle: nothing running; after a finish it holds the cycle's summary until dismissed.
  *
+ * Studying a plan (Phase 2): the start panel may choose a study plan (plan.studyPlanId) and which of
+ * its cards (plan.studyFilter). The machine only carries them: the session row records the plan, and
+ * the focus screen shows the quiz-first study panel, which reads and writes the database itself (each
+ * answer is its own write, tagged with the block's id; see src/features/study/ui/StudyPanel.tsx). So
+ * the timer, the alerts, the handoff and every transition are the same with or without a plan. Both
+ * fields are left out of a plan without one, so a timer-only cycle is exactly Phase 1's, and states
+ * saved by Phase 1 (which have neither) read back unchanged: CYCLE_STATE_VERSION stays 1, because a new
+ * version would drop a cycle running during the app update and leave its block open for good.
+ *
  * Side effects are NOT performed here. The reducer describes them as data: every database write and
  * notification call it decides on is appended to `pending`, in order, with everything it needs (ids
  * included). The hook (useCycle / cycleStore) persists the state, then performs the pending effects
@@ -55,6 +64,8 @@ import {
   type SpotterAdvice,
 } from '@/features/training/spotter';
 import type { Circuit, CircuitItem, SetupLocation, Split, Unit, WorkoutKind } from '@/features/training/types';
+import type { StudyFilter } from '@/features/study/queue';
+import { isUuid } from '@/features/study/uuidv5';
 import {
   elapsedMs,
   isDone,
@@ -112,10 +123,21 @@ export type CyclePlan = {
   moveMinutes: number;
   /** Return countdown, in seconds. */
   returnSeconds: number;
+  /**
+   * The study plan the focus blocks quiz from (study_plans.id). Absent for a timer-only cycle (and in
+   * states saved by Phase 1); read it with studyPlanOf.
+   */
+  studyPlanId?: string;
+  /** Which cards of the plan: everything so far ('all') or the newest source; absent without a plan. */
+  studyFilter?: StudyFilter;
 };
 
 /** A plan as the start panel may give it: anything left out gets its default. */
-export type CyclePlanInput = Pick<CyclePlan, 'split' | 'location'> & Partial<Omit<CyclePlan, 'split' | 'location'>>;
+export type CyclePlanInput = Pick<CyclePlan, 'split' | 'location'> &
+  Partial<Omit<CyclePlan, 'split' | 'location' | 'studyPlanId'>> & {
+    /** The study plan, or null / absent for timer-only focus blocks. */
+    studyPlanId?: string | null;
+  };
 
 export type CycleStats = {
   /** Focus blocks ended (run out or ended early). */
@@ -159,7 +181,8 @@ export type LastAdvice = { itemIndex: number; exerciseName: string; advice: Spot
 
 type EffectBody =
   | { kind: 'start_focus_block'; input: StartFocusBlockInput }
-  | { kind: 'end_focus_block'; blockId: string; endedAt: number; interrupted: boolean }
+  /** studyPlanId: the block quizzed from this plan (after it, the review reminder is rescheduled). */
+  | { kind: 'end_focus_block'; blockId: string; endedAt: number; interrupted: boolean; studyPlanId?: string }
   | { kind: 'rate_block'; blockId: string; effort: number }
   | { kind: 'start_move_block'; input: StartMoveBlockInput }
   | { kind: 'log_set'; input: LogSetInput }
@@ -351,6 +374,7 @@ export function normalizePlan(input: CyclePlanInput): CyclePlan {
   const back = finite(input.returnSeconds);
   const returnSeconds = back === null ? R.returnSeconds : Math.min(R.maxReturnSeconds, Math.max(0, Math.round(back)));
   const equipment = [...new Set((input.equipment ?? []).filter((item): item is string => typeof item === 'string'))];
+  const study = studyPlanOf(input);
   return {
     focusSubject: (typeof input.focusSubject === 'string' ? input.focusSubject : '').trim().slice(0, 200),
     blockMinutes,
@@ -362,7 +386,21 @@ export function normalizePlan(input: CyclePlanInput): CyclePlan {
     moveKind,
     moveMinutes,
     returnSeconds,
+    // Only with a plan: a timer-only plan has exactly Phase 1's fields.
+    ...(study ? { studyPlanId: study.planId, studyFilter: study.filter } : {}),
   };
+}
+
+/** The study plan a cycle plan quizzes from, with its filter. */
+export type CycleStudy = { planId: string; filter: StudyFilter };
+
+/**
+ * The plan's study plan, or null for timer-only focus blocks: a Phase 1 plan (no fields), or a value
+ * that is not a plan id (a damaged saved state studies nothing rather than writing a bad reference).
+ */
+export function studyPlanOf(plan: { studyPlanId?: unknown; studyFilter?: unknown }): CycleStudy | null {
+  if (!isUuid(plan.studyPlanId)) return null;
+  return { planId: plan.studyPlanId, filter: plan.studyFilter === 'newest' ? 'newest' : 'all' };
 }
 
 /**
@@ -482,6 +520,7 @@ function beginFocus(
 ): FocusState {
   const timer = startTimer(at, core.plan.blockMinutes * 60_000);
   const notificationId = blockEndNotificationId(core.sessionId, blockNumber);
+  const study = studyPlanOf(core.plan);
   const focus: FocusState = {
     ...base,
     ...core,
@@ -505,6 +544,8 @@ function beginFocus(
         sessionId: core.sessionId ?? '',
         createSession,
         focusSubject: core.plan.focusSubject,
+        // study_sessions.plan_id; left out of a timer-only block's input (Phase 1's exactly).
+        ...(study ? { planId: study.planId } : {}),
         blockId: ids.blockId,
         plannedMinutes: core.plan.blockMinutes,
         startedAt: at,
@@ -524,8 +565,15 @@ function closeBlock(state: FocusState, clockEnd: number, interrupted: boolean, a
   const start = finite(state.startedAt);
   const endedAt = start === null ? clockEnd : start + focusedMs;
   const stats = { ...state.stats, blocks: state.stats.blocks + 1, focusMs: state.stats.focusMs + focusedMs };
+  const study = studyPlanOf(state.plan);
   return addEffects({ ...state, endedAt, interrupted, stats }, at, [
-    { kind: 'end_focus_block', blockId: state.blockId, endedAt, interrupted },
+    {
+      kind: 'end_focus_block',
+      blockId: state.blockId,
+      endedAt,
+      interrupted,
+      ...(study ? { studyPlanId: study.planId } : {}),
+    },
     { kind: 'cancel_notification', notificationId: state.notificationId },
   ]);
 }

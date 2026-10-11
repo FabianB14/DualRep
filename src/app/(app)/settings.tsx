@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Linking, View } from 'react-native';
 
 import { useAuth } from '@/auth/AuthProvider';
-import { Button, Notice, Screen, Section, SegmentedControl, StatusPill, Stepper, Text } from '@/components';
+import { Button, ListGroup, ListRow, Notice, Screen, Section, SegmentedControl, StatusPill, Stepper, Text } from '@/components';
 import { getUploadQueueCount, waitForUploads } from '@/db/syncCheck';
 import { CYCLE_STATE_KEY, parseCycleState } from '@/features/cycle/cycleMachine';
 import { useLocalState } from '@/features/cycle/localState';
@@ -11,6 +11,7 @@ import { BLOCK_MINUTES, formatMinutes, UNIT_LABELS, UNITS, type ProfilePatch } f
 import { updateProfile } from '@/features/settings/profileRepo';
 import { signOutWarning } from '@/features/settings/signOut';
 import { useProfile } from '@/features/settings/useProfile';
+import { PREF_LIMITS, ratingButtons, useStudyPrefs, type StudyPrefsPatch } from '@/features/study/studyPrefs';
 import { SyncStatusCard } from '@/features/sync/SyncStatusCard';
 import type { NotificationPermission } from '@/features/timer/notifications';
 import { useNotificationPermission } from '@/features/timer/useNotificationPermission';
@@ -20,16 +21,36 @@ import { haptic, useTheme } from '@/theme';
 /** How long sign-out waits for the last writes (a running cycle's end) to upload when online. */
 const SIGN_OUT_UPLOAD_WAIT_MS = 10_000;
 
+type AnswerButtons = '2' | '4';
+
+const ANSWER_BUTTON_OPTIONS: { value: AnswerButtons; label: string; accessibilityLabel: string }[] = [
+  { value: '2', label: '2 buttons', accessibilityLabel: 'Two buttons: Missed it, Got it' },
+  { value: '4', label: '4 buttons', accessibilityLabel: 'Four buttons: Again, Hard, Good, Easy' },
+];
+
+/** The reminder time is picked in quarter hours, as minutes after midnight. */
+const REMINDER_RANGE = { min: 0, max: 23 * 60 + 45, step: 15 };
+
+/** "6:00 PM" or "18:00", as the phone shows times. */
+function formatTimeOfDay(minutes: number): string {
+  return new Date(2000, 0, 1, Math.floor(minutes / 60), minutes % 60).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 /**
- * Settings: default block length, units, end-of-block alerts, sync status and sign-out. Changes are
- * saved on the phone at once (and uploaded later); before the profile has synced they cannot be saved
- * yet, and the screen says so instead of pretending.
+ * Settings: default block length, units, how cards are answered, the daily review reminder,
+ * end-of-block alerts, sync status and sign-out. Changes are saved on the phone at once. The profile
+ * ones are uploaded later, and before the profile has synced they cannot be saved yet (the screen
+ * says so instead of pretending); the study ones belong to this phone only and always save.
  */
 export default function SettingsScreen() {
   const { user, signOut } = useAuth();
   const { space } = useTheme();
   const { profile, userId } = useProfile();
   const { permission, request: requestPermission } = useNotificationPermission();
+  const { prefs: study, save: saveStudy } = useStudyPrefs();
   const [signingOut, setSigningOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { value: savedCycle } = useLocalState<unknown>(CYCLE_STATE_KEY);
@@ -51,9 +72,25 @@ export default function SettingsScreen() {
     });
   };
 
+  const changeStudy = (patch: StudyPrefsPatch) => {
+    setError(null);
+    saveStudy(patch).catch((problem: unknown) => {
+      setError(`Couldn't save on this phone: ${String(problem)}`);
+      haptic('error');
+    });
+  };
+
   const askForAlerts = async () => {
     const result = await requestPermission();
     haptic(result === 'granted' ? 'success' : 'warning');
+  };
+
+  // Turning the reminder on asks for notifications in context (once); it is saved either way, and
+  // rings as soon as they are allowed.
+  const toggleReminder = async () => {
+    const enabled = !study.reminder.enabled;
+    changeStudy({ reminder: { enabled } });
+    if (enabled && permission === 'undetermined') await askForAlerts();
   };
 
   const doSignOut = async () => {
@@ -85,7 +122,7 @@ export default function SettingsScreen() {
       {!profile.synced ? (
         <Notice
           title="Not synced yet"
-          message="Your account has not finished its first sync, so these settings can’t be saved yet. The app uses 25-minute blocks and pounds until then. Connect to the internet once."
+          message="Your account has not finished its first sync, so the block length and units can’t be saved yet. The app uses 25-minute blocks and pounds until then. Connect to the internet once."
         />
       ) : null}
 
@@ -111,6 +148,67 @@ export default function SettingsScreen() {
           options={UNITS.map((value) => ({ value, label: value, accessibilityLabel: UNIT_LABELS[value] }))}
           onChange={(value) => save({ unit: value })}
         />
+      </Section>
+
+      <Section title="Answering cards" description="These settings are for this phone only.">
+        <View style={{ gap: space[2] }}>
+          <SegmentedControl<AnswerButtons>
+            label="After you see the answer"
+            value={String(study.answerButtons) as AnswerButtons}
+            options={ANSWER_BUTTON_OPTIONS}
+            onChange={(value) => changeStudy({ answerButtons: value === '4' ? 4 : 2 })}
+          />
+          <Text variant="caption" tone="secondary">
+            {ratingButtons(study.answerButtons)
+              .map((button) => button.label)
+              .join(' · ')}
+          </Text>
+        </View>
+        <ListGroup>
+          <ListRow
+            title="Type short answers"
+            subtitle="When the answer is a few words, type it and the phone checks it; small spelling slips count as right. Longer answers are still shown."
+            accessory="checkbox"
+            checked={study.typedAnswers}
+            onPress={() => changeStudy({ typedAnswers: !study.typedAnswers })}
+          />
+        </ListGroup>
+        <Stepper
+          label="New cards a day"
+          value={study.dailyNewCap}
+          min={PREF_LIMITS.dailyNewCap.min}
+          max={PREF_LIMITS.dailyNewCap.max}
+          step={5}
+          format={(value) => `${value} cards`}
+          hint="Each new card brings reviews on the days after. Fewer new cards keep those days light."
+          onChange={(value) => changeStudy({ dailyNewCap: value })}
+        />
+      </Section>
+
+      <Section title="Daily review reminder" description="Only on days when cards are due. It shows how many, never what they say.">
+        <ListGroup>
+          <ListRow
+            title="Remind me when cards are due"
+            accessory="checkbox"
+            checked={study.reminder.enabled}
+            onPress={() => void toggleReminder()}
+          />
+        </ListGroup>
+        <Stepper
+          label="Reminder time"
+          value={study.reminder.hour * 60 + study.reminder.minute}
+          min={REMINDER_RANGE.min}
+          max={REMINDER_RANGE.max}
+          step={REMINDER_RANGE.step}
+          format={formatTimeOfDay}
+          disabled={!study.reminder.enabled}
+          onChange={(value) => changeStudy({ reminder: { hour: Math.floor(value / 60), minute: value % 60 } })}
+        />
+        {study.reminder.enabled && permission === 'denied' ? (
+          <Text variant="caption" tone="warning" accessibilityLiveRegion="polite">
+            Notifications are off for DualRep, so the reminder can’t ring. Turn them on below.
+          </Text>
+        ) : null}
       </Section>
 
       <Section title="End-of-block alerts">

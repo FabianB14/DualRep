@@ -16,31 +16,45 @@ How to use this page:
 
 ## Where we are now
 
-*Updated 2026-10-08.*
+*Updated 2026-10-09.*
 
 - **Phase 0 passed its gate on 2026-10-08** on Fabian's Android phone (a preview APK from GitHub
   Actions, the hosted Supabase project and PowerSync Cloud), and its code is on `main` (pull request
   #2).
-- **Phase 1 is built in the repo**, on the branch `claude/bold-fermi-oglgch` until its pull request
-  is merged. The whole study → move → study loop runs on the phone: a focus timer with an
-  end-of-block alert, a zero-tap handoff into a circuit, a one-tap set logger with the spotter, and a
-  countdown back into the next focus block. Around it: 90 Interverse starter exercises, setups,
-  presets, the exercise library, history, settings and a Timer check screen. Every read and write in
-  the loop goes to the phone's own database, so it works in airplane mode.
-- **Tests:** 2,052 unit tests (one plays the whole loop offline, once with a home setup and once with
-  a gym setup), 46 script tests, and 542 database tests in 14 files.
-- **The Phase 1 gate is yours to run:** apply one migration, install the new preview APK, run the
-  loop in airplane mode twice, and measure the alert delay
-  ([your manual steps](#your-manual-steps-for-the-gate-in-order)).
-- **Next:** the Phase 1 gate and the Timer check on the phone. Then Phase 2 (the study engine).
-  Phase 0 leftovers still open below: the PowerSync free-tier check, the Play Console decision, and
+- **Phase 1 is built and on `main`** (pull request #3, merged 2026-10-08): the study → move → study
+  loop, offline, with a focus timer and its alert, a zero-tap handoff into a circuit, a one-tap set
+  logger with the spotter, 90 Interverse starter exercises, setups, presets, the library, history,
+  settings and a Timer check. **Its gate on the phone is not recorded here yet**
+  ([Phase 1 manual steps](#your-manual-steps-for-the-gate-in-order)).
+- **Phase 2 (the study engine) is built in both repos**, on the branch `claude/bold-fermi-oglgch`
+  in `DualRep` and in `tracy-ai` until their pull requests are merged:
+  - study plans (one source or a growing course), material from PDFs, Word files, web pages and
+    photos of handwritten notes, a transcription check, an outline review, cards with page
+    references, a concept map;
+  - the quiz-first study panel inside the focus block, FSRS scheduling on the phone (offline), and a
+    daily review reminder;
+  - the server side: a private Storage bucket, the `study` and `tracy-worker` Edge Functions, a job
+    queue with monthly caps, a pg_cron schedule, and Tracy's new DualRep lane;
+  - a **Deploy backend** GitHub workflow, so database changes no longer go through the SQL Editor.
+- **Tests:** 2,528 app tests in 65 suites (one runs a full week of study blocks), 46 script tests,
+  626 database tests in 15 files, 78 Deno tests for the Edge Functions, and 123 tests in `tracy-ai`.
+  A cross-repo check also ran the real Tracy server against the real worker and `study` code, with
+  a fake Anthropic: a PDF with a scanned page and a photo of notes, all the way to cards.
+- **Not yet run for real:** nothing in Phase 2 has touched the hosted Supabase project, Tracy on
+  Render, Anthropic or a phone. That is the Phase 2 gate, and it is yours
+  ([your manual steps](#your-manual-steps-for-the-phase-2-gate-in-order): about an hour of setup, an
+  hour or two on day 1, then about 10 minutes a day for a week).
+- **Audio study mode moved to Phase 2B** ([DECISIONS.md](DECISIONS.md) D49): a spike first, after
+  the Phase 2 gate.
+- Phase 0 leftovers still open below: the PowerSync free-tier check, the Play Console decision, and
   the edge-to-edge look on the phone.
 
 | Phase | Est. weeks | Status |
 |---|---|---|
 | 0. Foundation | 1–2 | **Gate passed** (2026-10-08) |
-| 1. Core loop | 4–5 | **Built**; gate not yet run (manual steps below) |
-| 2. Study engine | 4–6 | Not started |
+| 1. Core loop | 4–5 | **Built**, on `main`; gate result not recorded yet |
+| 2. Study engine | 4–6 | **Built**; gate not yet run (manual steps below) |
+| 2B. Audio study mode | — | Not started (spike first; moved out of Phase 2) |
 | 3. Tracy coaching | 2–3 | Not started |
 | 4. Friends | 2–3 | Not started |
 | 5. Android launch | 2–4 per round | Not started |
@@ -91,7 +105,8 @@ tokens.
 - [ ] Clone the repo and run `npm ci` and `npm run check` ([SETUP §4](SETUP.md#4-get-the-code)). The first
       time you use the Supabase CLI on the project, run
       `npx supabase migration repair 20261008000000 --status applied` (the migration went in through the
-      SQL Editor). Once Phase 1's migration is in too, name both (Phase 1, step 11)
+      SQL Editor). Once Phase 1's migration is in too, name both (Phase 1, step 11). Since Phase 2 the
+      **Deploy backend** workflow records them itself, so this is only needed if you use the CLI first
 - [x] Create the Supabase project and apply the migration ([SETUP §5](SETUP.md#5-create-the-supabase-project-and-push-the-database)), through the SQL Editor
 - [x] Set up the sign-in emails ([SETUP §6](SETUP.md#6-set-up-sign-in-emails-and-check-the-signing-keys)): custom SMTP with Resend (test
       mode), code templates, OTP length 6
@@ -230,9 +245,10 @@ Details for each step are in [SETUP §16](SETUP.md#16-phase-1-the-core-loop-on-y
 9. [ ] Optional: build the exercise-import SQL and run it in the SQL Editor (after the Phase 1 pull
        request is merged; [SETUP §16 step 7](SETUP.md#step-7-optional-load-the-exercise-dataset)).
        Nothing changes in the app until rows are reviewed
-10. [ ] Merge the Phase 1 pull request into `main` when you are happy with it
-11. [ ] The first time you use the Supabase CLI on the hosted project, mark both migrations as applied:
-        `npx supabase migration repair 20261008000000 20261008120000 --status applied`
+10. [x] Merge the Phase 1 pull request into `main`: done 2026-10-08 (pull request #3)
+11. [ ] ~~The first time you use the Supabase CLI on the hosted project, mark both migrations as
+        applied~~: no longer needed by hand. Phase 2's **Deploy backend** workflow records them
+        itself, the first time it runs ([SETUP §17 step 5](SETUP.md#step-5-deploy-the-backend-a-dry-run-then-for-real))
 
 ### Android
 - [x] [1.1 Focus timer: scheduled notification, not a foreground service](ANDROID.md#11-the-focus-timer-scheduled-notification-not-a-foreground-service):
@@ -274,55 +290,154 @@ Details for each step are in [SETUP §16](SETUP.md#16-phase-1-the-core-loop-on-y
 
 **Scope (plan):** DualRep surface on Tracy with the study builder; upload of PDFs, docs, links and
 photos of handwritten notes; single-source and cumulative plans; FSRS scheduling; quiz-first blocks;
-concept links; on-the-go audio mode.
+concept links; on-the-go audio mode. **Audio mode moved to [Phase 2B](#phase-2b-audio-study-mode)**
+([DECISIONS.md](DECISIONS.md) D49).
 
 **Gate:** a real course PDF and a page of handwritten notes become one cumulative plan, and a week of
 reviews runs correctly.
 
+### Built in the repo
+- [x] A private Storage bucket, `sources` (25 MiB per file; PDF, Word, JPEG, PNG, WebP), where each
+      person reads and writes only their own folder. `source_files.storage_path` must stay inside
+      its own source's folder (D40, D41)
+- [x] Upload flow: **Add material** → a file (PDF or Word), photos (gallery or camera) or a web link
+      → the `study` Edge Function, which writes `sources`, `source_files` and `plan_sources` and
+      queues the first job ([Android 2.7](ANDROID.md#27-camera-and-photo-access), D32, D41)
+- [x] `tracy-worker` Edge Function and a `pg_cron` schedule (every minute, only when work is
+      queued), with `claim_tracy_events`, `release_tracy_event` and `enqueue_tracy_event` (D31, D37)
+- [x] Per-page text extraction (Tracy's `POST /ai/extract`) and chunking into `source_chunks`.
+      Embeddings (Gemini, 1536 dimensions) are built but **off** until a `GEMINI_API_KEY` is set
+      (D35)
+- [x] Handwriting: transcription draft → the person checks it and taps **Confirm**
+      (`source_files.confirmed`) → only then the outline and cards. Scanned PDF pages are
+      transcribed too (D38)
+- [x] Outline review (keep or cut, rename, move up or down) → `topics`, then `cards` with page
+      references and links between cards (D38, D48)
+- [x] Single and cumulative plans (Plan settings switches between them any time); the "everything
+      so far / newest source" filter on the cycle's start panel (D45)
+- [x] FSRS with `ts-fsrs` 5.4.2: `card_states` and `reviews` written in one local transaction, with
+      the derived `card_states` id; a review uploads the whole FSRS state (D43)
+- [x] Cards and sessions cope with links the server stored as null: a card without a readable
+      source shows "Made by hand" or "A source you can't see", and the study panel copes with a
+      plan that has left the phone
+- [x] Quiz-first block: due cards → new material → closing self-test, inside the focus block, with
+      the timer, alert and handoff unchanged (D45, D46)
+- [x] Concept links and the map view (`card_links`, D48)
+- [x] Daily "reviews due" reminder (D47)
+- [x] Monthly caps per user: 5 sources and 20 pages (photos of notes and scanned PDF pages) a month free, 30 and 200 paid (D36)
+- [x] **Deploy backend** workflow (D39), and a CI job that type-checks, lints and tests the Edge
+      Functions with Deno
+- [ ] ~~On-the-go audio mode~~: moved to [Phase 2B](#phase-2b-audio-study-mode)
+- [ ] The gate on the phone: yours, below
+
+### Good to know
+- **Building a plan needs the internet; studying never does.** Adding material, confirming a
+  transcription, saving an outline and **Try again** call the server. Answering cards, the
+  reminder and the cycle work in airplane mode.
+- **What the plan screen shows for each source**, in order: "Waiting to start" → "Reading your
+  material" → "Check the transcription" (photos of notes only) → "Making the outline" → "Review the
+  outline" (when it proposes new topics) → "Making cards (2 of 5)" → "Ready". A failure shows
+  "Couldn't finish" with a short reason and **Try again**.
+- Each step runs in the background on the server, one AI call at a time. Expect minutes, not
+  seconds. (Tracy is on Render's Starter instance, which never sleeps.)
+- "Due" now means **due today**: a review card is due for its whole day (D46).
+- The cycle's saved state is still version 1: a cycle saved by the Phase 1 app loads unchanged.
+
+### Your manual steps for the Phase 2 gate (in order)
+Details for each step are in [SETUP §17](SETUP.md#17-phase-2-the-study-engine-on-your-phone).
+
+1. [ ] **Check Tracy is up:** open its `/health` page in a browser
+       ([step 1](SETUP.md#step-1-check-that-tracy-is-up))
+2. [ ] **Make the Tracy secret** and save it in your password manager
+       ([step 2](SETUP.md#step-2-make-the-tracy-secret))
+3. [ ] **Render:** add `SERVICE_SECRET_DUALREP`, `DUALREP_STORAGE_HOSTS`, `TRACY_TASK_MODEL_STRONG`
+       and `NODE_VERSION` to the Tracy service, merge the `tracy-ai` pull request, and check
+       `/diag` ([step 3](SETUP.md#step-3-set-up-tracy-on-render-then-merge-its-pull-request))
+4. [ ] **GitHub (DualRep):** secrets `SUPABASE_ACCESS_TOKEN` and `TRACY_SERVICE_SECRET`, variable
+       `TRACY_URL`; optional secret `GEMINI_API_KEY` only with Gemini billing on
+       ([step 4](SETUP.md#step-4-add-the-github-secrets-and-variables))
+5. [ ] **Merge the DualRep Phase 2 pull request, then Deploy backend:** a dry run first, then for
+       real ([step 5](SETUP.md#step-5-deploy-the-backend-a-dry-run-then-for-real))
+6. [ ] **PowerSync:** paste the updated sync config and deploy. Needed this time: `tracy_events`
+       sends three more columns ([step 6](SETUP.md#step-6-update-the-powersync-sync-config))
+7. [ ] **Build and install** the Phase 2 preview APK; check the permission list
+       ([step 7](SETUP.md#step-7-build-and-install-the-phase-2-app))
+8. [ ] **Gate, day 1:** a growing course from a real course PDF and a page of handwritten notes;
+       check the transcription, review the outline, study one block
+       ([step 8](SETUP.md#step-8-the-gate-day-1-one-plan-from-a-pdf-and-a-page-of-notes))
+9. [ ] **Gate, days 2 to 7:** one study block with the plan each day
+       ([step 9](SETUP.md#step-9-the-gate-days-2-to-7-a-week-of-reviews)).
+       Result: _not run yet_ (dates, phone, anything odd)
+10. [ ] **Check the rows** in the SQL Editor
+        ([step 10](SETUP.md#step-10-check-the-rows-in-postgres)). Both parts pass → tick the gate
+11. [ ] Optional: try `claude-haiku-5-5` on the same material and compare the cards
+        ([what Phase 2 costs](SETUP.md#what-phase-2-costs-each-month))
+
+### Android
+- [x] [2.5 Review reminders and background sync](ANDROID.md#25-review-reminders-and-background-sync):
+      the reminder is built; no background sync (not needed)
+- [x] [2.7 Camera and photo access](ANDROID.md#27-camera-and-photo-access): `CAMERA` is the only new
+      permission; **Take a photo** is hidden below Android 10; the camera is "not required" on Play
+      (D42)
+- [ ] Check the permission list of the Phase 2 APK against the
+      [permission ledger](ANDROID.md#permission-ledger) (manual step 7)
+- Moved to [Phase 2B](#phase-2b-audio-study-mode): 2.1, 2.2, 2.3, 2.4 and 2.6
+
+### Tracy
+All of [TRACY_INTEGRATION.md §10](TRACY_INTEGRATION.md#10-tracy-ai-changes-for-phase-2-done), on the
+`tracy-ai` branch `claude/bold-fermi-oglgch` until its pull request is merged:
+- [x] `runTask` changes: per-task model tier, `max_tokens`, effort and time budget; structured
+      outputs; no `temperature` on 5.x models; server-side fallback on Sonnet 5.5 (change 1, D33)
+- [x] DualRep tasks with validators: `dualrep_build_outline`, `dualrep_build_cards`,
+      `dualrep_transcribe_notes`, `dualrep_transcribe_pdf_pages` (change 2)
+- [x] Per-caller secret, metadata-only logs and no Groq fallback for DualRep (changes 3–4, D34,
+      [§7](TRACY_INTEGRATION.md#7-data-boundary-keep-dualrep-data-out-of-tracys-stores))
+- [x] `prompts/surfaces/dualrep.md` (change 5)
+- [x] Stateless per-page `POST /ai/extract` (change 6)
+- [x] Tests (123 in all), `.env.example`, the README's DualRep lane section and the `TRACY.md`
+      test line (changes 7–9)
+- [ ] SDK bump as its own PR (change 10): not needed for Phase 2, because the installed 0.32.1
+      passes the new fields through
+
+### Decisions to make
+- [x] Models for the strong tasks: `claude-sonnet-5-5` by default, `claude-haiku-5-5` one Render
+      variable away (D33). **Still open:** compare the two on a real course after the gate
+- [x] Gemini API key and project owned by DualRep: optional, off by default, and only with billing on
+      (D35)
+- [x] Monthly upload caps for the free tier: 5 sources and 20 pages (photos of notes and scanned PDF pages) a month to start (D36).
+      **Still open:** set them from beta usage (Phase 5)
+- [ ] Keep syncing `reviews` down to the phone, or make it upload-only later to save space
+- [ ] New cards in the early self-test: a card answered "Got it" seconds after it was first shown
+      moves straight to a 2-day review. Keep that, or make new cards wait for their 10-minute
+      learning step? (D45)
+- [ ] Before real users upload a lot: `halfvec(1536)` and no global HNSW index for `source_chunks`,
+      if embeddings are turned on (D35)
+- [ ] A separate Anthropic workspace with its own spend limit for DualRep (today it shares
+      Tracy's account and monthly limit, D34)
+
+---
+
+## Phase 2B: Audio study mode
+
+**Scope:** on-the-go mode from the plan: questions read aloud and answered by voice, with the screen
+off. Moved out of Phase 2 so the study engine could ship first ([DECISIONS.md](DECISIONS.md) D49).
+
+**Gate (proposed):** a 10-minute audio session with the screen locked, answered by voice or headset
+buttons, on an Android 14+ phone.
+
 ### Build
-- [ ] Supabase Storage bucket for sources, with paths prefixed by user id and Storage policies
-- [ ] Upload flow (file, gallery or camera photo, link) → `sources` and `source_files`
-      ([Android 2.7](ANDROID.md#27-camera-and-photo-access))
-- [ ] `tracy-worker` Edge Function and a `pg_cron` schedule that claims `tracy_events` jobs
-- [ ] Per-page text extraction, chunking and embedding (Gemini, 1536 dimensions) into `source_chunks`
-- [ ] Handwriting: transcription draft → user confirms (`source_files.confirmed`) → only then cards
-- [ ] Outline review screen (cut and reorder topics) → `topics`, then `cards` with page references
-- [ ] Single and cumulative plans; switch scope any time; "everything so far / newest source" filter
-- [ ] FSRS with `ts-fsrs` (pin 5.4.2): `card_states` and `reviews` written in one local transaction.
-      A `card_states` id must be UUIDv5(`CARD_STATE_ID_NAMESPACE`, `` `${user_id}:${card_id}` ``)
-      (the namespace is in `src/db/constants.ts`); the server refuses any other id (23514)
-- [ ] Cards and sessions cope with links the server stored as null: `cards.source_chunk_id` (the
-      chunk became unreadable or was deleted) and `study_sessions.plan_id`
-- [ ] Quiz-first block: due cards → new material → closing self-test
-- [ ] Concept links and the map view (`card_links`)
-- [ ] On-the-go audio mode: spike first, then build
-- [ ] Daily "reviews due" reminder
+- [ ] A one-day spike: screen-off speech recognition and text-to-speech on Android 14–17
+- [ ] The audio mode itself, then the Play declarations
 
 ### Android
 - [ ] [2.1 Foreground services for audio study mode](ANDROID.md#21-foreground-services-for-audio-study-mode)
 - [ ] [2.2 The expo-audio defaults trap](ANDROID.md#22-the-expo-audio-defaults-trap)
 - [ ] [2.3 Android 17 background audio](ANDROID.md#23-android-17-background-audio)
 - [ ] [2.4 Speech in the background: spike first](ANDROID.md#24-speech-in-the-background-spike-first)
-- [ ] [2.5 Review reminders and background sync](ANDROID.md#25-review-reminders-and-background-sync)
 - [ ] [2.6 Play declarations for audio mode](ANDROID.md#26-play-declarations-for-audio-mode)
-- [ ] [2.7 Camera and photo access](ANDROID.md#27-camera-and-photo-access)
-
-### Tracy
-- [ ] `runTask` changes: per-task model tier and `max_tokens`, no `temperature`, `auto` + `strict`
-      tool use, fallback and log options ([TRACY_INTEGRATION.md §10](TRACY_INTEGRATION.md#10-tracy-ai-changes-for-phase-2-proposed-not-made), change 1)
-- [ ] DualRep tasks with validators: `dualrep_build_outline`, `dualrep_build_cards`,
-      `dualrep_transcribe_notes` (change 2)
-- [ ] Per-caller secret, metadata-only logs and no Groq fallback for DualRep (changes 3–4,
-      [§7](TRACY_INTEGRATION.md#7-data-boundary-keep-dualrep-data-out-of-tracys-stores))
-- [ ] `prompts/surfaces/dualrep.md` (change 5)
-- [ ] Stateless per-page `POST /ai/extract` (change 6)
-- [ ] Tests and `.env.example` updates (changes 7–8); SDK bump as its own PR (change 10)
 
 ### Decisions to make
-- [ ] Models for the strong tasks (Sonnet 5.5 needs the `runTask` fix first)
-- [ ] Gemini API key and project owned by DualRep
-- [ ] Monthly upload caps for the free tier (to be set from beta usage)
-- [ ] Keep syncing `reviews` down to the phone, or make it upload-only later to save space
+- [ ] On-device speech recognition, or clips sent to Tracy for speech-to-text
 
 ---
 
@@ -341,7 +456,8 @@ reviews runs correctly.
 - [ ] One-line explanations with the source page
 - [ ] Weekly review: SQL aggregates + queued Tracy summary; no patterns before 4 weeks; never a cause
 - [ ] Proposal log: `tracy_events.accepted` set by the user's choice
-- [ ] Monthly cap counting from `tracy_events.usage`
+- [ ] Monthly caps for the planner and the grader: reuse `enqueue_tracy_event`'s per-stage caps
+      (Phase 2, [DECISIONS.md](DECISIONS.md) D36), and record `tracy_events.usage` for real costs
 - [ ] Measure the 3-second gate on the phone
 
 ### Android
@@ -422,7 +538,8 @@ Feedback decides whether another round runs before release.
 - [ ] Privacy policy and terms (users upload only material they have the right to use)
 - [ ] Custom SMTP for sign-in emails (Supabase's built-in sender is for development)
 - [ ] Production backend: a second Supabase project (for example `dualrep-prod`) with custom SMTP and
-      the sign-in email templates, the migrations pushed with `npx supabase db push`, and its own
+      the sign-in email templates, the migrations and Edge Functions deployed with the **Deploy backend**
+      workflow pointed at it ([DECISIONS.md](DECISIONS.md) D39), and its own
       PowerSync instance with the sync config deployed (set up like
       [SETUP §5–8](SETUP.md#5-create-the-supabase-project-and-push-the-database); in
       `powersync/service.yaml` use `name: dualrep-prod` and `allow_temporary_tokens: false`). Then

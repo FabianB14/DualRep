@@ -44,7 +44,7 @@ select lives_ok(
   $$insert into public.source_files (id, source_id, owner_id, group_id, storage_path, page)
     values ('41000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001',
             '10000000-0000-4000-8000-000000000003', '30000000-0000-4000-8000-000000000001',
-            'olive/lecture1/p1.jpg', 1)
+            '10000000-0000-4000-8000-000000000001/40000000-0000-4000-8000-000000000001/p1.jpg', 1)
     on conflict (id) do update set id = excluded.id, source_id = excluded.source_id, owner_id = excluded.owner_id,
       group_id = excluded.group_id, storage_path = excluded.storage_path, page = excluded.page$$,
   'PUT: the source owner adds a file (sending a forged owner_id and group_id)'
@@ -113,7 +113,8 @@ select is(
 select throws_ok(
   $$insert into public.source_files (id, source_id, owner_id, storage_path)
     values ('41000000-0000-4000-8000-000000000009', '40000000-0000-4000-8000-000000000001',
-            '10000000-0000-4000-8000-000000000002', 'mia/p2.jpg')
+            '10000000-0000-4000-8000-000000000002',
+            '10000000-0000-4000-8000-000000000001/40000000-0000-4000-8000-000000000001/p2.jpg')
     on conflict (id) do update set id = excluded.id, source_id = excluded.source_id,
       owner_id = excluded.owner_id, storage_path = excluded.storage_path$$,
   '42501', null,
@@ -238,7 +239,8 @@ values ('40000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-0000000
         '30000000-0000-4000-8000-000000000003', 'notes');
 insert into public.source_files (id, source_id, owner_id, storage_path)
 values ('41000000-0000-4000-8000-000000000004', '40000000-0000-4000-8000-000000000004',
-        '10000000-0000-4000-8000-000000000001', 'olive/notes.jpg');
+        '10000000-0000-4000-8000-000000000001',
+        '10000000-0000-4000-8000-000000000001/40000000-0000-4000-8000-000000000004/notes.jpg');
 insert into public.source_chunks (id, source_id, content)
 values ('42000000-0000-4000-8000-000000000004', '40000000-0000-4000-8000-000000000004', 'Notes.');
 delete from public.groups where id = '30000000-0000-4000-8000-000000000003';

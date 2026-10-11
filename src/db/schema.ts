@@ -34,7 +34,15 @@ function buildTable(def: TableDefinition): Table {
   const indexes = def.indexes
     ? Object.fromEntries(Object.entries(def.indexes).map(([name, cols]) => [name, [...cols]]))
     : undefined;
-  return new Table(columns, indexes ? { indexes } : undefined);
+  // Columns uploaded together (card_states' FSRS state): each queued PATCH also records their values
+  // before the update (CrudEntry.previousValues), so upload.ts can send the whole state after it.
+  const patchTogether = def.writes.patchTogether;
+  const trackPrevious = patchTogether?.length ? { columns: [...patchTogether] } : undefined;
+  if (!indexes && !trackPrevious) return new Table(columns);
+  return new Table(columns, {
+    ...(indexes ? { indexes } : {}),
+    ...(trackPrevious ? { trackPrevious } : {}),
+  });
 }
 
 // The runtime object is built generically from the registry; the mapped type above gives each table

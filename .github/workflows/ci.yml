@@ -32,6 +32,28 @@ jobs:
       - run: npm run validate:sync
       - run: npm run check:library
 
+  edge-functions:
+    name: Edge Functions (Deno check, lint, tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        # supabase/functions/deno.json applies there (npm: imports resolve from npm, not the app's
+        # node_modules).
+        working-directory: supabase/functions
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          # Pinned (Deno 2, like the hosted Edge Runtime). Bump by hand now and then.
+          deno-version: 2.2.15
+      - run: deno --version
+      - name: Type-check both functions and everything they import
+        run: deno check study/index.ts tracy-worker/index.ts
+      - run: deno lint
+      # Pure modules, the worker's step machine and the study actions, against in-memory fakes.
+      - run: deno test
+
   database:
     name: Database (migrations + RLS tests, Postgres 16)
     runs-on: ubuntu-24.04
