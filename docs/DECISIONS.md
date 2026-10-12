@@ -1466,9 +1466,11 @@ The research behind them: [research/voice/speech.md](research/voice/speech.md) (
     are shown under the box ("Didn't fit in these notes, so they'll start your next set: …") and kept
     in the draft's `overflow`. After a successful **Add to plan** they become a new draft under a new
     source id, which the plan shows as **Unsent notes**. If the person shortens the notes instead,
-    the next **Start speaking** puts them back first, as far as they fit. Before this, the last
-    stretch was added whole, so the notes almost always ended over 20,000 and the screen's "Add it
-    to the plan" was refused.
+    the next **Start speaking** puts them back first, as far as they fit; if they empty the box (or
+    a draft was saved that way), the words move into it at once, so empty notes never sit next to
+    waiting words that **Add to plan** would refuse and **Clear the notes** wouldn't show for.
+    **Clear the notes** drops the waiting words too. Before this, the last stretch was added whole,
+    so the notes almost always ended over 20,000 and the screen's "Add it to the plan" was refused.
   - **Language:** the phone's language by default (`dictationLang` null in `study-prefs`, so it
     follows a change on the phone; plain `en` means US English). The list shows the English variants
     first, then the phone's language, then whatever the phone's speech service lists (Android 13+);

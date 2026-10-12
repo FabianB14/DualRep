@@ -14,7 +14,8 @@
  * - The notes never grow past the note limit, so "Add to plan" always takes them: words that don't fit
  *   (the rest of the sentence that reached the limit, and the last words after the pause) wait in
  *   `overflow`, in order, and start the next set of notes. If the person shortens the notes, the next
- *   tap on the mic puts them back first, as far as they fit.
+ *   tap on the mic puts them back first, as far as they fit; if they empty the notes, the words go
+ *   in at once (empty notes never sit next to waiting words, which nothing on screen could add).
  * - Pausing calls stop(), which lets the recognizer send its last words; if it hasn't ended within 4
  *   seconds, abort() gives up on them. finish() pauses and resolves with the notes once that is done
  *   ("Add to plan" while listening).
@@ -116,13 +117,16 @@ async function readMicrophone(): Promise<MicPermission> {
 export type Dictation = {
   /** The notes: everything heard so far plus the person's edits. */
   text: string;
-  /** Typing and edits (the screen only allows them while `status` is 'off'). */
+  /**
+   * Typing and edits (the screen only allows them while `status` is 'off'). Emptied notes take the
+   * words waiting in `overflow` at once, so set `overflow` first when setting both.
+   */
   setText(text: string): void;
   /** Words still being heard (they may change); shown greyed, not part of `text` yet. */
   live: string;
   /** Words heard after the notes were full: not part of `text`; they start the next set of notes. */
   overflow: string;
-  /** Puts back words that didn't fit (a saved draft), or empties them ('' when the notes are cleared). */
+  /** Puts back words that didn't fit (a saved draft), or empties them ('' when the notes are cleared). Before setText. */
   setOverflow(text: string): void;
   /** The words that didn't fit, emptying them here (the notes were added; they start the next set). */
   takeOverflow(): string;
@@ -220,6 +224,27 @@ export function useDictation({ lang, api = androidApi() }: { lang: string; api?:
       return overflowRef.current !== '' || cleanStudyText(textRef.current).length >= DICTATION_LIMITS.maxChars;
     },
     [setOverflow, setText],
+  );
+
+  /** Puts words that didn't fit back in the notes, as far as there is room now. */
+  const putBack = useCallback(() => {
+    const waiting = overflowRef.current;
+    if (!waiting) return;
+    setOverflow('');
+    keep(waiting);
+  }, [keep, setOverflow]);
+
+  /** The person's edits: emptied notes start with the words that didn't fit (they are the next set now). */
+  const edit = useCallback(
+    (next: string) => {
+      if (next.trim() !== '' || !overflowRef.current) {
+        setText(next);
+        return;
+      }
+      setText('');
+      putBack();
+    },
+    [putBack, setText],
   );
 
   const clearTimers = useCallback(() => {
@@ -414,11 +439,7 @@ export function useDictation({ lang, api = androidApi() }: { lang: string; api?:
     const engine = engineRef.current;
     if (asking.current || session.current || !engine || (engine.kind !== 'on-device' && engine.kind !== 'online')) return;
     // Words that didn't fit go back in first, as far as there is room now (the notes were shortened).
-    if (overflowRef.current) {
-      const waiting = overflowRef.current;
-      setOverflow('');
-      keep(waiting);
-    }
+    putBack();
     if (overflowRef.current || cleanStudyText(textRef.current).length >= DICTATION_LIMITS.maxChars) {
       setPauseReason('cap');
       return;
@@ -449,7 +470,7 @@ export function useDictation({ lang, api = androidApi() }: { lang: string; api?:
       if (want.current && Date.now() - heardAt.current >= DICTATION_LIMITS.quietPauseMs) stopListening('quiet');
     }, DICTATION_LIMITS.quietCheckMs);
     begin();
-  }, [begin, keep, setOverflow, stopListening]);
+  }, [begin, putBack, stopListening]);
 
   const finish = useCallback((): Promise<string> => {
     if (want.current) stopListening(null);
@@ -468,5 +489,5 @@ export function useDictation({ lang, api = androidApi() }: { lang: string; api?:
     }
   }, []);
 
-  return { text, setText, live, overflow, setOverflow, takeOverflow, status, pauseReason, probe, permission, level, toggle, pause, finish, downloadOffline };
+  return { text, setText: edit, live, overflow, setOverflow, takeOverflow, status, pauseReason, probe, permission, level, toggle, pause, finish, downloadOffline };
 }

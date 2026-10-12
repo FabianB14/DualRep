@@ -925,6 +925,53 @@ describe('Speak or type notes', () => {
     expect(mockRouter.dismissTo).toHaveBeenCalledWith({ pathname: '/plans/[id]', params: { id: PLAN } });
   });
 
+  it('emptied notes take the words that didn’t fit at once, so they can be added (or cleared) with no mic', async () => {
+    androidPhone(34);
+    const typed = 'x'.repeat(19_990);
+    mockLocal.set(textDraftKey(PLAN), { v: 1, planId: PLAN, sourceId: DRAFT_SOURCE, title: 'Lecture 3', text: typed, updatedAt: 1 });
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    await tap(renderer, 'Start speaking');
+    await hear('result', said('and that is the end of the lecture on mitosis', true));
+    await hear('end');
+    // The person cuts the full notes into another app.
+    await type(renderer, 'Your notes', '');
+    expect(field(renderer, 'Your notes').props.value).toBe('is the end of the lecture on mitosis');
+    expect(textOf(renderer)).not.toContain('Didn’t fit');
+    expect(hasControl(renderer, 'Clear the notes')).toBe(true);
+    await tap(renderer, 'Add to plan');
+    expect(textOf(renderer)).not.toContain('Not added');
+    expect(upload.addMaterial).toHaveBeenCalledWith(
+      expect.anything(),
+      { kind: 'text', text: 'is the end of the lecture on mitosis', title: 'Lecture 3' },
+      expect.anything(),
+    );
+    expect(mockLocal.has(textDraftKey(PLAN))).toBe(false);
+  });
+
+  it('a draft saved with empty notes and words waiting opens with the words as the notes', async () => {
+    mockLocal.set(textDraftKey(PLAN), { v: 1, planId: PLAN, sourceId: DRAFT_SOURCE, title: '', text: '', overflow: 'from before', updatedAt: 1 });
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    expect(field(renderer, 'Your notes').props.value).toBe('from before');
+    expect(textOf(renderer)).not.toContain('Didn’t fit');
+    await tap(renderer, 'Add to plan');
+    expect(upload.addMaterial).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ text: 'from before' }), expect.anything());
+  });
+
+  it('clearing full notes drops the words waiting for the next set too', async () => {
+    jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, given) => {
+      given?.find((button) => button.style === 'destructive')?.onPress?.();
+    });
+    const full = 'x'.repeat(20_000);
+    mockLocal.set(textDraftKey(PLAN), { v: 1, planId: PLAN, sourceId: DRAFT_SOURCE, title: '', text: full, overflow: 'from before', updatedAt: 1 });
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    expect(field(renderer, 'Your notes').props.value).toBe(full);
+    expect(textOf(renderer)).toContain('Didn’t fit in these notes, so they’ll start your next set: “from before”');
+    await tap(renderer, 'Clear the notes');
+    expect(field(renderer, 'Your notes').props.value).toBe('');
+    expect(textOf(renderer)).not.toContain('Didn’t fit');
+    expect(hasControl(renderer, 'Clear the notes')).toBe(false);
+  });
+
   it('typed notes over the limit: Start speaking says to shorten them, not to add them', async () => {
     androidPhone(34);
     const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));

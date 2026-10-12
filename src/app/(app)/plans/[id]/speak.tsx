@@ -102,8 +102,9 @@ function NotesEditor({ planId, singleSource }: { planId: string; singleSource: b
       .then((draft) => {
         if (!active) return;
         if (draft) {
-          setText(draft.text);
+          // The waiting words first: notes saved empty take them (they are the next set now).
           setOverflow(draft.overflow ?? '');
+          setText(draft.text);
           setTitle(draft.title);
         }
         setSourceId(draft?.sourceId ?? newId());
@@ -216,8 +217,9 @@ function NotesEditor({ planId, singleSource }: { planId: string; singleSource: b
         text: 'Clear',
         style: 'destructive',
         onPress: () => {
-          setText('');
+          // The waiting words first, or the emptied notes would take them.
           setOverflow('');
+          setText('');
           setTitle('');
           setError(null);
           // What comes next is new notes: if an attempt to add the cleared ones reached the server
@@ -388,7 +390,7 @@ function NotesEditor({ planId, singleSource }: { planId: string; singleSource: b
         hint="Shown on the plan and next to each card."
       />
 
-      {text.trim() !== '' && !listening && !working ? <Button label="Clear the notes" variant="ghost" onPress={clear} /> : null}
+      {(text.trim() !== '' || overflow !== '') && !listening && !working ? <Button label="Clear the notes" variant="ghost" onPress={clear} /> : null}
 
       {error ? <Notice tone="danger" title="Not added" message={error} accessibilityLiveRegion="polite" /> : null}
     </Screen>

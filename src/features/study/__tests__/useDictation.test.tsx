@@ -412,6 +412,31 @@ describe('listening', () => {
     expect(latest().text).toBe('Short notes.\n\none more sentence to finish\n\nthen something new');
   });
 
+  it('emptied notes take the words that didn’t fit at once (no mic needed)', async () => {
+    await mount(34);
+    await act(async () => latest().setText('x'.repeat(DICTATION_LIMITS.maxChars - 10)));
+    await tapMic();
+    await emit('result', result('one more sentence to finish', true));
+    await emit('end');
+    expect(latest().overflow).toBe('sentence to finish');
+    await act(async () => latest().setText(' \n'));
+    expect([latest().text, latest().overflow]).toEqual(['sentence to finish', '']);
+    expect(native.start).toHaveBeenCalledTimes(1);
+    // Restoring a draft saved that way: the words first, then the empty notes.
+    await act(async () => {
+      latest().setOverflow('from before');
+      latest().setText('');
+    });
+    expect([latest().text, latest().overflow]).toEqual(['from before', '']);
+    // Clearing: the words first, so the empty notes take nothing.
+    await act(async () => latest().setOverflow('waiting'));
+    await act(async () => {
+      latest().setOverflow('');
+      latest().setText('');
+    });
+    expect([latest().text, latest().overflow]).toEqual(['', '']);
+  });
+
   it('words that didn’t fit come back with a saved draft', async () => {
     await mount(34);
     await act(async () => {

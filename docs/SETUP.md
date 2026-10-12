@@ -1797,9 +1797,10 @@ speech line it showed.
   the words that didn't fit are shown under the box ("Didn't fit in these notes, so they'll start
   your next set: …"), and after **Add to plan** the plan shows them as **Unsent notes**: **Open the
   notes** to carry on. (If you shorten the notes instead, the next **Start speaking** puts those
-  words back first.)
+  words back first. If you empty the box, they move into it straight away.)
 - Added notes can't be edited: add a corrected version as new notes.
-- **Clear the notes** (it asks first) empties the box and starts a new set.
+- **Clear the notes** (it asks first) empties the box, and the words waiting under it, and starts a
+  new set.
 - **Signing out deletes notes you haven't added yet.** The sign-out dialog warns you and its button
   says **Sign out and lose notes**. Deleting a plan deletes its unsent notes too.
 - Each set of notes uses 1 of the month's sources, like a PDF (5 free, 30 with beta access).
