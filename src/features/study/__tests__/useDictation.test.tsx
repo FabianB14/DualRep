@@ -9,6 +9,8 @@ import { AppState } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { DICTATION_LIMITS } from '../dictation';
+import { cleanStudyText } from '../studyApi';
+import { validateText } from '../upload';
 import { useDictation, type Dictation } from '../useDictation';
 
 type AnyMock = jest.Mock<(...args: any[]) => any>;
@@ -238,6 +240,7 @@ describe('listening', () => {
       [{ error: 'language-not-supported', code: 13 }, 'download'],
       [{ error: 'audio-capture', code: 3 }, 'busy-mic'],
       [{ error: 'too-many-requests', code: 10 }, 'error'],
+      [{ error: 'service-not-allowed', code: 9 }, 'service-permission'],
       [{ error: 'not-allowed', code: -1 }, 'permission'],
     ];
     await mount(34);
@@ -248,7 +251,23 @@ describe('listening', () => {
       await emit('end');
       expect([error.error, latest().status, latest().pauseReason]).toEqual([error.error, 'off', reason]);
     }
-    expect(latest().text).toBe('kept\n\nkept\n\nkept\n\nkept\n\nkept\n\nkept');
+    expect(latest().text).toBe('kept\n\nkept\n\nkept\n\nkept\n\nkept\n\nkept\n\nkept');
+  });
+
+  it('the speech service’s own missing microphone (code 9) is not taken for DualRep’s', async () => {
+    await mount(32);
+    await tapMic();
+    await emit('error', { error: 'service-not-allowed', message: 'Insufficient permissions', code: 9 });
+    await emit('end');
+    await flush();
+    // DualRep may use the microphone: the screen must not ask the person to allow it again.
+    expect([latest().status, latest().pauseReason, latest().permission]).toEqual(['off', 'service-permission', 'granted']);
+    expect(latest().probe?.service).toBe('com.google.android.tts');
+    // Once the service is allowed it in settings, the next tap just starts.
+    await tapMic();
+    expect(native.requestPermissionsAsync).not.toHaveBeenCalled();
+    expect(native.start).toHaveBeenCalledTimes(2);
+    expect(latest().pauseReason).toBeNull();
   });
 
   it('pauses after a minute without new words', async () => {
@@ -323,18 +342,86 @@ describe('listening', () => {
 
   it('stops at the note limit, and won’t start again while the notes are full', async () => {
     await mount(34);
-    await act(async () => latest().setText('x'.repeat(DICTATION_LIMITS.maxChars - 10)));
+    const typed = 'x'.repeat(DICTATION_LIMITS.maxChars - 10);
+    await act(async () => latest().setText(typed));
     await tapMic();
     await emit('result', result('one more sentence to finish', true));
     expect(native.stop).toHaveBeenCalledTimes(1);
     expect(latest().pauseReason).toBe('cap');
+    // Android 13+ sends what it was still working on after stop().
+    await emit('result', result('and the last words', true));
     await emit('end');
-    // Every word is kept; the screen asks the person to shorten the notes.
-    expect(latest().text.endsWith('one more sentence to finish')).toBe(true);
+    // The notes can be added as they are ("Add it to the plan", as the screen says)…
+    expect(() => validateText(latest().text)).not.toThrow();
+    expect(cleanStudyText(latest().text).length).toBeLessThanOrEqual(DICTATION_LIMITS.maxChars);
+    // …and every word is kept, in order: what didn't fit waits for the next set.
+    expect(latest().text).toBe(`${typed}\n\none more`);
+    expect(latest().overflow).toBe('sentence to finish and the last words');
     native.start.mockClear();
     await tapMic();
     expect(native.start).not.toHaveBeenCalled();
     expect(latest().pauseReason).toBe('cap');
+    expect(latest().overflow).toBe('sentence to finish and the last words');
+    let next = '';
+    await act(async () => {
+      next = latest().takeOverflow();
+    });
+    expect([next, latest().overflow]).toEqual(['sentence to finish and the last words', '']);
+  });
+
+  it('words still being heard when it pauses at the limit wait for the next set too', async () => {
+    await mount(34);
+    const typed = 'x'.repeat(DICTATION_LIMITS.maxChars - 4);
+    await act(async () => latest().setText(typed));
+    await tapMic();
+    // Exactly full: it pauses, and nothing more fits.
+    await emit('result', result('ab', true));
+    await emit('result', result('half a sentence', false));
+    expect(latest().pauseReason).toBe('cap');
+    // The recognizer never answers stop(): the words still being heard are kept anyway.
+    await advance(DICTATION_LIMITS.stopWatchdogMs);
+    expect(latest().status).toBe('off');
+    expect([latest().text, latest().overflow, latest().pauseReason]).toEqual([`${typed}\n\nab`, 'half a sentence', 'cap']);
+    expect(() => validateText(latest().text)).not.toThrow();
+  });
+
+  it('last words that fill the notes after the person paused say so too', async () => {
+    await mount(34);
+    const typed = 'x'.repeat(DICTATION_LIMITS.maxChars - 12);
+    await act(async () => latest().setText(typed));
+    await tapMic();
+    await act(async () => latest().pause());
+    expect(latest().pauseReason).toBeNull();
+    await emit('result', result('cells divide by mitosis', true));
+    await emit('end');
+    expect([latest().text, latest().overflow, latest().pauseReason]).toEqual([`${typed}\n\ncells`, 'divide by mitosis', 'cap']);
+  });
+
+  it('shortened notes take the words that didn’t fit back first, then carry on', async () => {
+    await mount(34);
+    await act(async () => latest().setText('x'.repeat(DICTATION_LIMITS.maxChars - 10)));
+    await tapMic();
+    await emit('result', result('one more sentence to finish', true));
+    await emit('end');
+    expect(latest().overflow).toBe('sentence to finish');
+    await act(async () => latest().setText('Short notes.\n\none more'));
+    await tapMic();
+    expect(native.start).toHaveBeenCalledTimes(2);
+    expect([latest().text, latest().overflow]).toEqual(['Short notes.\n\none more sentence to finish', '']);
+    await emit('result', result('then something new', true));
+    expect(latest().text).toBe('Short notes.\n\none more sentence to finish\n\nthen something new');
+  });
+
+  it('words that didn’t fit come back with a saved draft', async () => {
+    await mount(34);
+    await act(async () => {
+      latest().setText('x'.repeat(DICTATION_LIMITS.maxChars));
+      latest().setOverflow('from before');
+    });
+    expect(latest().overflow).toBe('from before');
+    await tapMic();
+    expect(native.start).not.toHaveBeenCalled();
+    expect([latest().pauseReason, latest().overflow]).toEqual(['cap', 'from before']);
   });
 
   it('picking up after a pause starts a new paragraph', async () => {

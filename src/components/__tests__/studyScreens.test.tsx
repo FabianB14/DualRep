@@ -894,6 +894,91 @@ describe('Speak or type notes', () => {
     expect(textOf(renderer)).toContain('One set of notes can be up to 20,000 characters.');
   });
 
+  it('dictation that reaches 20,000 characters leaves notes Add to plan takes; what didn’t fit starts the next set', async () => {
+    androidPhone(34);
+    const typed = 'x'.repeat(19_990);
+    mockLocal.set(textDraftKey(PLAN), { v: 1, planId: PLAN, sourceId: DRAFT_SOURCE, title: 'Lecture 3', text: typed, updatedAt: 1 });
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    await tap(renderer, 'Start speaking');
+    await hear('result', said('and that is the end of the lecture on mitosis', true));
+    expect(recognizer.stop).toHaveBeenCalledTimes(1);
+    await hear('end');
+    const text = textOf(renderer);
+    expect(text).toContain('That’s the most one set of notes can hold (20,000 characters). Add it to the plan, then start another.');
+    expect(text).toContain('Didn’t fit in these notes, so they’ll start your next set: “is the end of the lecture on mitosis”');
+    expect(text).not.toContain('Shorten');
+    expect(field(renderer, 'Your notes').props.value).toBe(`${typed}\n\nand that`);
+    // Closing the app now would lose nothing: the pause saved both at once.
+    expect(mockLocal.get(textDraftKey(PLAN))).toMatchObject({ text: `${typed}\n\nand that`, overflow: 'is the end of the lecture on mitosis' });
+    await tap(renderer, 'Add to plan');
+    expect(textOf(renderer)).not.toContain('Not added');
+    expect(upload.addMaterial).toHaveBeenCalledWith(
+      expect.anything(),
+      { kind: 'text', text: `${typed}\n\nand that`, title: 'Lecture 3' },
+      expect.objectContaining({ sourceId: DRAFT_SOURCE }),
+    );
+    // The plan shows the rest as Unsent notes: new notes, under a new source id.
+    const next = mockLocal.get(textDraftKey(PLAN)) as Record<string, unknown>;
+    expect(next).toMatchObject({ v: 1, planId: PLAN, title: '', text: 'is the end of the lecture on mitosis' });
+    expect(next.sourceId).not.toBe(DRAFT_SOURCE);
+    expect(next).not.toHaveProperty('overflow');
+    expect(mockRouter.dismissTo).toHaveBeenCalledWith({ pathname: '/plans/[id]', params: { id: PLAN } });
+  });
+
+  it('typed notes over the limit: Start speaking says to shorten them, not to add them', async () => {
+    androidPhone(34);
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    await type(renderer, 'Your notes', 'x'.repeat(20_001));
+    await tap(renderer, 'Start speaking');
+    expect(recognizer.start).not.toHaveBeenCalled();
+    const text = textOf(renderer);
+    expect(text).toContain('These notes are over 20,000 characters, the most one set can hold. Shorten them, then add them to the plan.');
+    expect(text).not.toContain('Add it to the plan');
+  });
+
+  it('the speech service without the microphone (code 9): says which app needs it, not DualRep', async () => {
+    androidPhone(31);
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    await tap(renderer, 'Start speaking');
+    await hear('error', { error: 'service-not-allowed', message: 'Insufficient permissions', code: 9 });
+    await hear('end');
+    await act(async () => {
+      for (let k = 0; k < 10; k += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+    const text = textOf(renderer);
+    expect(text).toContain(
+      'The phone’s speech service (Speech Services by Google) isn’t allowed to use the microphone, so it can’t hear you. Allow the microphone for Speech Services by Google in system settings',
+    );
+    expect(text).not.toContain('DualRep needs the microphone');
+    expect(text).not.toContain('Microphone access is off');
+    // The on-device recognizer may be another app than the default service: it isn't named then.
+    androidPhone(34);
+    const onPhone = await render(screen('../../app/(app)/plans/[id]/speak'));
+    await tap(onPhone, 'Start speaking');
+    await hear('error', { error: 'service-not-allowed', message: 'Insufficient permissions', code: 9 });
+    await hear('end');
+    expect(textOf(onPhone)).toContain('The phone’s speech service isn’t allowed to use the microphone, so it can’t hear you.');
+  });
+
+  it('language names on a phone without Intl.DisplayNames (Hermes): names, not codes', async () => {
+    const intl = Intl as unknown as { DisplayNames?: unknown };
+    const displayNames = intl.DisplayNames;
+    delete intl.DisplayNames;
+    try {
+      androidPhone(34);
+      recognizer.getSupportedLocales.mockResolvedValue({ locales: ['en-US', 'de-DE', 'fr-FR'], installedLocales: ['en-US'] });
+      mockLocal.set(STUDY_PREFS_KEY, { dictationLang: 'de-DE' });
+      const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+      expect(textOf(renderer)).toContain('Language: German (Germany)');
+      await tap(renderer, 'Change the language, now German (Germany)');
+      expect(hasControl(renderer, 'French (France)')).toBe(true);
+      expect(textOf(renderer)).not.toContain('de-DE');
+      expect(textOf(renderer)).not.toContain('fr-FR');
+    } finally {
+      intl.DisplayNames = displayNames;
+    }
+  });
+
   it('clearing asks first', async () => {
     let buttons: AlertButton[] = [];
     jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, given) => {

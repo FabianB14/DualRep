@@ -1,10 +1,11 @@
-import { describe, expect, it } from '@jest/globals';
+import { afterEach, describe, expect, it } from '@jest/globals';
 
 import {
   canonicalTag,
   classifyError,
   DICTATION_LIMITS,
   dictationLang,
+  fitSegment,
   joinSegment,
   languageChoices,
   languageName,
@@ -13,10 +14,13 @@ import {
   pauseMessage,
   pauseReasonFor,
   pickEngine,
+  speechServiceName,
   startOptions,
   type EngineInputs,
   type PauseReason,
 } from '../dictation';
+import { cleanStudyText } from '../studyApi';
+import { validateText } from '../upload';
 
 const base: EngineInputs = { api: 34, recognitionAvailable: true, onDeviceService: true, installed: ['en-US'], supported: ['en-US', 'en-GB'], lang: 'en-US' };
 
@@ -98,6 +102,40 @@ describe('joinSegment', () => {
   });
 });
 
+describe('fitSegment', () => {
+  it('joins like joinSegment while the notes have room', () => {
+    expect(fitSegment('cells divide', 'by mitosis', false, 100)).toEqual({ text: 'cells divide by mitosis', overflow: '' });
+    expect(fitSegment('Cells divide.', 'osmosis', true, 100)).toEqual({ text: 'Cells divide.\n\nosmosis', overflow: '' });
+    // Exactly at the limit still fits.
+    expect(fitSegment('abcd', 'efgh', false, 9)).toEqual({ text: 'abcd efgh', overflow: '' });
+  });
+
+  it('past the limit, keeps the words that fit and hands back the rest, cut between words', () => {
+    expect(fitSegment('abcd', 'ef gh ij', false, 10)).toEqual({ text: 'abcd ef gh', overflow: 'ij' });
+    expect(fitSegment('abcd', 'ef gh ij', false, 9)).toEqual({ text: 'abcd ef', overflow: 'gh ij' });
+    // Not even the first word fits (a new paragraph would need 2 more characters).
+    expect(fitSegment('abcd', 'efghij', true, 9)).toEqual({ text: 'abcd', overflow: 'efghij' });
+    // A language written without spaces moves as one stretch.
+    expect(fitSegment('abcd', '細胞分裂です', false, 8)).toEqual({ text: 'abcd', overflow: '細胞分裂です' });
+  });
+
+  it('counts as Add to plan does: after cleaning, at the real note limit', () => {
+    const notes = 'x'.repeat(DICTATION_LIMITS.maxChars - 30);
+    const segment = 'and that is the end of the lecture on mitosis and meiosis';
+    const { text, overflow } = fitSegment(notes, segment, true);
+    expect(cleanStudyText(text).length).toBeLessThanOrEqual(DICTATION_LIMITS.maxChars);
+    expect(() => validateText(text)).not.toThrow();
+    // Every word is somewhere, in order.
+    expect(`${text.slice(notes.length + 2)} ${overflow}`).toBe(segment);
+    expect(overflow).not.toBe('');
+  });
+
+  it('leaves notes that are already over the limit (typed or pasted) as they are', () => {
+    expect(fitSegment('abcdefghij', 'more words', false, 5)).toEqual({ text: 'abcdefghij', overflow: 'more words' });
+    expect(fitSegment('abcdefghij', '  ', false, 5)).toEqual({ text: 'abcdefghij', overflow: '' });
+  });
+});
+
 describe('errors', () => {
   it('maps every code Android sends to what the loop does', () => {
     const cases: [string, number | undefined, string][] = [
@@ -107,7 +145,8 @@ describe('errors', () => {
       ['busy', 8, 'retry'],
       ['client', 5, 'retry'],
       ['not-allowed', -1, 'permission'],
-      ['service-not-allowed', 9, 'permission'],
+      // The speech service's own permission, not DualRep's (the library sends not-allowed for that).
+      ['service-not-allowed', 9, 'service-permission'],
       ['network', 2, 'network'],
       ['network', 1, 'network'],
       ['network', 4, 'network'],
@@ -130,16 +169,54 @@ describe('errors', () => {
     expect(pauseReasonFor('restart')).toBeNull();
     expect(pauseReasonFor('retry')).toBeNull();
     expect(pauseReasonFor('network')).toBe('network');
+    expect(pauseReasonFor('service-permission')).toBe('service-permission');
     expect(pauseReasonFor('download')).toBe('download');
     expect(pauseReasonFor('stop')).toBe('error');
   });
 
   it('says every pause in plain words', () => {
-    const reasons: (PauseReason | null)[] = [null, 'quiet', 'background', 'cap', 'service', 'network', 'language', 'download', 'permission', 'busy-mic', 'error'];
+    const reasons: (PauseReason | null)[] = [
+      null,
+      'quiet',
+      'background',
+      'cap',
+      'service',
+      'network',
+      'language',
+      'download',
+      'permission',
+      'service-permission',
+      'busy-mic',
+      'error',
+    ];
     for (const reason of reasons) expect(pauseMessage(reason, 'English (UK)').length).toBeGreaterThan(20);
     expect(pauseMessage('cap', 'English (UK)')).toContain('20,000 characters');
     expect(pauseMessage('language', 'English (India)')).toBe('This phone can’t turn English (India) speech into text. Choose another language, or type.');
     expect(pauseMessage('quiet', 'x')).toBe('Paused after a minute of quiet. Tap the mic to carry on.');
+  });
+
+  it('at the limit says to add the notes, unless they are over it (then: shorten them)', () => {
+    expect(pauseMessage('cap', 'x')).toBe('That’s the most one set of notes can hold (20,000 characters). Add it to the plan, then start another.');
+    const over = pauseMessage('cap', 'x', { over: true });
+    expect(over).toBe('These notes are over 20,000 characters, the most one set can hold. Shorten them, then add them to the plan.');
+    expect(over).not.toContain('Add it to the plan');
+  });
+
+  it('the speech service without the microphone: names it when known, and never says DualRep needs it', () => {
+    expect(speechServiceName('com.google.android.googlequicksearchbox')).toBe('the Google app');
+    expect(speechServiceName('com.google.android.tts')).toBe('Speech Services by Google');
+    expect(speechServiceName('com.example.speech')).toBeNull();
+    expect(speechServiceName('')).toBeNull();
+    const named = pauseMessage('service-permission', 'x', { service: 'the Google app' });
+    expect(named).toBe(
+      'The phone’s speech service (the Google app) isn’t allowed to use the microphone, so it can’t hear you. Allow the microphone for the Google app in system settings, then tap the mic to try again. You can still type.',
+    );
+    const unnamed = pauseMessage('service-permission', 'x');
+    expect(unnamed).toContain('The phone’s speech service isn’t allowed to use the microphone');
+    for (const message of [named, unnamed]) {
+      expect(message).not.toContain('DualRep');
+      expect(message).not.toContain('asked again');
+    }
   });
 });
 
@@ -175,6 +252,43 @@ describe('languages', () => {
     expect(languageName('en-GB')).toBe('English (UK)');
     expect(languageName('en-US')).toBe('English (US)');
     expect(languageName('xx-ZZ').length).toBeGreaterThan(0);
+  });
+
+  describe('on Hermes, which has no Intl.DisplayNames', () => {
+    const intl = Intl as unknown as { DisplayNames?: unknown };
+    const displayNames = intl.DisplayNames;
+    afterEach(() => {
+      intl.DisplayNames = displayNames;
+    });
+
+    it('names the languages speech services list from DualRep’s own list, not as codes', () => {
+      delete intl.DisplayNames;
+      expect(languageName('de-DE')).toBe('German (Germany)');
+      expect(languageName('fr-FR')).toBe('French (France)');
+      expect(languageName('es-419')).toBe('Spanish (Latin America)');
+      expect(languageName('pt-BR')).toBe('Portuguese (Brazil)');
+      expect(languageName('zh-Hant-TW')).toBe('Chinese (Traditional, Taiwan)');
+      expect(languageName('cmn-Hans-CN')).toBe('Chinese (Simplified, China)');
+      expect(languageName('iw-IL')).toBe('Hebrew (Israel)');
+      expect(languageName('en-PH')).toBe('English (Philippines)');
+      expect(languageName('ja')).toBe('Japanese');
+      // A region the list lacks is shown as it is; an unknown language stays a code.
+      expect(languageName('de-LI')).toBe('German (LI)');
+      expect(languageName('xx-ZZ')).toBe('xx-ZZ');
+    });
+
+    it('sorts the other languages by those names', () => {
+      delete intl.DisplayNames;
+      const choices = languageChoices('en-GB', ['fr-FR', 'de-DE', 'es-ES', 'nl-NL']);
+      expect(choices.slice(8).map(languageName)).toEqual(['Dutch (Netherlands)', 'French (France)', 'German (Germany)', 'Spanish (Spain)']);
+    });
+
+    it('gives the same names where Intl.DisplayNames exists (the tests’ Node, a later Hermes)', () => {
+      const tags = ['de-DE', 'es-419', 'zh-Hant-TW', 'fr-CA', 'yue-Hant-HK', 'sr-Latn-RS'];
+      const withIntl = tags.map(languageName);
+      delete intl.DisplayNames;
+      expect(tags.map(languageName)).toEqual(withIntl);
+    });
   });
 });
 

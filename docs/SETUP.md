@@ -1781,7 +1781,9 @@ what you see):
 - **Your keyboard's microphone** (Gboard or Samsung Keyboard): while paused, tap in the box and use
   the keyboard's mic key.
 - **Change** the language and look at the list: English variants first, then your phone's language,
-  then others with names (like "German (Germany)"), not codes like `de-DE`.
+  then others with names (like "German (Germany)"), not codes like `de-DE`. The phone's JavaScript
+  engine can't name languages itself, so DualRep has its own list of about 90 languages; write down
+  any language that still shows as a code.
 
 **Success:** spoken notes became a **Ready** source with cards, **Read the notes** shows their text,
 and unsent notes survived airplane mode and closing the app. Tick the steps in
@@ -1791,7 +1793,11 @@ speech line it showed.
 **Good to know:**
 - One set of notes holds up to 20,000 characters (about 20 minutes of talking). A count appears
   under the box from 15,000. At the limit it stops listening ("That's the most one set of notes can
-  hold (20,000 characters). Add it to the plan, then start another.").
+  hold (20,000 characters). Add it to the plan, then start another."). The notes then fit exactly:
+  the words that didn't fit are shown under the box ("Didn't fit in these notes, so they'll start
+  your next set: …"), and after **Add to plan** the plan shows them as **Unsent notes**: **Open the
+  notes** to carry on. (If you shorten the notes instead, the next **Start speaking** puts those
+  words back first.)
 - Added notes can't be edited: add a corrected version as new notes.
 - **Clear the notes** (it asks first) empties the box and starts a new set.
 - **Signing out deletes notes you haven't added yet.** The sign-out dialog warns you and its button
@@ -1847,6 +1853,7 @@ the box and on the phone):
 | "No speech-to-text on this phone" | The phone has no speech service (common on phones without Google's apps, and on emulators without Google Play) | Type or paste, or use your keyboard's microphone. To speak in the app, install or turn on Google's speech app ("Speech Recognition & Synthesis from Google", or the Google app) from Play (**verify** the names), then open the screen again. |
 | "Speech-to-text needs a download" | The phone can turn speech into text by itself once the language is downloaded, and has no online service | Tap **Download … for offline use**. Type meanwhile. |
 | "DualRep needs the microphone to hear you. Tap Start speaking to be asked again, or type." | You tapped **Don't allow** | Tap **Start speaking** and allow it. |
+| "The phone's speech service (the Google app) isn't allowed to use the microphone, so it can't hear you. Allow the microphone for the Google app in system settings, then tap the mic to try again." (or "Speech Services by Google", or "The phone's speech service isn't allowed…" when DualRep can't tell which app it is) | DualRep may use the microphone, but the app that turns speech into text may not (its own microphone permission is off) | Settings → Apps → that app (the Google app, or Speech Services by Google; **verify** the names) → Permissions → Microphone → allow it. Come back and tap **Start speaking**. Typing works meanwhile. |
 | "Microphone access is off" (with **Open system settings**), or "DualRep can't use the microphone. You can still type." | Android won't ask again (refused twice, or turned off in settings) | **Open system settings** → Permissions → Microphone → allow while using the app (**verify** the names), then come back. |
 | "The microphone isn't available right now. Another app may be using it. Tap the mic to try again." | A call or another app is using the microphone, or (not tested yet) the microphone switch in Quick Settings is off | Finish the call or close the other app, check the Quick Settings switch, then tap **Start speaking**. |
 | "Lost the connection to the speech service. Everything so far is kept. Tap the mic to try again." | Google's online service needs the internet | Go online and tap again; or download the language for offline use if the screen offers it; or type. |
@@ -1855,7 +1862,8 @@ the box and on the phone):
 | "The speech service stopped. Tap the mic to try again." | The phone's speech service failed three times in a row | Tap **Start speaking** again. If it keeps happening, restart the phone. |
 | "Speech-to-text stopped. Everything so far is kept. Tap the mic to try again." | Another error from the phone's speech service | Tap **Start speaking** again. |
 | "Paused after a minute of quiet." / "Paused while DualRep was in the background." | Normal: it saves battery, and Android doesn't let an app in the background hear | Tap **Start speaking** to carry on. |
-| "That's the most one set of notes can hold (20,000 characters). Add it to the plan, then start another." | The limit for one set of notes | **Add to plan**, then start a new set. |
+| "That's the most one set of notes can hold (20,000 characters). Add it to the plan, then start another." | The limit for one set of notes; the notes are now exactly within it | **Add to plan**. Words that didn't fit (shown under the box) wait on the plan as **Unsent notes**: **Open the notes** to carry on with a new set. |
+| "These notes are over 20,000 characters, the most one set can hold. Shorten them, then add them to the plan." | You tapped **Start speaking** with typed or pasted notes over the limit | Cut some, or move part into a second set of notes. |
 | Under the box: "21,000 of 20,000 characters. Shorten the notes, or add the rest as another set of notes." (or "One set of notes can be up to 20,000 characters…" after **Add to plan**) | Too much was typed or pasted | Cut some, or move part into a second set of notes. |
 | "Say or type some notes first." | The box is empty | Say or type something. |
 | "No internet connection. Adding and preparing material needs the internet; studying doesn't." | You tapped **Add to plan** offline | Nothing is lost: the plan shows **Unsent notes**. Go online, **Open the notes**, **Add to plan**. |

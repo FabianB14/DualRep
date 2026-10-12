@@ -451,8 +451,9 @@ phone is offline or the app is closed.
       **Download … for offline use** when the phone offers it; typing only on a phone with no speech
       service (D50)
 - [x] Listening carries on by itself (Android 12 and older end each session at a pause) and pauses
-      after a minute of quiet, when the app leaves the foreground, and at 20,000 characters. The
-      screen stays on while listening. No audio is kept
+      after a minute of quiet, when the app leaves the foreground, and at 20,000 characters (the
+      notes then fit **Add to plan** exactly; words that didn't fit start the next set). The screen
+      stays on while listening. No audio is kept
 - [x] Language: the phone's own by default, English variants first, changeable (saved on this phone)
 - [x] The microphone permission is asked on the first tap of **Start speaking**, with the reason on
       screen; refused, typing still works and the screen says how to allow it later (D51)

@@ -29,6 +29,11 @@ export type TextDraft = {
   title: string;
   /** What the editor holds (not yet cleaned; may be over the limit while the person edits). */
   text: string;
+  /**
+   * Words dictated after the notes were full, not part of them (useDictation's `overflow`): they start
+   * the next set of notes once these are added. Left out when there are none.
+   */
+  overflow?: string;
   /** Epoch ms of the last change. */
   updatedAt: number;
 };
@@ -49,6 +54,7 @@ export function parseTextDraft(value: unknown, planId: string): TextDraft | null
     sourceId: d.sourceId,
     title: d.title.slice(0, STUDY_API_LIMITS.maxTitleChars),
     text: d.text,
+    ...(typeof d.overflow === 'string' && d.overflow !== '' ? { overflow: d.overflow } : {}),
     updatedAt: d.updatedAt,
   };
 }
@@ -57,13 +63,13 @@ export function parseTextDraft(value: unknown, planId: string): TextDraft | null
  * The draft to save: the editor's text, cut at twice the limit so a pasted book cannot fill the
  * phone (an over-long draft is kept whole up to there, so the person can shorten it themselves).
  */
-export function draftToSave(draft: Omit<TextDraft, 'v'>): TextDraft {
-  return { ...draft, v: 1, text: draft.text.slice(0, NOTE_MAX_CHARS * 2) };
+export function draftToSave({ overflow, ...draft }: Omit<TextDraft, 'v'>): TextDraft {
+  return { ...draft, v: 1, text: draft.text.slice(0, NOTE_MAX_CHARS * 2), ...(overflow ? { overflow } : {}) };
 }
 
-/** True when the draft holds notes worth keeping (a draft of only spaces is not "unsent notes"). */
-export function draftHasText(draft: Pick<TextDraft, 'text'> | null): boolean {
-  return draft !== null && cleanStudyText(draft.text) !== '';
+/** True when the draft holds words worth keeping (a draft of only spaces is not "unsent notes"). */
+export function draftHasText(draft: Pick<TextDraft, 'text' | 'overflow'> | null): boolean {
+  return draft !== null && (cleanStudyText(draft.text) !== '' || cleanStudyText(draft.overflow ?? '') !== '');
 }
 
 export async function readTextDraft(planId: string): Promise<TextDraft | null> {

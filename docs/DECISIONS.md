@@ -1256,9 +1256,14 @@ The research behind them: [research/voice/speech.md](research/voice/speech.md) (
   - **The listening loop:** a new session 250 ms after one ends by itself. After a "busy" or
     "client" error it retries after 300, 600 and 1,200 ms, then pauses ("The speech service
     stopped."). Network, language, permission, busy-microphone and unknown errors pause with a
-    plain sentence ([SETUP §17](SETUP.md#if-something-goes-wrong-in-phase-2) lists them). It also
-    pauses after 60 s with no new words, when the app leaves the foreground (Android gives a
-    background app silence), and at the note limit. Pausing calls `stop()`, then `abort()` if the
+    plain sentence ([SETUP §17](SETUP.md#if-something-goes-wrong-in-phase-2) lists them). Two
+    permission errors are told apart: `not-allowed` is DualRep's own microphone permission (the
+    library checks it before every `start()`), while `service-not-allowed` (code 9) means the speech
+    service app itself may not use the microphone, so the screen names that app when it knows it
+    ("the Google app" or "Speech Services by Google", from `getDefaultRecognitionService()`, for the
+    online engine only) and never asks the person to allow DualRep again. It also pauses after 60 s
+    with no new words, when the app leaves the foreground (Android gives a background app silence),
+    and at the note limit. Pausing calls `stop()`, then `abort()` if the
     last words haven't come within 4 s. Words still being heard when a session ends are kept. The
     screen stays on only while listening (keep-awake tag `dualrep-dictation`).
 - **Why:** free, no server and no Tracy call, offline on many Android 13+ phones, and the person
@@ -1399,7 +1404,8 @@ The research behind them: [research/voice/speech.md](research/voice/speech.md) (
 
 - **Decision:** what is on the **Speak or type notes** screen is saved in `local_state` under the
   key `study-text-draft:<planId>`: one draft per plan, `{v: 1, planId, sourceId, title, text,
-  updatedAt}`. Never synced or uploaded.
+  overflow?, updatedAt}` (`overflow`: words dictated after the notes were full, D56). Never synced
+  or uploaded.
   - **When it is saved:** at most 1 s after a change (the timer isn't restarted by each change, so
     steady dictation is still saved every second), and at once on a pause, before **Add to plan**,
     when the screen closes and when the app leaves the foreground. In the background each change is
@@ -1452,12 +1458,25 @@ The research behind them: [research/voice/speech.md](research/voice/speech.md) (
   - **The notes box** is read-only while listening (so a cursor and arriving words never fight),
     keeps the newest words in view, and shows words still being heard in grey below it. Each stretch
     of speech is joined with a space; carrying on after a pause starts a new paragraph. A counter
-    appears from 15,000 characters; over 20,000, the box and **Add to plan** say how to fix it. Its
-    hint says the keyboard's microphone works there too.
+    appears from 15,000 characters; over 20,000 (typed or pasted), the box, the status line and
+    **Add to plan** say to shorten them. Its hint says the keyboard's microphone works there too.
+  - **At 20,000 characters dictation pauses with notes Add to plan accepts:** only the words that
+    fit join the notes (cut between words, counted after the same cleaning as the server's), so the
+    notes never go over by dictation. The rest of that stretch, and any last words after the pause,
+    are shown under the box ("Didn't fit in these notes, so they'll start your next set: …") and kept
+    in the draft's `overflow`. After a successful **Add to plan** they become a new draft under a new
+    source id, which the plan shows as **Unsent notes**. If the person shortens the notes instead,
+    the next **Start speaking** puts them back first, as far as they fit. Before this, the last
+    stretch was added whole, so the notes almost always ended over 20,000 and the screen's "Add it
+    to the plan" was refused.
   - **Language:** the phone's language by default (`dictationLang` null in `study-prefs`, so it
     follows a change on the phone; plain `en` means US English). The list shows the English variants
     first, then the phone's language, then whatever the phone's speech service lists (Android 13+);
     languages installed on the phone are marked "offline". It can't be changed while listening.
+    Hermes has no `Intl.DisplayNames`, so the names ("German (Germany)") come from DualRep's own
+    list of about 90 languages and the regions and scripts in speech services' tags
+    (`languageNames.ts`, the English names Node's ICU gives); a tag whose language isn't on it shows
+    as the tag.
   - An optional **Name** (default "Notes, 12 Oct") and **Clear the notes** (asks first).
 - **Why:** a separate screen leaves Add material's file, photo and link steps as they were and
   gives the **Unsent notes** card one place to open. The rest follows D48: one primary action,

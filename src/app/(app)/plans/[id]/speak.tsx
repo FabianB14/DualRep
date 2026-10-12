@@ -9,17 +9,19 @@ import { Button, Chip, LoadingView, materialProgressText, Notice, OfflineNotice,
 import {
   DICTATION_LIMITS,
   dictationLang,
+  fitSegment,
   joinSegment,
   languageChoices,
   languageName,
   localeMatches,
   pauseMessage,
   phoneLocale,
+  speechServiceName,
 } from '@/features/study/dictation';
 import { useMinute, usePlan } from '@/features/study/hooks';
 import { cleanStudyText, isStudyApiError } from '@/features/study/studyApi';
 import { useStudyPrefs } from '@/features/study/studyPrefs';
-import { readTextDraft, useDraftSaver } from '@/features/study/textDrafts';
+import { readTextDraft, saveTextDraft, useDraftSaver } from '@/features/study/textDrafts';
 import { MicButton } from '@/features/study/ui/MicButton';
 import { addMaterial, charCountText, notesTitle, UPLOAD_RULES, uploadContextFor, uploadErrorMessage, validateText } from '@/features/study/upload';
 import { useDictation, type Dictation } from '@/features/study/useDictation';
@@ -74,7 +76,7 @@ function NotesEditor({ planId, singleSource }: { planId: string; singleSource: b
   const lang = dictationLang(prefs.dictationLang, phone);
   const langName = languageName(lang);
   const dictation = useDictation({ lang });
-  const { text, setText, live } = dictation;
+  const { text, setText, live, overflow, setOverflow } = dictation;
   const listening = dictation.status !== 'off';
   const drafts = useDraftSaver(planId);
 
@@ -101,6 +103,7 @@ function NotesEditor({ planId, singleSource }: { planId: string; singleSource: b
         if (!active) return;
         if (draft) {
           setText(draft.text);
+          setOverflow(draft.overflow ?? '');
           setTitle(draft.title);
         }
         setSourceId(draft?.sourceId ?? newId());
@@ -108,14 +111,16 @@ function NotesEditor({ planId, singleSource }: { planId: string; singleSource: b
     return () => {
       active = false;
     };
-  }, [planId, setText]);
+  }, [planId, setText, setOverflow]);
 
   // Every change is saved on the phone (at most a second later); words still being heard are kept
-  // with them, so leaving the screen mid-sentence loses nothing.
+  // with them, so leaving the screen mid-sentence loses nothing (after the words that didn't fit, if
+  // any, as the hook will place them).
   useEffect(() => {
     if (sourceId === null) return;
-    drafts.schedule({ planId, sourceId, title, text: joinSegment(text, live), updatedAt: Date.now() });
-  }, [drafts, planId, sourceId, text, live, title]);
+    const words = overflow ? { text, overflow: joinSegment(overflow, live) } : fitSegment(text, live);
+    drafts.schedule({ planId, sourceId, title, ...words, updatedAt: Date.now() });
+  }, [drafts, planId, sourceId, text, live, overflow, title]);
   // A pause (or a stop by the phone) saves at once.
   useEffect(() => {
     if (dictation.status === 'off') void drafts.flush();
@@ -180,6 +185,9 @@ function NotesEditor({ planId, singleSource }: { planId: string; singleSource: b
         },
       );
       await drafts.discard();
+      // Words that didn't fit in these notes start the next set: the plan shows them as Unsent notes.
+      const next = dictation.takeOverflow();
+      if (next) await saveTextDraft({ planId, sourceId: newId(), title: '', text: next, updatedAt: Date.now() }).catch(() => undefined);
       if (!mounted.current) return;
       haptic('success');
       router.dismissTo({ pathname: '/plans/[id]', params: { id: planId } });
@@ -209,6 +217,7 @@ function NotesEditor({ planId, singleSource }: { planId: string; singleSource: b
         style: 'destructive',
         onPress: () => {
           setText('');
+          setOverflow('');
           setTitle('');
           setError(null);
           // What comes next is new notes: if an attempt to add the cleared ones reached the server
@@ -310,7 +319,7 @@ function NotesEditor({ planId, singleSource }: { planId: string; singleSource: b
               void dictation.toggle();
             }}
           />
-          <StatusLine dictation={dictation} started={started} langName={langName} />
+          <StatusLine dictation={dictation} started={started} langName={langName} over={over} />
         </View>
       ) : null}
 
@@ -355,6 +364,11 @@ function NotesEditor({ planId, singleSource }: { planId: string; singleSource: b
         {live ? (
           <Text tone="secondary" style={{ fontStyle: 'italic' }} accessibilityLabel={`Still hearing: ${live}`}>
             {`…${live}`}
+          </Text>
+        ) : null}
+        {overflow ? (
+          <Text tone="secondary" accessibilityLiveRegion="polite">
+            {`Didn’t fit in these notes, so they’ll start your next set: “${overflow}”`}
           </Text>
         ) : null}
         {!over && count >= DICTATION_LIMITS.counterFromChars ? (
@@ -419,7 +433,7 @@ function EngineLine({ dictation, langName, onDownload }: { dictation: Dictation;
 }
 
 /** One plain line about the microphone, read out by screen readers whenever it changes. */
-function StatusLine({ dictation, started, langName }: { dictation: Dictation; started: boolean; langName: string }) {
+function StatusLine({ dictation, started, langName, over }: { dictation: Dictation; started: boolean; langName: string; over: boolean }) {
   const line = (() => {
     switch (dictation.status) {
       case 'starting':
@@ -434,7 +448,11 @@ function StatusLine({ dictation, started, langName }: { dictation: Dictation; st
             ? 'DualRep can’t use the microphone. You can still type.'
             : 'DualRep needs the microphone to hear you. Tap Start speaking to be asked again, or type.';
         }
-        if (dictation.pauseReason || started) return pauseMessage(dictation.pauseReason, langName);
+        if (dictation.pauseReason || started) {
+          // The online engine is the phone's default speech service; the on-device one may be another app.
+          const service = dictation.probe?.engine.kind === 'online' ? speechServiceName(dictation.probe.service) : null;
+          return pauseMessage(dictation.pauseReason, langName, { over, service });
+        }
         return 'Tap Start speaking and talk. DualRep listens only while the mic is on, and keeps no recording.';
     }
   })();

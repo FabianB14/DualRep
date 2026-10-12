@@ -704,7 +704,9 @@ phone: [SETUP §17](SETUP.md#17-phase-2-the-study-engine-on-your-phone); voice n
   | S10 | Gboard's and Samsung Keyboard's microphone in the notes box | The keyboard types the words; nothing else is needed |
 
   Also check that the language shown is the phone's own (for example "English (UK)"), and that other
-  languages in the list show names, not codes like `de-DE` (Hermes' `Intl` support is unverified).
+  languages in the list show names, not codes like `de-DE`. Hermes has no `Intl.DisplayNames`, so
+  DualRep names languages from its own list (`src/features/study/languageNames.ts`, about 90
+  languages and the regions in speech services' tags); a language not on it shows its code.
   On an emulator, the microphone needs **Extended controls → Microphone → "Virtual microphone uses
   host audio input"** (**verify**).
 - **When:** built in Phase 2.1; the checks go with the Phase 2 gate.

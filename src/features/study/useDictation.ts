@@ -11,6 +11,10 @@
  *   gives a background app silence anyway), at the note limit, and on an error it can't get past;
  *   `pauseReason` says which. Words are never dropped: a final result is added to the notes as soon
  *   as it comes, and words still in progress when a session ends are added too.
+ * - The notes never grow past the note limit, so "Add to plan" always takes them: words that don't fit
+ *   (the rest of the sentence that reached the limit, and the last words after the pause) wait in
+ *   `overflow`, in order, and start the next set of notes. If the person shortens the notes, the next
+ *   tap on the mic puts them back first, as far as they fit.
  * - Pausing calls stop(), which lets the recognizer send its last words; if it hasn't ended within 4
  *   seconds, abort() gives up on them. finish() pauses and resolves with the notes once that is done
  *   ("Add to plan" while listening).
@@ -25,6 +29,7 @@ import { Animated, AppState, Platform } from 'react-native';
 import {
   classifyError,
   DICTATION_LIMITS,
+  fitSegment,
   joinSegment,
   levelFromVolume,
   pauseReasonFor,
@@ -44,7 +49,8 @@ export type DictationStatus = 'off' | 'starting' | 'listening' | 'stopping';
 /** unknown: not asked yet (or asked once and refused: the next tap asks again). blocked: only system settings can allow it. */
 export type MicPermission = 'unknown' | 'granted' | 'denied' | 'blocked';
 
-export type EngineProbe = { engine: Engine; installed: string[]; supported: string[] };
+/** service: the default speech service's package ('' when unknown), which the online engine uses. */
+export type EngineProbe = { engine: Engine; installed: string[]; supported: string[]; service: string };
 
 /** The Android API level, or 0 elsewhere. Read when called, so tests can change Platform. */
 export function androidApi(): number {
@@ -85,7 +91,8 @@ export async function probeEngine(lang: string, api: number): Promise<EngineProb
     installed = Array.isArray(locales?.installedLocales) ? locales.installedLocales : [];
     supported = Array.isArray(locales?.locales) ? locales.locales : [];
   }
-  return { engine: pickEngine({ api, recognitionAvailable, onDeviceService, installed, supported, lang }), installed, supported };
+  const service = safely(() => Speech.getDefaultRecognitionService()?.packageName ?? '', '');
+  return { engine: pickEngine({ api, recognitionAvailable, onDeviceService, installed, supported, lang }), installed, supported, service };
 }
 
 /** The microphone permission, asking for it when it may still be asked for. */
@@ -113,6 +120,12 @@ export type Dictation = {
   setText(text: string): void;
   /** Words still being heard (they may change); shown greyed, not part of `text` yet. */
   live: string;
+  /** Words heard after the notes were full: not part of `text`; they start the next set of notes. */
+  overflow: string;
+  /** Puts back words that didn't fit (a saved draft), or empties them ('' when the notes are cleared). */
+  setOverflow(text: string): void;
+  /** The words that didn't fit, emptying them here (the notes were added; they start the next set). */
+  takeOverflow(): string;
   status: DictationStatus;
   /** Why it paused by itself, or null (never started, or paused by the person). */
   pauseReason: PauseReason | null;
@@ -133,6 +146,7 @@ export type Dictation = {
 export function useDictation({ lang, api = androidApi() }: { lang: string; api?: number }): Dictation {
   const [text, setTextState] = useState('');
   const [live, setLiveState] = useState('');
+  const [overflow, setOverflowState] = useState('');
   const [status, setStatus] = useState<DictationStatus>('off');
   const [pauseReason, setPauseReason] = useState<PauseReason | null>(null);
   const [probe, setProbe] = useState<EngineProbe | null>(null);
@@ -143,6 +157,7 @@ export function useDictation({ lang, api = androidApi() }: { lang: string; api?:
   // The native listeners are set up once, so everything they read is in refs.
   const textRef = useRef('');
   const liveRef = useRef('');
+  const overflowRef = useRef('');
   const want = useRef(false);
   const session = useRef(false);
   const asking = useRef(false);
@@ -174,6 +189,39 @@ export function useDictation({ lang, api = androidApi() }: { lang: string; api?:
     setLiveState(next);
   }, []);
 
+  const setOverflow = useCallback((next: string) => {
+    overflowRef.current = next;
+    setOverflowState(next);
+  }, []);
+
+  const takeOverflow = useCallback(() => {
+    const words = overflowRef.current;
+    setOverflow('');
+    return words;
+  }, [setOverflow]);
+
+  /**
+   * Adds finished words to the notes, as many as fit (fitSegment); the rest wait in `overflow`, and
+   * once anything waits there, so does everything after it (the words stay in order). True when the
+   * notes are full.
+   */
+  const keep = useCallback(
+    (segment: string): boolean => {
+      if (overflowRef.current) {
+        setOverflow(joinSegment(overflowRef.current, segment));
+      } else {
+        const kept = fitSegment(textRef.current, segment, newParagraph.current);
+        if (kept.text !== textRef.current) {
+          newParagraph.current = false;
+          setText(kept.text);
+        }
+        if (kept.overflow) setOverflow(kept.overflow);
+      }
+      return overflowRef.current !== '' || cleanStudyText(textRef.current).length >= DICTATION_LIMITS.maxChars;
+    },
+    [setOverflow, setText],
+  );
+
   const clearTimers = useCallback(() => {
     if (restartTimer.current) clearTimeout(restartTimer.current);
     if (quietTimer.current) clearInterval(quietTimer.current);
@@ -187,14 +235,14 @@ export function useDictation({ lang, api = androidApi() }: { lang: string; api?:
     stopTimer.current = null;
     session.current = false;
     if (liveRef.current) {
-      setText(joinSegment(textRef.current, liveRef.current, newParagraph.current));
-      newParagraph.current = false;
+      const words = liveRef.current;
       setLive('');
+      if (keep(words) && mounted.current) setPauseReason('cap');
     }
     level.setValue(0);
     if (mounted.current) setStatus('off');
     for (const resolve of waiters.current.splice(0)) resolve(textRef.current);
-  }, [level, setLive, setText]);
+  }, [keep, level, setLive]);
 
   /** Stops listening (by the person when `reason` is null, else by itself), keeping every word. */
   const stopListening = useCallback(
@@ -221,13 +269,12 @@ export function useDictation({ lang, api = androidApi() }: { lang: string; api?:
 
   const commit = useCallback(
     (segment: string) => {
-      const next = joinSegment(textRef.current, segment, newParagraph.current);
-      if (next === textRef.current) return;
-      newParagraph.current = false;
-      setText(next);
-      if (want.current && cleanStudyText(next).length >= DICTATION_LIMITS.maxChars) stopListening('cap');
+      if (!keep(segment)) return;
+      // The notes are full: they can be added as they are, and nothing more fits.
+      if (want.current) stopListening('cap');
+      else if (mounted.current) setPauseReason('cap');
     },
-    [setText, stopListening],
+    [keep, stopListening],
   );
 
   /** Opens a recognition session (the person still wants it listening). */
@@ -366,7 +413,13 @@ export function useDictation({ lang, api = androidApi() }: { lang: string; api?:
     }
     const engine = engineRef.current;
     if (asking.current || session.current || !engine || (engine.kind !== 'on-device' && engine.kind !== 'online')) return;
-    if (cleanStudyText(textRef.current).length >= DICTATION_LIMITS.maxChars) {
+    // Words that didn't fit go back in first, as far as there is room now (the notes were shortened).
+    if (overflowRef.current) {
+      const waiting = overflowRef.current;
+      setOverflow('');
+      keep(waiting);
+    }
+    if (overflowRef.current || cleanStudyText(textRef.current).length >= DICTATION_LIMITS.maxChars) {
       setPauseReason('cap');
       return;
     }
@@ -396,7 +449,7 @@ export function useDictation({ lang, api = androidApi() }: { lang: string; api?:
       if (want.current && Date.now() - heardAt.current >= DICTATION_LIMITS.quietPauseMs) stopListening('quiet');
     }, DICTATION_LIMITS.quietCheckMs);
     begin();
-  }, [begin, stopListening]);
+  }, [begin, keep, setOverflow, stopListening]);
 
   const finish = useCallback((): Promise<string> => {
     if (want.current) stopListening(null);
@@ -415,5 +468,5 @@ export function useDictation({ lang, api = androidApi() }: { lang: string; api?:
     }
   }, []);
 
-  return { text, setText, live, status, pauseReason, probe, permission, level, toggle, pause, finish, downloadOffline };
+  return { text, setText, live, overflow, setOverflow, takeOverflow, status, pauseReason, probe, permission, level, toggle, pause, finish, downloadOffline };
 }

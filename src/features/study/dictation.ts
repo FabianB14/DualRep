@@ -16,10 +16,14 @@
  */
 import type { ExpoSpeechRecognitionErrorEvent, ExpoSpeechRecognitionOptions } from 'expo-speech-recognition';
 
-import { NOTE_MAX_CHARS } from './studyApi';
+import { languageNameFromList } from './languageNames';
+import { cleanStudyText, NOTE_MAX_CHARS } from './studyApi';
 
 export const DICTATION_LIMITS = {
-  /** One set of notes (= the phone's note limit): dictation pauses there. */
+  /**
+   * One set of notes (= the phone's note limit, what "Add to plan" accepts): dictation never fills
+   * the notes past it, and pauses there.
+   */
   maxChars: NOTE_MAX_CHARS,
   /** Pause after this long with no new words (saves battery; Android warns about long sessions). */
   quietPauseMs: 60_000,
@@ -117,6 +121,33 @@ export function joinSegment(committed: string, segment: string, newParagraph = f
   return `${committed} ${words}`;
 }
 
+/**
+ * joinSegment, but only as far as the notes stay within `maxChars` (counted after cleanStudyText, as
+ * "Add to plan" and the server count): the words that fit join the notes, and the rest come back in
+ * `overflow`, cut between words, never inside one (a language written without spaces moves the whole
+ * stretch). Notes already over the limit (typed or pasted) are left as they are.
+ */
+export function fitSegment(
+  committed: string,
+  segment: string,
+  newParagraph = false,
+  maxChars: number = DICTATION_LIMITS.maxChars,
+): { text: string; overflow: string } {
+  const words = segment.split(/\s+/).filter(Boolean);
+  const withWords = (n: number) => joinSegment(committed, words.slice(0, n).join(' '), newParagraph);
+  const fits = (n: number) => cleanStudyText(withWords(n)).length <= maxChars;
+  if (fits(words.length)) return { text: withWords(words.length), overflow: '' };
+  // The most words that fit: each word only makes the notes longer, so halve the range each time.
+  let low = 0;
+  let high = words.length - 1;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(mid)) low = mid;
+    else high = mid - 1;
+  }
+  return { text: withWords(low), overflow: words.slice(low).join(' ') };
+}
+
 /** A volume event's value (−2 … 10; below 0 is silence) as 0 … 1, for the mic's ring. */
 export function levelFromVolume(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -132,7 +163,17 @@ export function levelFromVolume(value: number): number {
  * - retry: the service was restarted too fast (busy, client): start again after a back-off;
  * - the rest pause dictation and say why.
  */
-export type ErrorAction = 'ignore' | 'restart' | 'retry' | 'permission' | 'network' | 'language' | 'download' | 'busy-mic' | 'stop';
+export type ErrorAction =
+  | 'ignore'
+  | 'restart'
+  | 'retry'
+  | 'permission'
+  | 'service-permission'
+  | 'network'
+  | 'language'
+  | 'download'
+  | 'busy-mic'
+  | 'stop';
 
 export function classifyError(e: Pick<ExpoSpeechRecognitionErrorEvent, 'error' | 'code'>): ErrorAction {
   // A string, not the library's union: 'too-many-requests' (code 10) is sent but missing from it.
@@ -146,8 +187,12 @@ export function classifyError(e: Pick<ExpoSpeechRecognitionErrorEvent, 'error' |
     case 'client':
       return 'retry';
     case 'not-allowed':
-    case 'service-not-allowed':
+      // DualRep's own microphone permission: the library checks it before every start().
       return 'permission';
+    case 'service-not-allowed':
+      // 9 = ERROR_INSUFFICIENT_PERMISSIONS, from the speech service: DualRep may use the microphone
+      // (or the library would have sent not-allowed), but the service app itself may not.
+      return 'service-permission';
     case 'network':
       return 'network';
     case 'language-not-supported':
@@ -162,7 +207,18 @@ export function classifyError(e: Pick<ExpoSpeechRecognitionErrorEvent, 'error' |
 }
 
 /** Why dictation is paused (null: it never started, or the person paused it). */
-export type PauseReason = 'quiet' | 'background' | 'cap' | 'service' | 'network' | 'language' | 'download' | 'permission' | 'busy-mic' | 'error';
+export type PauseReason =
+  | 'quiet'
+  | 'background'
+  | 'cap'
+  | 'service'
+  | 'network'
+  | 'language'
+  | 'download'
+  | 'permission'
+  | 'service-permission'
+  | 'busy-mic'
+  | 'error';
 
 /** The pause reason for an error that stops dictation. */
 export function pauseReasonFor(action: ErrorAction): PauseReason | null {
@@ -172,6 +228,7 @@ export function pauseReasonFor(action: ErrorAction): PauseReason | null {
     case 'retry':
       return null;
     case 'permission':
+    case 'service-permission':
     case 'network':
     case 'language':
     case 'download':
@@ -182,8 +239,28 @@ export function pauseReasonFor(action: ErrorAction): PauseReason | null {
   }
 }
 
-/** The status line's words for a pause (everything said so far is always kept). */
-export function pauseMessage(reason: PauseReason | null, langName: string): string {
+/**
+ * The speech service app's name as the phone's settings list it, for the default services we know
+ * (getDefaultRecognitionService().packageName); null for any other.
+ */
+export function speechServiceName(packageName: string | null | undefined): string | null {
+  switch (packageName) {
+    case 'com.google.android.googlequicksearchbox':
+      return 'the Google app';
+    case 'com.google.android.tts':
+      return 'Speech Services by Google';
+    default:
+      return null;
+  }
+}
+
+/**
+ * The status line's words for a pause (everything said so far is always kept). `over`: the notes are
+ * over the limit now (typed or pasted), so they can't be added as they are. `service`: the speech
+ * service's name (speechServiceName), when known.
+ */
+export function pauseMessage(reason: PauseReason | null, langName: string, { over = false, service = null }: { over?: boolean; service?: string | null } = {}): string {
+  const limit = DICTATION_LIMITS.maxChars.toLocaleString('en-US');
   switch (reason) {
     case null:
       return 'Paused. Tap the mic to carry on.';
@@ -192,7 +269,9 @@ export function pauseMessage(reason: PauseReason | null, langName: string): stri
     case 'background':
       return 'Paused while DualRep was in the background. Tap the mic to carry on.';
     case 'cap':
-      return `That’s the most one set of notes can hold (${DICTATION_LIMITS.maxChars.toLocaleString('en-US')} characters). Add it to the plan, then start another.`;
+      return over
+        ? `These notes are over ${limit} characters, the most one set can hold. Shorten them, then add them to the plan.`
+        : `That’s the most one set of notes can hold (${limit} characters). Add it to the plan, then start another.`;
     case 'service':
       return 'The speech service stopped. Tap the mic to try again.';
     case 'network':
@@ -203,6 +282,10 @@ export function pauseMessage(reason: PauseReason | null, langName: string): stri
       return `${langName} isn’t downloaded on this phone yet. Download it for offline use, or type.`;
     case 'permission':
       return 'DualRep can’t use the microphone. You can still type.';
+    case 'service-permission':
+      return service
+        ? `The phone’s speech service (${service}) isn’t allowed to use the microphone, so it can’t hear you. Allow the microphone for ${service} in system settings, then tap the mic to try again. You can still type.`
+        : 'The phone’s speech service isn’t allowed to use the microphone, so it can’t hear you. Allow the microphone for it in system settings (it’s usually a Google app), then tap the mic to try again. You can still type.';
     case 'busy-mic':
       return 'The microphone isn’t available right now. Another app may be using it. Tap the mic to try again.';
     case 'error':
@@ -260,17 +343,31 @@ export function dictationLang(chosen: string | null, phone: string | null = phon
   return tag;
 }
 
-/** "English (UK)", "German (Germany)", or the tag itself when the phone has no name for it. */
+/**
+ * "English (UK)", "German (Germany)", "Chinese (Traditional, Taiwan)", or the tag itself when its
+ * language has no name here. Hermes (the phone's engine) has no Intl.DisplayNames, so the names come
+ * from DualRep's own list (languageNames.ts); Intl.DisplayNames, on an engine that has it, only names
+ * a language, region or script the list lacks.
+ */
 export function languageName(tag: string): string {
   const known = NAMES[tag];
   if (known) return known;
+  const listed = languageNameFromList(tag);
+  if (listed?.complete) return listed.name;
+  return intlLanguageName(tag) ?? listed?.name ?? tag;
+}
+
+function intlLanguageName(tag: string): string | null {
   try {
-    const DisplayNames = (Intl as unknown as { DisplayNames?: new (locales: string[], options: { type: 'language' }) => { of(code: string): string | undefined } })
-      .DisplayNames;
-    const name = DisplayNames ? new DisplayNames(['en'], { type: 'language' }).of(tag) : undefined;
-    return name && name !== tag ? name : tag;
+    const DisplayNames = (
+      Intl as unknown as {
+        DisplayNames?: new (locales: string[], options: { type: 'language'; languageDisplay: 'standard' }) => { of(code: string): string | undefined };
+      }
+    ).DisplayNames;
+    const name = DisplayNames ? new DisplayNames(['en'], { type: 'language', languageDisplay: 'standard' }).of(tag) : undefined;
+    return name && name !== tag ? name : null;
   } catch {
-    return tag;
+    return null;
   }
 }
 

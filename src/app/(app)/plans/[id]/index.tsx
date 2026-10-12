@@ -184,7 +184,7 @@ export default function PlanScreen() {
                 {online ? 'Saved on this phone, not added to the plan yet.' : 'Saved on this phone. Add them to the plan when you’re back online.'}
               </Text>
               <Text variant="caption" tone="secondary" numberOfLines={2}>
-                {draft.text.trim()}
+                {draft.text.trim() || draft.overflow?.trim()}
               </Text>
             </View>
             <Button label="Open the notes" variant="secondary" onPress={openNotes} />

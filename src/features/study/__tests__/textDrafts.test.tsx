@@ -95,6 +95,18 @@ describe('text drafts', () => {
     await clearTextDraft(PLAN);
     await expect(readTextDraft(PLAN)).resolves.toBeNull();
   });
+
+  it('keeps the words that didn’t fit in the notes with them, and only when there are some', async () => {
+    const { v: _v, ...rest } = draft;
+    await saveTextDraft({ ...rest, overflow: 'the rest of the sentence' });
+    await expect(readTextDraft(PLAN)).resolves.toEqual({ ...draft, overflow: 'the rest of the sentence' });
+    expect(draftToSave({ ...rest, overflow: '' })).toEqual(draft);
+    expect(parseTextDraft({ ...draft, overflow: 5 }, PLAN)).toEqual(draft);
+    // Notes emptied by hand with such words still waiting: still unsent notes, never deleted.
+    expect(draftHasText({ text: '', overflow: 'the rest of the sentence' })).toBe(true);
+    store.set(textDraftKey(PLAN), { ...draft, text: ' ', overflow: 'the rest' });
+    await expect(countUnsentNotes()).resolves.toBe(1);
+  });
 });
 
 describe('useDraftSaver', () => {
