@@ -19,6 +19,7 @@ import type {
   CountedEnqueue,
   Fence,
   JobPatch,
+  NewSource,
   PlanRow,
   SourceFileRow,
   SourceRow,
@@ -223,9 +224,15 @@ class SupabaseStore implements Store {
     return (data as SourceRow | null) ?? null;
   }
 
-  async insertSource(row: SourceRow): Promise<void> {
+  async insertSource(row: NewSource): Promise<void> {
     const { error } = await this.db.from('sources').insert(row);
     this.check('insert source', error);
+  }
+
+  async sourceBody(id: string): Promise<string | null> {
+    const { data, error } = await this.db.from('sources').select('body').eq('id', id).maybeSingle();
+    this.check('read source text', error);
+    return (data as { body: string | null } | null)?.body ?? null;
   }
 
   async setSourceStatus(id: string, status: SourceRow['status']): Promise<void> {

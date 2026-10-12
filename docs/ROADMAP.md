@@ -16,7 +16,7 @@ How to use this page:
 
 ## Where we are now
 
-*Updated 2026-10-09.*
+*Updated 2026-10-12.*
 
 - **Phase 0 passed its gate on 2026-10-08** on Fabian's Android phone (a preview APK from GitHub
   Actions, the hosted Supabase project and PowerSync Cloud), and its code is on `main` (pull request
@@ -36,14 +36,22 @@ How to use this page:
   - the server side: a private Storage bucket, the `study` and `tracy-worker` Edge Functions, a job
     queue with monthly caps, a pg_cron schedule, and Tracy's new DualRep lane;
   - a **Deploy backend** GitHub workflow, so database changes no longer go through the SQL Editor.
-- **Tests:** 2,528 app tests in 65 suites (one runs a full week of study blocks), 46 script tests,
-  626 database tests in 15 files, 78 Deno tests for the Edge Functions, and 123 tests in `tracy-ai`.
-  A cross-repo check also ran the real Tracy server against the real worker and `study` code, with
-  a fake Anthropic: a PDF with a scanned page and a photo of notes, all the way to cards.
-- **Not yet run for real:** nothing in Phase 2 has touched the hosted Supabase project, Tracy on
-  Render, Anthropic or a phone. That is the Phase 2 gate, and it is yours
+- **Voice notes (Phase 2.1) are built on the same branch** (2026-10-12): on a plan, **Add
+  material** → **Speak or type notes**. Android's own speech recognition turns what you say into
+  text (on the phone and offline where it can, otherwise with Google's online service, and the
+  screen says which); you read the words through, then **Add to plan**. Unsent notes wait on the
+  phone. They become an outline and cards like a PDF, with no transcription to check, and count as
+  1 source a month ([Phase 2.1](#phase-21-voice-notes)). Nothing new to set up: the Phase 2
+  **Deploy backend** run applies one more migration.
+- **Tests:** 2,636 app tests in 69 suites (one runs a full week of study blocks), 46 script tests,
+  682 database tests in 16 files, 103 Deno tests for the Edge Functions, and 123 tests in
+  `tracy-ai`. A cross-repo check also ran the real Tracy server against the real worker and `study`
+  code, with a fake Anthropic: a PDF with a scanned page and a photo of notes, all the way to cards.
+- **Not yet run for real:** nothing in Phase 2 or 2.1 has touched the hosted Supabase project, Tracy
+  on Render, Anthropic or a phone. That is the Phase 2 gate, and it is yours
   ([your manual steps](#your-manual-steps-for-the-phase-2-gate-in-order): about an hour of setup, an
-  hour or two on day 1, then about 10 minutes a day for a week).
+  hour or two on day 1, then about 10 minutes a day for a week). Voice notes then need about half
+  an hour on the phone ([their steps](#your-steps-on-the-phone)).
 - **Audio study mode moved to Phase 2B** ([DECISIONS.md](DECISIONS.md) D49): a spike first, after
   the Phase 2 gate.
 - Phase 0 leftovers still open below: the PowerSync free-tier check, the Play Console decision, and
@@ -54,6 +62,7 @@ How to use this page:
 | 0. Foundation | 1–2 | **Gate passed** (2026-10-08) |
 | 1. Core loop | 4–5 | **Built**, on `main`; gate result not recorded yet |
 | 2. Study engine | 4–6 | **Built**; gate not yet run (manual steps below) |
+| 2.1. Voice notes | — | **Built** (2026-10-12); not yet tried on a phone |
 | 2B. Audio study mode | — | Not started (spike first; moved out of Phase 2) |
 | 3. Tracy coaching | 2–3 | Not started |
 | 4. Friends | 2–3 | Not started |
@@ -357,10 +366,13 @@ Details for each step are in [SETUP §17](SETUP.md#17-phase-2-the-study-engine-o
        `TRACY_URL`; optional secret `GEMINI_API_KEY` only with Gemini billing on
        ([step 4](SETUP.md#step-4-add-the-github-secrets-and-variables))
 5. [ ] **Merge the DualRep Phase 2 pull request, then Deploy backend:** a dry run first, then for
-       real ([step 5](SETUP.md#step-5-deploy-the-backend-a-dry-run-then-for-real))
+       real. It applies two migrations: the study engine and, for voice notes, text sources
+       ([step 5](SETUP.md#step-5-deploy-the-backend-a-dry-run-then-for-real))
 6. [ ] **PowerSync:** paste the updated sync config and deploy. Needed this time: `tracy_events`
-       sends three more columns ([step 6](SETUP.md#step-6-update-the-powersync-sync-config))
-7. [ ] **Build and install** the Phase 2 preview APK; check the permission list
+       sends three more columns (voice notes add nothing here)
+       ([step 6](SETUP.md#step-6-update-the-powersync-sync-config))
+7. [ ] **Build and install** the Phase 2 preview APK; check the permission list (`CAMERA` and, for
+       voice notes, `RECORD_AUDIO` are the new ones)
        ([step 7](SETUP.md#step-7-build-and-install-the-phase-2-app))
 8. [ ] **Gate, day 1:** a growing course from a real course PDF and a page of handwritten notes;
        check the transcription, review the outline, study one block
@@ -382,6 +394,7 @@ Details for each step are in [SETUP §17](SETUP.md#17-phase-2-the-study-engine-o
 - [ ] Check the permission list of the Phase 2 APK against the
       [permission ledger](ANDROID.md#permission-ledger) (manual step 7)
 - Moved to [Phase 2B](#phase-2b-audio-study-mode): 2.1, 2.2, 2.3, 2.4 and 2.6
+- Voice notes' Android items (2.8, `RECORD_AUDIO`) are under [Phase 2.1](#phase-21-voice-notes)
 
 ### Tracy
 All of [TRACY_INTEGRATION.md §10](TRACY_INTEGRATION.md#10-tracy-ai-changes-for-phase-2-done), on the
@@ -417,6 +430,119 @@ All of [TRACY_INTEGRATION.md §10](TRACY_INTEGRATION.md#10-tracy-ai-changes-for-
 
 ---
 
+## Phase 2.1: Voice notes
+
+**Scope:** speak or type notes on the phone; they become a source of a plan, like a PDF. Added after
+Phase 2 was built, on the same branch ([DECISIONS.md](DECISIONS.md) D50–D57; research in
+[research/voice/](research/README.md#voice-notes-2026-10-12)).
+
+**Done when (proposed):** on your phone, a minute of spoken notes becomes an outline and cards;
+speaking works offline where the phone can do it on its own; and nothing said is lost while the
+phone is offline or the app is closed.
+
+### Built in the repo
+- [x] **Speak or type notes** (`/plans/[id]/speak`), opened from the top of **Add material** and
+      from the plan's **Unsent notes** card: one mic toggle (**Start speaking** / **Pause**), the
+      words appear as you talk (words still being heard in grey), editable when paused, typing and
+      pasting at any time, and a hint that the keyboard's microphone works there too (D56)
+- [x] Android's own speech recognition through `expo-speech-recognition` 57.1.1, pinned (57.1.0
+      crashes on Android 11 and older in the restart loop): on the phone and offline on Android 13+
+      when the language is installed, otherwise Google's online service, and the screen says which;
+      **Download … for offline use** when the phone offers it; typing only on a phone with no speech
+      service (D50)
+- [x] Listening carries on by itself (Android 12 and older end each session at a pause) and pauses
+      after a minute of quiet, when the app leaves the foreground, and at 20,000 characters. The
+      screen stays on while listening. No audio is kept
+- [x] Language: the phone's own by default, English variants first, changeable (saved on this phone)
+- [x] The microphone permission is asked on the first tap of **Start speaking**, with the reason on
+      screen; refused, typing still works and the screen says how to allow it later (D51)
+- [x] Unsent notes are saved on the phone as you go (one draft per plan, offline), shown on the plan
+      as **Unsent notes**, and sent with the same source id on every retry. They are deleted with
+      their plan, and the sign-out dialog warns about them (D55)
+- [x] Server: a `text` source kind and `sources.body` (migration `20261012120000_text_sources.sql`;
+      a trigger keeps the text the server's); `submit_source` takes the text; the worker cuts it into
+      passages without calling Tracy; then the outline review and cards as usual. Counts as 1 source
+      a month (D52–D54)
+- [x] **Your notes** (`/plans/[id]/notes/[sourceId]`): the added notes, read-only and offline,
+      opened by **Read the notes** on each text source
+- [x] Android: `RECORD_AUDIO` is no longer blocked, and nothing else changes (checked with
+      `expo config --type introspect`; [ANDROID.md 2.8](ANDROID.md#28-voice-notes-speech-to-text-on-the-phone))
+- [x] Tests: pgTAP (`15_text_sources.test.sql`), Deno (the text rules, the 409, the worker without
+      Tracy, `breakLongLines`), jest (the rules, the listening hook against a stand-in speech
+      module, drafts, the screens, the sign-out warning)
+- [ ] Tried on a phone: yours, below
+
+### Good to know
+- **Speaking works offline only where the phone can do it by itself** (Android 13+ with the language
+  downloaded). Otherwise Google's online service turns speech into text, which needs the internet.
+  The screen always says which. Typing works offline everywhere.
+- **Adding the notes needs the internet**, like all material. Until then they wait on the phone as
+  **Unsent notes**. Signing out deletes unsent notes (the dialog warns you first).
+- After **Add to plan** the notes go "Reading your material" (seconds: no Tracy call) → "Making the
+  outline" → **Review the outline** → "Making cards" → "Ready". There is no "Check the
+  transcription": you have already read the words.
+- Each set of notes counts as 1 of the month's sources (5 free, 30 with beta access).
+- Added notes can't be edited: add a corrected version as new notes.
+- On Android 12 and older the phone may beep each time listening starts again after a pause.
+
+### Your steps on the phone
+Details in [SETUP §17, voice notes](SETUP.md#voice-notes-try-them-on-your-phone). Do them once the
+Phase 2 steps 1–8 work (step 5's Deploy backend run applies the voice notes migration too), on any
+day of the gate week.
+
+1. [ ] **The APK's permissions:** the Android APK run's list is Phase 2's plus `RECORD_AUDIO`, and
+       nothing else
+2. [ ] **First notes:** a plan → **Add material** → **Speak or type notes** → **Start speaking**;
+       allow the microphone when Android asks; talk for a minute; **Pause**; fix a word; **Add to
+       plan**. Then **Review the outline**, wait for **Ready**, and open **Read the notes**
+3. [ ] **Which recognizer:** write down what the screen says about speech-to-text ("Works on this
+       phone, offline", "Uses Google's online speech service" or "No speech-to-text on this phone"),
+       the phone model and the Android version. If it offers **Download … for offline use**, try it
+4. [ ] **Offline:** in airplane mode, speak (only works with the "on this phone" line) and type; on
+       the plan, **Unsent notes** shows; back online, **Open the notes** → **Add to plan**
+5. [ ] **A long run:** 10 minutes with pauses (Android 13+): it keeps listening, and pauses by
+       itself only after a minute of quiet
+6. [ ] **Interruptions:** lock the phone or switch apps while listening, and take a call: it pauses
+       and keeps every word
+7. [ ] **The microphone permission:** refuse it once (the next tap asks again), turn it off in system
+       settings ("Microphone access is off"), then allow **Only this time**; typing works throughout
+8. [ ] **The microphone switch** in Quick Settings (Android 12+) off: write down what happens
+9. [ ] **Your keyboard's microphone** (Gboard or Samsung Keyboard) in the notes box: it types
+10. [ ] **How well it heard you:** wrong words, and whether punctuation appears
+
+Result: _not run yet_ (date, phone, Android version, the recognizer line, anything odd)
+
+### Android
+- [x] [2.8 Voice notes: speech-to-text on the phone](ANDROID.md#28-voice-notes-speech-to-text-on-the-phone):
+      `RECORD_AUDIO` is the only new permission, plus one `<queries>` entry (not a permission)
+- [ ] Check the CI APK's permission list against the
+      [permission ledger](ANDROID.md#permission-ledger) (step 1)
+- [ ] The Data safety answer for Google's online speech service: get advice
+      ([5.5](ANDROID.md#55-data-safety-draft), D57)
+
+### Tracy
+- None. Text sources never reach Tracy's `/ai/extract`; their outline and cards use the existing
+  tasks.
+
+### Decisions to make
+- [x] Speech-to-text on the phone with `expo-speech-recognition` 57.1.1: on-device first, Google's
+      online service otherwise, typing always (D50)
+- [x] `RECORD_AUDIO` unblocked for speech-to-text only; no foreground service, no `expo-audio` (D51)
+- [x] Notes are a `text` source with the text in `sources.body`; no PowerSync change (D52)
+- [x] The worker cuts the text into passages itself: no Tracy call, no transcription check (D53)
+- [x] 1 source of the monthly limit per set of notes (D54)
+- [x] Unsent notes are a draft on the phone, one per plan (D55)
+- [x] Their own screen, **Speak or type notes**, and 20,000 characters per set of notes (D56)
+- [ ] Play Data safety for Google's online speech service, and the privacy policy's microphone line
+      (D57: get advice before Phase 5)
+- [ ] After the phone checks: keep punctuation for on-device only, and offensive-word masking off?
+      Keep the one-minute quiet pause?
+- [ ] A one-time notice before Google's online service is first used, as well as the status line
+      (D50)
+- [ ] Before release: check for `expo-speech-recognition` 57.1.2 (D50)
+
+---
+
 ## Phase 2B: Audio study mode
 
 **Scope:** on-the-go mode from the plan: questions read aloud and answered by voice, with the screen
@@ -431,13 +557,17 @@ buttons, on an Android 14+ phone.
 
 ### Android
 - [ ] [2.1 Foreground services for audio study mode](ANDROID.md#21-foreground-services-for-audio-study-mode)
+      (`RECORD_AUDIO` is already allowed since voice notes; the services and `expo-audio` are not)
 - [ ] [2.2 The expo-audio defaults trap](ANDROID.md#22-the-expo-audio-defaults-trap)
 - [ ] [2.3 Android 17 background audio](ANDROID.md#23-android-17-background-audio)
 - [ ] [2.4 Speech in the background: spike first](ANDROID.md#24-speech-in-the-background-spike-first)
+      (`expo-speech-recognition` is installed for voice notes, which only listen with the screen on)
 - [ ] [2.6 Play declarations for audio mode](ANDROID.md#26-play-declarations-for-audio-mode)
 
 ### Decisions to make
-- [ ] On-device speech recognition, or clips sent to Tracy for speech-to-text
+- [ ] On-device speech recognition, or clips sent to Tracy for speech-to-text. Voice notes use the
+      phone's own recognition with the screen on ([DECISIONS.md](DECISIONS.md) D50); audio mode needs
+      it with the screen off, which the spike has to prove
 
 ---
 

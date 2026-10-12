@@ -51,6 +51,21 @@ export function isUsableLink(url: string): boolean {
   }
 }
 
+/**
+ * The text of a 'text' source as it is stored: \r\n and \r become \n; control characters other than
+ * tab and line break are removed (Postgres refuses NUL in text, and the rest are noise from a paste);
+ * a lone UTF-16 surrogate (half of an emoji cut off by a paste) becomes U+FFFD; outer whitespace is
+ * trimmed. Pure; the app applies the same rules before it counts characters.
+ */
+export function cleanStudyText(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    // deno-lint-ignore no-control-regex
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD')
+    .trim();
+}
+
 export function checkStudyRequest(body: unknown, userId: string): Checked<StudyRequest> {
   if (!isObject(body)) return { ok: false, errors: ['the body must be a JSON object'] };
   const action = body.action;
@@ -87,6 +102,15 @@ function checkSubmit(b: Record<string, unknown>, userId: string): Checked<Submit
   } else if (b.url !== undefined && b.url !== null) {
     errors.push('url is only for kind link');
   }
+  let text: string | null = null;
+  if (kind === 'text') {
+    const cleaned = typeof b.text === 'string' ? cleanStudyText(b.text) : '';
+    if (!cleaned || cleaned.length > STUDY_LIMITS.maxTextChars) {
+      errors.push(`text must be 1 to ${STUDY_LIMITS.maxTextChars} characters`);
+    } else text = cleaned;
+  } else if (b.text !== undefined && b.text !== null) {
+    errors.push('text is only for kind text');
+  }
   const files = Array.isArray(b.files) ? b.files : null;
   if (!files) errors.push('files must be an array');
   if (errors.length) return { ok: false, errors };
@@ -97,6 +121,7 @@ function checkSubmit(b: Record<string, unknown>, userId: string): Checked<Submit
     doc: [1, 1],
     link: [0, 0],
     notes: [1, STUDY_LIMITS.maxNotePhotos],
+    text: [0, 0],
   };
   const [min, max] = range[kind];
   if (list.length < min || list.length > max) {
@@ -129,6 +154,7 @@ function checkSubmit(b: Record<string, unknown>, userId: string): Checked<Submit
       kind,
       title,
       url,
+      text,
       files: parsed,
     },
   };

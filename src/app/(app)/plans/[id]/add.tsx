@@ -73,7 +73,8 @@ function sizeText(bytes: number | null): string | undefined {
  * Add material to a plan: a PDF or Word file, photos of handwritten notes (from the gallery, or the
  * camera on Android 10 and later), or a web page. It is uploaded and handed to the study service,
  * which needs the internet; the screen says so up front when the phone seems offline, and a failed
- * attempt keeps everything picked so "Add to plan" can simply be tapped again.
+ * attempt keeps everything picked so "Add to plan" can simply be tapped again. Notes the person
+ * speaks or types have their own screen (speak.tsx), opened from the row at the top.
  */
 export default function AddMaterialScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -291,7 +292,16 @@ export default function AddMaterialScreen() {
         />
       ) : null}
 
-      <SegmentedControl<Mode> label="What are you adding?" value={mode} options={MODES} disabled={working} onChange={setMode} />
+      <ListGroup>
+        <ListRow
+          title="Speak or type notes"
+          subtitle="Say what you learned, or type it. Saved on this phone until you add it."
+          disabled={working}
+          onPress={() => router.push({ pathname: '/plans/[id]/speak', params: { id: planId } })}
+        />
+      </ListGroup>
+
+      <SegmentedControl<Mode> label="Or add a file, photos or a web page" value={mode} options={MODES} disabled={working} onChange={setMode} />
 
       {mode === 'file' ? (
         <Section title="PDF or Word file" description={`Up to ${UPLOAD_RULES.maxFileBytes / MIB} MB each. Each file becomes its own source.`}>

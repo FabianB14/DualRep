@@ -30,6 +30,18 @@ export async function readLocalState<T>(key: string): Promise<T | null> {
 }
 
 /**
+ * Every value whose key starts with `prefix` (one per plan, say), in key order. Compared with substr
+ * rather than LIKE, so `_` and `%` in a prefix are plain characters.
+ */
+export async function readLocalStateByPrefix<T>(prefix: string): Promise<{ key: string; value: T | null }[]> {
+  const rows = await db.getAll<ValueRow & { id: string }>(
+    `SELECT id, value FROM ${LOCAL_STATE_TABLE} WHERE substr(id, 1, ?) = ? ORDER BY id`,
+    [prefix.length, prefix],
+  );
+  return rows.map((row) => ({ key: row.id, value: parseLocalValue<T>(row.value) }));
+}
+
+/**
  * Stores `value` (as JSON) under `key`, replacing what was there. One write transaction: PowerSync's
  * tables are views, so instead of an upsert it checks for the row and then updates or inserts it.
  */

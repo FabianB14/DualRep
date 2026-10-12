@@ -34,6 +34,7 @@ import {
   QUEUE_NEW_SQL,
   SESSION_REVIEWS_SQL,
   SOURCE_FILES_SQL,
+  SOURCE_TEXT_SQL,
   topicFromRow,
   TOPICS_SQL,
   type BlockAnswerRow,
@@ -175,6 +176,18 @@ describe('sources, files, jobs', () => {
       ['f1', 1],
       ['f2', 0],
     ]);
+  });
+
+  it('reads one source with its text (spoken or typed notes), and keeps the text out of the plan’s list', async () => {
+    const S4 = 'a0000000-0000-4000-8000-000000000004';
+    db.seed('sources', { id: S4, owner_id: U, kind: 'text', title: 'Notes, 12 Oct', body: 'Osmosis moves water.\nCells divide.', status: 'processing', created_at: iso(NOW) });
+    db.seed('plan_sources', { id: 'ps5', plan_id: P, source_id: S4, added_at: iso(NOW) });
+    expect(await db.getAll(SOURCE_TEXT_SQL, [S4])).toEqual([
+      { id: S4, title: 'Notes, 12 Oct', kind: 'text', body: 'Osmosis moves water.\nCells divide.', status: 'processing', owner_id: U, created_at: iso(NOW) },
+    ]);
+    expect((await db.getAll(SOURCE_TEXT_SQL, [S1]))[0]).toMatchObject({ kind: 'pdf', body: null });
+    expect(await db.getAll(SOURCE_TEXT_SQL, ['a0000000-0000-4000-8000-0000000000ff'])).toEqual([]);
+    expect((await db.getAll(PLAN_SOURCES_SQL, [P]))[0]).not.toHaveProperty('body');
   });
 
   it('lists the pipeline jobs of the plan and its sources, oldest first', async () => {

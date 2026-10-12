@@ -164,6 +164,26 @@ FROM ${T.source_files} f
 WHERE f.source_id = ?
 ORDER BY f.page, f.created_at, f.id`;
 
+export type SourceTextRow = {
+  id: string;
+  title: string | null;
+  kind: string | null;
+  /** The notes as the study function stored them (kind 'text' only; null for the other kinds). */
+  body: string | null;
+  status: string | null;
+  owner_id: string | null;
+  created_at: string | null;
+};
+
+/**
+ * Params: source id. One source with its text, for the page that shows spoken or typed notes again
+ * (sources.body syncs with the row, so it works offline). Kept out of PLAN_SOURCES_SQL so the plan's
+ * list never carries up to 20,000 characters per source.
+ */
+export const SOURCE_TEXT_SQL = `SELECT s.id, s.title, s.kind, s.body, s.status, s.owner_id, s.created_at
+FROM ${T.sources} s
+WHERE s.id = ?`;
+
 export type JobRow = {
   id: string;
   job: string | null;

@@ -576,6 +576,12 @@ What was proposed, and what was built:
 **Deliberately not changed:** `/chat`, memory, knowledge, Brain, the Groq and Gemini chat paths, and
 `convert_asset`.
 
+**Voice notes (Phase 2.1) needed no Tracy change.** Spoken or typed notes are a source of kind
+`text`: the phone turns speech into text itself, and the worker splits `sources.body` into chunks
+without calling Tracy (no `/ai/extract`, no `/health` for that step). Tracy only sees those notes
+later, as chunks in the usual `dualrep_build_outline` and `dualrep_build_cards` calls
+([DECISIONS.md](DECISIONS.md) D52–D53).
+
 ---
 
 ## 11. Working in the tracy-ai repo

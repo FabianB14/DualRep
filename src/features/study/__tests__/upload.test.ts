@@ -28,6 +28,7 @@ import {
   validateDocument,
   validateLink,
   validatePhotos,
+  validateText,
   type PickedDocument,
   type PickedPhoto,
   type UploadClient,
@@ -608,6 +609,61 @@ describe('addMaterial', () => {
       url: 'https://example.com/article',
       files: [],
     });
+  });
+
+  it('spoken or typed notes: nothing to upload; the cleaned text goes in the submit', async () => {
+    const { context, storageUpload, invoke } = fakeClient();
+    const steps: unknown[] = [];
+    const now = Date.UTC(2026, 9, 12, 12);
+    await addMaterial(
+      context,
+      { kind: 'text', text: '  Osmosis\r\nmoves water.\u0000 ' },
+      { userId: USER, planId: PLAN, sourceId: SOURCE, now, onProgress: (p) => steps.push(p) },
+    );
+    expect(storageUpload).not.toHaveBeenCalled();
+    expect((invoke.mock.calls[0][1] as { body: unknown }).body).toEqual({
+      action: 'submit_source',
+      plan_id: PLAN,
+      source_id: SOURCE,
+      kind: 'text',
+      title: notesTitle(now),
+      url: null,
+      text: 'Osmosis\nmoves water.',
+      files: [],
+    });
+    expect(steps).toEqual([
+      { phase: 'submitting', done: 0, total: 1 },
+      { phase: 'done', done: 1, total: 1 },
+    ]);
+    // A name given by the person wins; other kinds never carry `text`.
+    await addMaterial(context, { kind: 'text', text: 'Cells divide.', title: ' Lecture 4 ' }, { userId: USER, planId: PLAN, sourceId: SOURCE });
+    expect((invoke.mock.calls[1][1] as { body: Record<string, unknown> }).body).toMatchObject({ title: 'Lecture 4', text: 'Cells divide.' });
+    await addMaterial(context, { kind: 'link', url: 'https://example.com' }, { userId: USER, planId: PLAN });
+    expect((invoke.mock.calls[2][1] as { body: Record<string, unknown> }).body).not.toHaveProperty('text');
+  });
+
+  it('notes with nothing in them, or over 20,000 characters, are refused before anything is sent', async () => {
+    const { context, invoke } = fakeClient();
+    await expect(addMaterial(context, { kind: 'text', text: ' \n ' }, { userId: USER, planId: PLAN })).rejects.toMatchObject({ code: 'no_text' });
+    await expect(addMaterial(context, { kind: 'text', text: 'x'.repeat(20_001) }, { userId: USER, planId: PLAN })).rejects.toMatchObject({
+      code: 'too_long',
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('validateText: 1 to 20,000 characters after cleaning, counted as the server counts them', () => {
+    expect(UPLOAD_RULES.maxTextChars).toBe(20_000);
+    expect(validateText(' a\r\nb ')).toBe('a\nb');
+    expect(() => validateText(' \n\t\u0000 ')).toThrow(expect.objectContaining({ code: 'no_text', message: 'Say or type some notes first.' }));
+    expect(validateText('x'.repeat(20_000))).toHaveLength(20_000);
+    expect(() => validateText('x'.repeat(20_001))).toThrow(
+      expect.objectContaining({
+        code: 'too_long',
+        message: 'One set of notes can be up to 20,000 characters. Shorten them, or add the rest as another set of notes.',
+      }),
+    );
+    // Surrounding whitespace does not count against the limit.
+    expect(validateText(`  ${'x'.repeat(20_000)}\n\n`)).toHaveLength(20_000);
   });
 
   it('stops at the first failure, submits nothing, and still deletes the prepared copies', async () => {

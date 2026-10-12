@@ -117,9 +117,9 @@ const buildConfig = ({ config }: ConfigContext): ExpoConfig => ({
       // WRITE_EXTERNAL_STORAGE, so the app hides "Take a photo" there (src/features/study/upload.ts).
       'android.permission.READ_EXTERNAL_STORAGE',
       'android.permission.WRITE_EXTERNAL_STORAGE',
-      // Blocked here, not with expo-image-picker's `microphonePermission: false` (which would block it
-      // from the plugin, out of sight): audio study mode (Phase 2B) unblocks it by deleting this line.
-      'android.permission.RECORD_AUDIO',
+      // RECORD_AUDIO is allowed since voice notes (speech-to-text on the phone, asked for on the first
+      // tap of the mic). It comes from expo-speech-recognition's and expo-image-picker's plugins; no
+      // foreground service comes with it (audio study mode, Phase 2B, would add those later).
       // Phase 2: never broad photo or video access (Google Play's Photo and Video Permissions policy),
       // whatever a future library declares. The Photo Picker and the camera app need none of these.
       'android.permission.READ_MEDIA_IMAGES',
@@ -182,12 +182,25 @@ const buildConfig = ({ config }: ConfigContext): ExpoConfig => ({
       // Phase 2: photos of handwritten notes (docs/ANDROID.md 2.7). Its library manifest adds CAMERA,
       // which "Take a photo" asks for in context, the only permission Phase 2 adds; picking from the
       // gallery uses the system Photo Picker and needs none. This plugin would run even unlisted (an
-      // Expo "legacy" plugin); listing it keeps its options in one visible place. Its default adds
-      // RECORD_AUDIO, which blockedPermissions above removes. The strings are iOS-only.
+      // Expo "legacy" plugin); listing it keeps its options in one visible place. Its default also adds
+      // RECORD_AUDIO, wanted now for voice notes; the picker itself never asks for it (it only needs it
+      // to record video, which DualRep doesn't offer). The strings are iOS-only.
       'expo-image-picker',
       {
         photosPermission: 'DualRep opens your photos when you add pictures of your notes.',
         cameraPermission: 'DualRep uses the camera when you photograph your notes.',
+      },
+    ],
+    [
+      // Voice notes: Android's own speech recognition turns what the person says into text on the
+      // "Speak or type notes" screen; no audio is kept. Adds RECORD_AUDIO (asked for on the first tap
+      // of the mic) and a <queries> entry for android.speech.RecognitionService, which Android needs to
+      // find the phone's speech service when targeting API 30+. No service, no foreground service, no
+      // native library. The strings are iOS-only.
+      'expo-speech-recognition',
+      {
+        microphonePermission: 'DualRep uses the microphone while you speak your notes.',
+        speechRecognitionPermission: 'DualRep turns what you say into text for your notes.',
       },
     ],
     // expo-document-picker (PDF and Word files) needs no entry: it asks for no permission, and its

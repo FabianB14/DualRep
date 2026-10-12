@@ -12,6 +12,7 @@ import {
   approveOutline,
   callStudy,
   cancelJob,
+  cleanStudyText,
   confirmTranscripts,
   describeCap,
   nextMonthUtc,
@@ -58,6 +59,22 @@ describe('requests', () => {
     expect(invoke).toHaveBeenCalledWith('study', {
       body: { action: 'submit_source', plan_id: PLAN, source_id: SOURCE, kind: 'notes', title: 'Week 2', url: null, files },
       timeout: STUDY_TIMEOUT_MS,
+    });
+  });
+
+  it('submit_source for spoken or typed notes carries the text and no files', async () => {
+    const response = { ok: true, source_id: SOURCE, status: 'processing', job_ids: ['j1'], already_submitted: false };
+    const { client: c, invoke } = client({ data: response, error: null });
+    await submitSource(c, { plan_id: PLAN, source_id: SOURCE, kind: 'text', title: 'Notes, 12 Oct', url: null, text: 'Osmosis moves water.', files: [] });
+    expect(invoke.mock.calls[0][1].body).toEqual({
+      action: 'submit_source',
+      plan_id: PLAN,
+      source_id: SOURCE,
+      kind: 'text',
+      title: 'Notes, 12 Oct',
+      url: null,
+      text: 'Osmosis moves water.',
+      files: [],
     });
   });
 
@@ -165,6 +182,13 @@ describe('error mapping', () => {
     expect((await failure(new FunctionsHttpError(json(404, { ok: false, code: 'not_found', error: 'x' })))).kind).toBe('not_found');
   });
 
+  it('notes sent again with other text: the server’s 409 conflict and its sentence', async () => {
+    const said = 'These notes were already added before your last changes. Add them again as new notes to keep the changes.';
+    const error = await failure(new FunctionsHttpError(json(409, { ok: false, code: 'conflict', error: said })));
+    expect([error.kind, error.status]).toEqual(['conflict', 409]);
+    expect(studyErrorMessage(error)).toBe(said);
+  });
+
   it('a cap body without a readable reset time resets next month', async () => {
     const error = await failure(new FunctionsHttpError(json(429, { ok: false, code: 'cap_reached', stage: 'extract' })));
     expect(error.cap).toEqual({ stage: 'extract', used: 0, limit: 0, resetsAt: expect.any(Number) });
@@ -177,6 +201,18 @@ describe('error mapping', () => {
     });
     await expect(retryJob(c, 'j1')).rejects.toMatchObject({ kind: 'offline' });
     await expect(toStudyApiError(new Error('weird'))).resolves.toMatchObject({ kind: 'server' });
+  });
+});
+
+describe('cleanStudyText (the same rules as the study function’s)', () => {
+  it('unifies line breaks, drops control characters, mends half an emoji and trims', () => {
+    expect(cleanStudyText('  Osmosis\r\nmoves\rwater.\u0000\u0007 ')).toBe('Osmosis\nmoves\nwater.');
+    // Tabs and line breaks stay; a lone surrogate (half of an emoji cut by a paste) becomes U+FFFD.
+    expect(cleanStudyText('a\tb\n\nc')).toBe('a\tb\n\nc');
+    expect(cleanStudyText('cut \uD83D')).toBe('cut \uFFFD');
+    expect(cleanStudyText('\uDE00 x')).toBe('\uFFFD x');
+    expect(cleanStudyText('whole \uD83D\uDE00')).toBe('whole \uD83D\uDE00');
+    expect(cleanStudyText(' \n\t\u0000 ')).toBe('');
   });
 });
 

@@ -56,6 +56,7 @@ import {
   QUEUE_NEW_SQL,
   SESSION_REVIEWS_SQL,
   SOURCE_FILES_SQL,
+  SOURCE_TEXT_SQL,
   topicFromRow,
   TOPICS_SQL,
   type BlockAnswerRow,
@@ -68,6 +69,7 @@ import {
   type PlanSourceRow,
   type QueueStateRow,
   type SourceFileRow,
+  type SourceTextRow,
   type StudyPlan,
   type Topic,
   type TopicRow,
@@ -216,6 +218,12 @@ export function useSourceProgress(planId: string | null): {
 export function useSourceFiles(sourceId: string | null): { files: SourceFileRow[]; isLoading: boolean } {
   const { data, isLoading } = useQuery<SourceFileRow>(SOURCE_FILES_SQL, [sourceId ?? '']);
   return { files: data, isLoading };
+}
+
+/** One source with its text (spoken or typed notes), or null when it is not on the phone. */
+export function useSourceText(sourceId: string | null): { source: SourceTextRow | null; isLoading: boolean } {
+  const { data, isLoading } = useQuery<SourceTextRow>(SOURCE_TEXT_SQL, [sourceId ?? '']);
+  return { source: data[0] ?? null, isLoading };
 }
 
 // ---- Topics, cards, links -----------------------------------------------------------------------

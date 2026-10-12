@@ -281,9 +281,14 @@ export const TABLES = {
       // Function and the tracy-worker). The server ignores what the device sends here (a new source is
       // stored as pending, an update keeps the stored status), so the device never needs to write it.
       status: 'text',
+      // The text of a 'text' source (notes the person spoke or typed), as the study function stored
+      // it; null for every other kind. Only the server writes it: the server ignores what a device
+      // sends (a client INSERT stores no text, an UPDATE keeps the stored text), so it is never
+      // uploaded. Read it only where it is shown (one source's page), not in source lists.
+      body: 'text',
       ...TIMESTAMPS,
     },
-    writes: OWNER_WRITES,
+    writes: { ...OWNER_WRITES, serverGenerated: ['body'] },
   },
 
   source_files: {

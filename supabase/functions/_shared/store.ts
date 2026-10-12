@@ -30,6 +30,9 @@ export interface SourceRow {
   status: 'pending' | 'processing' | 'ready' | 'failed';
 }
 
+/** A new source as the study function writes it: body only for kind 'text' (sources.body). */
+export type NewSource = SourceRow & { body?: string | null };
+
 export interface SourceFileRow {
   id: string;
   source_id: string;
@@ -151,7 +154,9 @@ export interface Store {
 
   // ---- sources, their files and Storage ----
   getSource(id: string): Promise<SourceRow | null>;
-  insertSource(row: SourceRow): Promise<void>;
+  insertSource(row: NewSource): Promise<void>;
+  /** sources.body: the text of a 'text' source (null for other kinds, or when the source is gone). */
+  sourceBody(id: string): Promise<string | null>;
   setSourceStatus(id: string, status: SourceRow['status']): Promise<void>;
   deleteSource(id: string): Promise<void>;
   linkPlanSource(planId: string, sourceId: string): Promise<void>;

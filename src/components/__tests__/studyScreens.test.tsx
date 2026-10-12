@@ -6,8 +6,9 @@
  * whose calls the tests check. Nothing here touches the network or a native module.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import * as speechModule from 'expo-speech-recognition';
 import type { ComponentType } from 'react';
-import { Alert, type AlertButton } from 'react-native';
+import { Alert, Linking, Platform, type AlertButton } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -23,9 +24,11 @@ import {
   PLAN_SQL,
   PLANS_SQL,
   SOURCE_FILES_SQL,
+  SOURCE_TEXT_SQL,
   TOPICS_SQL,
 } from '@/features/study/studyQueries';
 import { STUDY_DEFAULTS_KEY, STUDY_PREFS_KEY } from '@/features/study/studyPrefs';
+import { textDraftKey } from '@/features/study/textDrafts';
 import { ThemeProvider } from '@/theme';
 
 const USER = '11111111-1111-4111-8111-111111111111';
@@ -56,8 +59,14 @@ jest.mock('../../features/cycle/localState', () => ({
   ...(jest.requireActual('../../features/cycle/localState') as object),
   useLocalState: (key: string) => ({ value: mockLocal.get(key) ?? null, isLoading: false }),
   readLocalState: jest.fn(async (key: string) => mockLocal.get(key) ?? null),
+  readLocalStateByPrefix: jest.fn(async (prefix: string) =>
+    [...mockLocal.entries()].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => ({ key, value })),
+  ),
   writeLocalState: jest.fn(async (key: string, value: unknown) => {
     mockLocal.set(key, value);
+  }),
+  deleteLocalState: jest.fn(async (key: string) => {
+    mockLocal.delete(key);
   }),
 }));
 jest.mock('../../auth/AuthProvider', () => ({
@@ -312,6 +321,8 @@ const SCREENS = [
   '../../app/(app)/plans/[id]/index',
   '../../app/(app)/plans/[id]/edit',
   '../../app/(app)/plans/[id]/add',
+  '../../app/(app)/plans/[id]/speak',
+  '../../app/(app)/plans/[id]/notes/[sourceId]',
   '../../app/(app)/plans/[id]/check/[sourceId]',
   '../../app/(app)/plans/[id]/outline',
   '../../app/(app)/plans/[id]/cards/index',
@@ -353,6 +364,21 @@ describe('Home', () => {
     const text = textOf(await render(screen('../../app/(app)/index')));
     expect(text).toContain('Study plans');
     expect(text).toContain('Turn your course material into cards');
+  });
+});
+
+describe('Settings: signing out', () => {
+  it('warns that unsent notes are only on this phone', async () => {
+    mockLocal.set(textDraftKey(PLAN), { v: 1, planId: PLAN, sourceId: DRAFT_SOURCE, title: '', text: 'Cells divide.', updatedAt: 1 });
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const renderer = await render(screen('../../app/(app)/settings'));
+    await tap(renderer, 'Sign out');
+    expect(alert).toHaveBeenCalledWith(
+      'Sign out?',
+      'Notes you haven’t added to their plan yet are only on this phone and will be lost. Add them first to keep them.',
+      expect.arrayContaining([expect.objectContaining({ text: 'Sign out and lose notes', style: 'destructive' })]),
+    );
+    alert.mockRestore();
   });
 });
 
@@ -571,10 +597,13 @@ describe('Plan settings', () => {
     const alert = jest
       .spyOn(Alert, 'alert')
       .mockImplementation((_title: string, _message?: string, buttons?: AlertButton[]) => buttons?.[1]?.onPress?.());
+    mockLocal.set(textDraftKey(PLAN), { v: 1, planId: PLAN, sourceId: SOURCE, title: '', text: 'Unsent notes for it.', updatedAt: 1 });
     const renderer = await render(screen('../../app/(app)/plans/[id]/edit'));
     await tap(renderer, 'Delete plan');
     expect(alert).toHaveBeenCalledWith('Delete this plan?', expect.stringContaining('Biology 101'), expect.any(Array));
     expect(repo.deletePlan).toHaveBeenCalledWith(PLAN, USER);
+    // Its unsent notes go with it (sign-out would otherwise warn about notes for a plan that is gone).
+    expect(mockLocal.has(textDraftKey(PLAN))).toBe(false);
     expect(mockRouter.dismissTo).toHaveBeenCalledWith('/plans');
     alert.mockRestore();
   });
@@ -672,6 +701,281 @@ describe('Add material', () => {
       { kind: 'link', url: 'https://example.com/notes', title: '' },
       expect.objectContaining({ planId: PLAN }),
     );
+  });
+});
+
+// ---- Spoken or typed notes ----------------------------------------------------------------------
+
+type SpeechStandIn = {
+  ExpoSpeechRecognitionModule: Record<string, AnyMock>;
+  __emit: (name: string, payload?: unknown) => void;
+  __reset: () => void;
+};
+// The stand-in from __mocks__/expo-speech-recognition.ts, as the screen imports it.
+const speech = speechModule as unknown as SpeechStandIn;
+const recognizer = speech.ExpoSpeechRecognitionModule;
+const DRAFT_SOURCE = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+/** Plays an Android phone of this API level (the screen reads Platform when it renders). */
+function androidPhone(api: number): void {
+  jest.replaceProperty(Platform, 'OS', 'android');
+  jest.spyOn(Platform, 'Version', 'get').mockReturnValue(api);
+}
+
+async function hear(name: string, payload: unknown = null): Promise<void> {
+  await act(async () => {
+    speech.__emit(name, payload);
+  });
+}
+
+const said = (transcript: string, isFinal: boolean) => ({ isFinal, results: [{ transcript, confidence: 0.9, segments: [] }] });
+
+describe('Speak or type notes', () => {
+  beforeEach(() => {
+    mockParams = { id: PLAN };
+    setPlan({ source_count: 0 });
+    speech.__reset();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('Add material opens it', async () => {
+    const renderer = await render(screen('../../app/(app)/plans/[id]/add'));
+    await tap(renderer, labelStarting(renderer, 'Speak or type notes'));
+    expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/plans/[id]/speak', params: { id: PLAN } });
+  });
+
+  it('on the phone, offline: says so, the live words come in greyed, and Add to plan sends the notes', async () => {
+    androidPhone(34);
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    expect(textOf(renderer)).toContain('Works on this phone, offline');
+    expect(textOf(renderer)).toContain('Language: English (US) (works offline)');
+    expect(textOf(renderer)).toContain('DualRep listens only while the mic is on, and keeps no recording.');
+    await tap(renderer, 'Start speaking');
+    expect(recognizer.start).toHaveBeenCalledWith(expect.objectContaining({ lang: 'en-US', continuous: true, requiresOnDeviceRecognition: true }));
+    await hear('start');
+    expect(textOf(renderer)).toContain('Listening for English (US). Tap Pause when you’re done.');
+    expect(field(renderer, 'Your notes').props.readOnly).toBe(true);
+    await hear('result', said('cells divide', false));
+    expect(textOf(renderer)).toContain('…cells divide');
+    await hear('result', said('cells divide by mitosis', true));
+    expect(field(renderer, 'Your notes').props.value).toBe('cells divide by mitosis');
+    await tap(renderer, 'Pause speaking');
+    expect(recognizer.stop).toHaveBeenCalledTimes(1);
+    await hear('end');
+    expect(field(renderer, 'Your notes').props.readOnly).toBe(false);
+    expect(textOf(renderer)).toContain('Paused. Tap the mic to carry on.');
+    await type(renderer, 'Name (optional)', 'Week 4');
+    await tap(renderer, 'Add to plan');
+    expect(upload.addMaterial).toHaveBeenCalledWith(
+      expect.anything(),
+      { kind: 'text', text: 'cells divide by mitosis', title: 'Week 4' },
+      expect.objectContaining({ userId: USER, planId: PLAN, sourceId: expect.stringMatching(/^aaaaaaaa-/) }),
+    );
+    expect(mockLocal.has(textDraftKey(PLAN))).toBe(false);
+    expect(mockRouter.dismissTo).toHaveBeenCalledWith({ pathname: '/plans/[id]', params: { id: PLAN } });
+  });
+
+  it('Add to plan while listening waits for the last words', async () => {
+    androidPhone(34);
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    await tap(renderer, 'Start speaking');
+    await hear('result', said('the krebs', false));
+    await act(async () => {
+      control(renderer, 'Add to plan').props.onClick({});
+    });
+    expect(recognizer.stop).toHaveBeenCalledTimes(1);
+    expect(upload.addMaterial).not.toHaveBeenCalled();
+    await hear('result', said('the krebs cycle', true));
+    await hear('end');
+    await act(async () => {
+      for (let k = 0; k < 10; k += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+    expect(upload.addMaterial).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ text: 'the krebs cycle' }), expect.anything());
+  });
+
+  it('the online service: says what goes to Google, and offers the offline download', async () => {
+    androidPhone(34);
+    mockLocal.set(STUDY_PREFS_KEY, { dictationLang: 'en-GB' });
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    const text = textOf(renderer);
+    expect(text).toContain('Uses Google’s online speech service: what you say is sent to Google to be turned into text');
+    expect(text).toContain('Language: English (UK) |');
+    recognizer.getSupportedLocales.mockResolvedValue({ locales: ['en-US', 'en-GB'], installedLocales: ['en-US', 'en-GB'] });
+    await tap(renderer, 'Download English (UK) for offline use');
+    expect(recognizer.androidTriggerOfflineModelDownload).toHaveBeenCalledWith({ locale: 'en-GB' });
+    expect(textOf(renderer)).toContain('English (UK) is on this phone now.');
+    expect(textOf(renderer)).toContain('Works on this phone, offline');
+  });
+
+  it('Android 12: plain sessions with no Android-13 settings', async () => {
+    androidPhone(31);
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    expect(textOf(renderer)).toContain('Uses Google’s online speech service');
+    await tap(renderer, 'Start speaking');
+    const options = recognizer.start.mock.calls[0][0] as Record<string, unknown>;
+    expect(options).toMatchObject({ continuous: false, requiresOnDeviceRecognition: false });
+    expect(options).not.toHaveProperty('androidIntentOptions');
+  });
+
+  it('the language can be changed (English first), and is kept for this phone', async () => {
+    androidPhone(34);
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    await tap(renderer, 'Change the language, now English (US)');
+    await tap(renderer, 'English (India)');
+    expect(mockLocal.get(STUDY_PREFS_KEY)).toMatchObject({ dictationLang: 'en-IN' });
+  });
+
+  it('no speech service: typing only, with the keyboard microphone; offline, the notes stay on the phone', async () => {
+    recognizer.isRecognitionAvailable.mockReturnValue(false);
+    mockStatus.connected = false;
+    upload.addMaterial.mockImplementationOnce(async () => {
+      throw new api.StudyApiError('offline');
+    });
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    const text = textOf(renderer);
+    expect(text).toContain('No speech-to-text on this phone');
+    expect(text).toContain('Your keyboard’s microphone works here too.');
+    expect(text).toContain('Adding the notes to the plan needs the internet.');
+    expect(hasControl(renderer, 'Start speaking')).toBe(false);
+    await type(renderer, 'Your notes', 'Osmosis moves water across a membrane.');
+    await tap(renderer, 'Add to plan');
+    expect(textOf(renderer)).toContain('No internet connection.');
+    expect(mockLocal.get(textDraftKey(PLAN))).toMatchObject({
+      v: 1,
+      planId: PLAN,
+      text: 'Osmosis moves water across a membrane.',
+      sourceId: (upload.addMaterial.mock.calls[0][2] as { sourceId: string }).sourceId,
+    });
+  });
+
+  it('unsent notes come back with their source id; changed notes the server already has go under a new one', async () => {
+    mockLocal.set(textDraftKey(PLAN), { v: 1, planId: PLAN, sourceId: DRAFT_SOURCE, title: 'Week 4', text: 'Cells divide.', updatedAt: 1 });
+    upload.addMaterial.mockImplementationOnce(async () => {
+      throw new api.StudyApiError('conflict', {
+        status: 409,
+        serverMessage: 'These notes were already added before your last changes. Add them again as new notes to keep the changes.',
+      });
+    });
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    expect(field(renderer, 'Your notes').props.value).toBe('Cells divide.');
+    expect(field(renderer, 'Name (optional)').props.value).toBe('Week 4');
+    await tap(renderer, 'Add to plan');
+    expect((upload.addMaterial.mock.calls[0][2] as { sourceId: string }).sourceId).toBe(DRAFT_SOURCE);
+    expect(textOf(renderer)).toContain('Add them again as new notes to keep the changes.');
+    await tap(renderer, 'Add to plan');
+    const second = (upload.addMaterial.mock.calls[1][2] as { sourceId: string }).sourceId;
+    expect(second).not.toBe(DRAFT_SOURCE);
+    expect(mockRouter.dismissTo).toHaveBeenCalled();
+  });
+
+  it('the microphone refused for good: says how to allow it, and typing still works', async () => {
+    androidPhone(34);
+    recognizer.getPermissionsAsync.mockResolvedValue({ granted: false, status: 'denied', canAskAgain: false, expires: 'never' });
+    const openSettings = jest.spyOn(Linking, 'openSettings').mockResolvedValue(undefined);
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    expect(textOf(renderer)).toContain('Microphone access is off');
+    await tap(renderer, 'Start speaking');
+    expect(recognizer.requestPermissionsAsync).not.toHaveBeenCalled();
+    expect(recognizer.start).not.toHaveBeenCalled();
+    await tap(renderer, 'Open system settings');
+    expect(openSettings).toHaveBeenCalled();
+    expect(field(renderer, 'Your notes').props.readOnly).toBe(false);
+  });
+
+  it('notes over 20,000 characters are not sent; the screen says how to fix it', async () => {
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    await type(renderer, 'Your notes', 'x'.repeat(20_001));
+    expect(textOf(renderer)).toContain('20,001 of 20,000 characters. Shorten the notes, or add the rest as another set of notes.');
+    await tap(renderer, 'Add to plan');
+    expect(upload.addMaterial).not.toHaveBeenCalled();
+    expect(textOf(renderer)).toContain('One set of notes can be up to 20,000 characters.');
+  });
+
+  it('clearing asks first', async () => {
+    let buttons: AlertButton[] = [];
+    jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, given) => {
+      buttons = given ?? [];
+    });
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    await type(renderer, 'Your notes', 'Something to forget.');
+    await tap(renderer, 'Clear the notes');
+    expect(field(renderer, 'Your notes').props.value).toBe('Something to forget.');
+    await act(async () => buttons.find((button) => button.style === 'destructive')?.onPress?.());
+    expect(field(renderer, 'Your notes').props.value).toBe('');
+  });
+
+  it('notes typed after clearing are new notes, under a new source id', async () => {
+    jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, given) => {
+      given?.find((button) => button.style === 'destructive')?.onPress?.();
+    });
+    mockLocal.set(textDraftKey(PLAN), { v: 1, planId: PLAN, sourceId: DRAFT_SOURCE, title: '', text: 'Sent once, answer lost.', updatedAt: 1 });
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    await tap(renderer, 'Clear the notes');
+    await type(renderer, 'Your notes', 'Something else entirely.');
+    await tap(renderer, 'Add to plan');
+    const sent = upload.addMaterial.mock.calls[0];
+    expect(sent[1]).toMatchObject({ text: 'Something else entirely.' });
+    expect((sent[2] as { sourceId: string }).sourceId).not.toBe(DRAFT_SOURCE);
+  });
+
+  it('a second tap on Add to plan while the last words come in sends the notes once', async () => {
+    androidPhone(34);
+    const renderer = await render(screen('../../app/(app)/plans/[id]/speak'));
+    await tap(renderer, 'Start speaking');
+    await hear('result', said('the krebs', false));
+    await act(async () => {
+      control(renderer, 'Add to plan').props.onClick({});
+      control(renderer, 'Add to plan').props.onClick({});
+    });
+    await hear('result', said('the krebs cycle', true));
+    await hear('end');
+    await act(async () => {
+      for (let k = 0; k < 10; k += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+    expect(upload.addMaterial).toHaveBeenCalledTimes(1);
+  });
+
+  it('the plan shows unsent notes with a way back to them', async () => {
+    mockStatus.connected = false;
+    mockLocal.set(textDraftKey(PLAN), { v: 1, planId: PLAN, sourceId: DRAFT_SOURCE, title: '', text: 'Cells divide by mitosis.', updatedAt: 1 });
+    const renderer = await render(screen('../../app/(app)/plans/[id]/index'));
+    const text = textOf(renderer);
+    expect(text).toContain('Unsent notes');
+    expect(text).toContain('Saved on this phone. Add them to the plan when you’re back online.');
+    expect(text).toContain('Cells divide by mitosis.');
+    await tap(renderer, 'Open the notes');
+    expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/plans/[id]/speak', params: { id: PLAN } });
+  });
+
+  it('added notes can be read again on their own page, offline', async () => {
+    setPlan();
+    setSource({ kind: 'text', title: 'Notes, 12 Oct', status: 'processing' });
+    mockRows.set(PLAN_JOBS_SQL, [job('j1', 'extract', 'succeeded'), job('j2', 'outline', 'running')]);
+    const plan = await render(screen('../../app/(app)/plans/[id]/index'));
+    expect(textOf(plan)).toContain('Spoken or typed notes');
+    expect(textOf(plan)).not.toContain('Check the transcription');
+    await tap(plan, 'Read the notes: Notes, 12 Oct');
+    expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/plans/[id]/notes/[sourceId]', params: { id: PLAN, sourceId: SOURCE } });
+
+    mockParams = { id: PLAN, sourceId: SOURCE };
+    mockStatus.connected = false;
+    mockRows.set(SOURCE_TEXT_SQL, [
+      { id: SOURCE, title: 'Notes, 12 Oct', kind: 'text', body: 'Cells divide by mitosis.\n\nOsmosis moves water.', status: 'processing', owner_id: USER, created_at: NOW_ISO },
+    ]);
+    const page = await render(screen('../../app/(app)/plans/[id]/notes/[sourceId]'));
+    const text = textOf(page);
+    expect(text).toContain('Notes, 12 Oct');
+    expect(text).toContain('Cells divide by mitosis.\n\nOsmosis moves water.');
+    expect(text).toContain('Making the outline');
+  });
+
+  it('a note page for notes not on the phone says so', async () => {
+    mockParams = { id: PLAN, sourceId: SOURCE };
+    const page = await render(screen('../../app/(app)/plans/[id]/notes/[sourceId]'));
+    expect(textOf(page)).toContain('These notes aren’t on this phone');
   });
 });
 

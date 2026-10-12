@@ -38,6 +38,8 @@ export default function AppLayout() {
         <Stack.Screen name="plans/[id]/index" options={{ title: 'Plan' }} />
         <Stack.Screen name="plans/[id]/edit" options={{ title: 'Plan settings' }} />
         <Stack.Screen name="plans/[id]/add" options={{ title: 'Add material' }} />
+        <Stack.Screen name="plans/[id]/speak" options={{ title: 'Speak or type notes' }} />
+        <Stack.Screen name="plans/[id]/notes/[sourceId]" options={{ title: 'Your notes' }} />
         <Stack.Screen name="plans/[id]/check/[sourceId]" options={{ title: 'Check the transcription' }} />
         <Stack.Screen name="plans/[id]/outline" options={{ title: 'Review the outline' }} />
         <Stack.Screen name="plans/[id]/cards/index" options={{ title: 'Cards' }} />

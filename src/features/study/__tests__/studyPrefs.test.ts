@@ -34,24 +34,49 @@ beforeEach(() => {
 });
 
 describe('parseStudyPrefs', () => {
-  it('defaults: two buttons, no typing, reminder off at 18:00, 20 new a day, per-block from the length', () => {
+  it('defaults: two buttons, no typing, reminder off at 18:00, 20 new a day, per-block from the length, the phone’s language', () => {
     expect(parseStudyPrefs(null)).toEqual({
       answerButtons: 2,
       typedAnswers: false,
       reminder: { enabled: false, hour: 18, minute: 0 },
       dailyNewCap: 20,
       newPerBlock: null,
+      dictationLang: null,
     });
     expect(parseStudyPrefs('junk')).toEqual(DEFAULT_STUDY_PREFS);
   });
 
   it('keeps valid fields and replaces invalid ones with defaults', () => {
     expect(
-      parseStudyPrefs({ answerButtons: 4, typedAnswers: true, reminder: { enabled: true, hour: 7, minute: 30 }, dailyNewCap: 30, newPerBlock: 3 }),
-    ).toEqual({ answerButtons: 4, typedAnswers: true, reminder: { enabled: true, hour: 7, minute: 30 }, dailyNewCap: 30, newPerBlock: 3 });
+      parseStudyPrefs({
+        answerButtons: 4,
+        typedAnswers: true,
+        reminder: { enabled: true, hour: 7, minute: 30 },
+        dailyNewCap: 30,
+        newPerBlock: 3,
+        dictationLang: 'en-GB',
+      }),
+    ).toEqual({
+      answerButtons: 4,
+      typedAnswers: true,
+      reminder: { enabled: true, hour: 7, minute: 30 },
+      dailyNewCap: 30,
+      newPerBlock: 3,
+      dictationLang: 'en-GB',
+    });
     expect(
-      parseStudyPrefs({ answerButtons: 3, typedAnswers: 'yes', reminder: { enabled: 1, hour: 24, minute: -1 }, dailyNewCap: 500, newPerBlock: 0 }),
+      parseStudyPrefs({
+        answerButtons: 3,
+        typedAnswers: 'yes',
+        reminder: { enabled: 1, hour: 24, minute: -1 },
+        dailyNewCap: 500,
+        newPerBlock: 0,
+        // Android's own "en_GB" form is not a language tag (speech recognition would get it wrong).
+        dictationLang: 'en_GB',
+      }),
     ).toEqual(DEFAULT_STUDY_PREFS);
+    expect(parseStudyPrefs({ dictationLang: 'zh-Hant-TW' }).dictationLang).toBe('zh-Hant-TW');
+    expect(parseStudyPrefs({ dictationLang: 42 }).dictationLang).toBeNull();
   });
 });
 
@@ -65,6 +90,9 @@ describe('applyPrefsPatch and saving', () => {
     expect(() => applyPrefsPatch(DEFAULT_STUDY_PREFS, { dailyNewCap: 1 })).toThrow(RangeError);
     expect(() => applyPrefsPatch(DEFAULT_STUDY_PREFS, { reminder: { hour: 25 } })).toThrow(RangeError);
     expect(() => applyPrefsPatch(DEFAULT_STUDY_PREFS, { answerButtons: 3 as 2 })).toThrow(RangeError);
+    expect(() => applyPrefsPatch(DEFAULT_STUDY_PREFS, { dictationLang: 'English' })).toThrow(RangeError);
+    expect(applyPrefsPatch(DEFAULT_STUDY_PREFS, { dictationLang: 'en-IN' }).dictationLang).toBe('en-IN');
+    expect(applyPrefsPatch({ ...DEFAULT_STUDY_PREFS, dictationLang: 'en-IN' }, { dictationLang: null }).dictationLang).toBeNull();
   });
 
   it('reads and saves under the study-prefs key', async () => {

@@ -25,6 +25,7 @@ import { useMinute, usePlan, useSourceProgress, useTopics, type SourceView } fro
 import type { PlanNextStep } from '@/features/study/sourceProgress';
 import { cancelJob, retryJob, studyErrorMessage } from '@/features/study/studyApi';
 import { readStudyDefaults, saveStudyDefaults } from '@/features/study/studyPrefs';
+import { draftHasText, useTextDraft } from '@/features/study/textDrafts';
 import { supabase } from '@/lib/supabase';
 import { haptic, useTheme } from '@/theme';
 
@@ -36,7 +37,8 @@ type Handled = { kind: JobAction['kind']; version: string | null };
  * One plan: what is due, its material with where each piece is in the pipeline (from synced rows,
  * so the status moves on by itself), its topics, and the one next step as the primary action:
  * check a transcription, review the outline, try a failed step again, study, or add material.
- * Everything shown works offline; trying a step again needs the internet.
+ * Spoken or typed notes not added yet (saved on this phone) show as "Unsent notes" above the
+ * material. Everything shown works offline; trying a step again needs the internet.
  */
 export default function PlanScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -48,6 +50,7 @@ export default function PlanScreen() {
   const { plan, isLoading: planLoading } = usePlan(planId);
   const progress = useSourceProgress(planId);
   const { topics } = useTopics(planId);
+  const { draft } = useTextDraft(planId);
   const [busy, setBusy] = useState<JobAction | null>(null);
   // Failed steps retried or skipped on this screen: their rows still say "failed" until the next sync.
   // Keyed by job and failure: Try again reuses the job, so when it fails again (a newer updated_at)
@@ -102,6 +105,7 @@ export default function PlanScreen() {
   };
 
   const addMaterial = () => router.push({ pathname: '/plans/[id]/add', params: { id: planId } });
+  const openNotes = () => router.push({ pathname: '/plans/[id]/speak', params: { id: planId } });
   const openStep = (step: PlanNextStep) => {
     if (step.kind === 'check_transcripts') router.push({ pathname: '/plans/[id]/check/[sourceId]', params: { id: planId, sourceId: step.sourceId } });
     else if (step.kind === 'review_outline') router.push({ pathname: '/plans/[id]/outline', params: { id: planId } });
@@ -172,8 +176,28 @@ export default function PlanScreen() {
       {!online && owner && progress.nextStep.kind === 'retry' ? <OfflineNotice action="Trying a step again" /> : null}
 
       <Section title="Material" description={owner ? undefined : 'Added by the plan’s owner.'}>
+        {owner && draft && draftHasText(draft) ? (
+          <Card>
+            <View style={{ gap: space[1] }}>
+              <Text variant="label">Unsent notes</Text>
+              <Text tone="secondary" accessibilityLiveRegion="polite">
+                {online ? 'Saved on this phone, not added to the plan yet.' : 'Saved on this phone. Add them to the plan when you’re back online.'}
+              </Text>
+              <Text variant="caption" tone="secondary" numberOfLines={2}>
+                {draft.text.trim()}
+              </Text>
+            </View>
+            <Button label="Open the notes" variant="secondary" onPress={openNotes} />
+          </Card>
+        ) : null}
         {progress.sources.length === 0 && !progress.isLoading ? (
-          <Notice message={owner ? 'Nothing here yet. Add a PDF, a Word file, photos of your notes or a web page.' : 'Nothing here yet.'} />
+          <Notice
+            message={
+              owner
+                ? 'Nothing here yet. Add a PDF, a Word file, photos of your notes or a web page, or speak or type your notes.'
+                : 'Nothing here yet.'
+            }
+          />
         ) : null}
         {progress.sources.map((source) => (
           <SourceCard
@@ -185,6 +209,7 @@ export default function PlanScreen() {
             handled={handledFor(source)}
             onCheck={() => router.push({ pathname: '/plans/[id]/check/[sourceId]', params: { id: planId, sourceId: source.sourceId } })}
             onReview={() => router.push({ pathname: '/plans/[id]/outline', params: { id: planId } })}
+            onRead={() => router.push({ pathname: '/plans/[id]/notes/[sourceId]', params: { id: planId, sourceId: source.sourceId } })}
             onJob={(action) => void runJob(action)}
           />
         ))}
@@ -243,6 +268,7 @@ function SourceCard({
   handled,
   onCheck,
   onReview,
+  onRead,
   onJob,
 }: {
   source: SourceView;
@@ -254,6 +280,8 @@ function SourceCard({
   handled: JobAction['kind'] | null;
   onCheck(): void;
   onReview(): void;
+  /** Opens the text of spoken or typed notes. */
+  onRead(): void;
   onJob(action: JobAction): void;
 }) {
   const { space } = useTheme();
@@ -288,6 +316,9 @@ function SourceCard({
       ) : null}
       {offers && text.action === 'review_outline' ? (
         <Button label="Review the outline" variant="secondary" onPress={onReview} />
+      ) : null}
+      {source.kind === 'text' && source.status !== null ? (
+        <Button label="Read the notes" variant="ghost" accessibilityLabel={`Read the notes: ${title}`} onPress={onRead} />
       ) : null}
       {owner && !waitingForRetry && text.action === 'retry' && jobId ? (
         <View style={{ gap: space[2] }}>

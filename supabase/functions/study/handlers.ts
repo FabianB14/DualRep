@@ -122,6 +122,11 @@ async function submitSource(r: SubmitSourceRequest, d: StudyDeps): Promise<Study
   if (existing) {
     if (existing.owner_id !== userId) throw new StudyError('conflict', 'This source id is already used.');
     if (existing.kind !== r.kind) throw new StudyError('conflict', 'This source id is already used.');
+    // Notes sent again with other text (the first answer was lost, then the person edited them): the
+    // first text is what the cards are made from, so say so instead of dropping the edit silently.
+    if (r.kind === 'text' && (await store.sourceBody(existing.id)) !== r.text) {
+      throw new StudyError('conflict', 'These notes were already added before your last changes. Add them again as new notes to keep the changes.');
+    }
   }
 
   // The files must really be in the caller's folder, of the right type and size.
@@ -147,6 +152,8 @@ async function submitSource(r: SubmitSourceRequest, d: StudyDeps): Promise<Study
       title: r.title,
       url: r.kind === 'link' ? r.url : null,
       status: 'pending',
+      // Spoken or typed notes: the text itself, as the person checked it on the phone.
+      ...(r.kind === 'text' ? { body: r.text } : {}),
     });
   }
   await store.linkPlanSource(r.plan_id, r.source_id);

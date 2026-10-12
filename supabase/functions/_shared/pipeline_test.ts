@@ -14,6 +14,7 @@ import {
   linkedExistingIds,
   maxCardsFor,
   maxTopicsFor,
+  needsTracy,
   outlineGate,
   pageBatches,
   planApproval,
@@ -36,6 +37,16 @@ Deno.test('stageOf accepts only the pipeline pairs of job and stage', () => {
   assertEquals(stageOf({ job: 'handwriting', stage: 'cards' }), null);
   assertEquals(stageOf({ job: 'study_builder', stage: null }), null);
   assertEquals(stageOf({ job: 'analyst', stage: 'outline' }), null);
+});
+
+Deno.test('needsTracy: every Tracy stage waits for /health, except the extract of spoken or typed notes', () => {
+  assertEquals(needsTracy('extract', { input: { kind: 'pdf' } }), true);
+  assertEquals(needsTracy('extract', { input: { kind: 'link' } }), true);
+  assertEquals(needsTracy('extract', { input: { kind: 'text' } }), false);
+  // Only an extract job is ever chunked without Tracy: an outline of a text source still needs it.
+  assertEquals(needsTracy('outline', { input: { kind: 'text' } }), true);
+  assertEquals(needsTracy('transcribe', { input: {} }), true);
+  assertEquals(needsTracy('embed', { input: {} }), false);
 });
 
 Deno.test('planExtractWindow: text chunks, scanned pages and the next window', () => {

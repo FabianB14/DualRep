@@ -2,9 +2,10 @@
  * An in-memory Store and UserView for `deno test`, with the database behaviour the pipeline relies on:
  * claim (oldest queued, cards and embed after the rest; attempt counted, lock time set), release, the fenced finish, derived-id
  * inserts that ignore duplicates, the monthly cap (enqueue_tracy_event, and requeue_tracy_event's
- * "a job that ran stays counted"), cascades on delete, and the `sources` bucket. Not a database: no
- * RLS (UserView returns every row), no triggers beyond the cascades noted, one month only (the
- * month a unit counts in is tested in SQL, 14_study_engine.test.sql).
+ * "a job that ran stays counted"), cascades on delete, the `sources` bucket, and sources_body_check
+ * (only a text source has a body, of 1 to 30,000 characters). Not a database: no RLS (UserView
+ * returns every row), no triggers beyond the cascades noted, one month only (the month a unit counts
+ * in is tested in SQL, 14_study_engine.test.sql).
  */
 import type { CapReached } from '../errors.ts';
 import type { JobRow, JobStatus, NewJob, Stage, TopicRow } from '../pipeline.ts';
@@ -16,6 +17,7 @@ import type {
   CountedEnqueue,
   Fence,
   JobPatch,
+  NewSource,
   PlanRow,
   SourceFileRow,
   SourceRow,
@@ -32,6 +34,8 @@ const clone = <T>(v: T): T => (v === undefined ? v : structuredClone(v));
 export class FakeStore implements Store {
   jobs = new Map<string, FakeJob>();
   sources = new Map<string, SourceRow>();
+  /** sources.body of 'text' sources, kept apart so SourceRow stays the read shape. */
+  bodies = new Map<string, string>();
   files = new Map<string, SourceFileRow>();
   chunks = new Map<string, FakeChunk>();
   plans = new Map<string, PlanRow>();
@@ -252,10 +256,23 @@ export class FakeStore implements Store {
     return Promise.resolve(clone(this.sources.get(id) ?? null));
   }
 
-  insertSource(row: SourceRow): Promise<void> {
+  insertSource(row: NewSource): Promise<void> {
     if (this.sources.has(row.id)) throw Object.assign(new Error('duplicate'), { code: '23505' });
-    this.sources.set(row.id, clone(row));
+    const { body, ...source } = row;
+    // sources_body_check: only a text source has a body, 1 to 30,000 characters (code points, as
+    // char_length counts them).
+    if (body !== undefined && body !== null) {
+      if (row.kind !== 'text' || [...body].length < 1 || [...body].length > 30000) {
+        throw Object.assign(new Error('check'), { code: '23514' });
+      }
+      this.bodies.set(row.id, body);
+    }
+    this.sources.set(row.id, clone(source));
     return Promise.resolve();
+  }
+
+  sourceBody(id: string): Promise<string | null> {
+    return Promise.resolve(this.sources.has(id) ? this.bodies.get(id) ?? null : null);
   }
 
   setSourceStatus(id: string, status: SourceRow['status']): Promise<void> {
@@ -266,6 +283,7 @@ export class FakeStore implements Store {
 
   deleteSource(id: string): Promise<void> {
     this.sources.delete(id);
+    this.bodies.delete(id);
     for (const [k, f] of this.files) if (f.source_id === id) this.files.delete(k);
     for (const [k, c] of this.chunks) {
       if (c.source_id === id) {

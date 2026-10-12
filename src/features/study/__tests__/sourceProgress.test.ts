@@ -15,6 +15,7 @@ import {
 
 const pdf: ProgressSource = { id: 's1', kind: 'pdf', status: 'processing', title: 'Lecture 1' };
 const notes: ProgressSource = { id: 's2', kind: 'notes', status: 'processing', title: 'Notes' };
+const spoken: ProgressSource = { id: 's3', kind: 'text', status: 'processing', title: 'Notes, 12 Oct' };
 let seq = 0;
 const job = (stage: string, status: string, extra: Partial<ProgressJob> = {}): ProgressJob => ({
   id: `j${(seq += 1)}`,
@@ -44,6 +45,27 @@ describe('sourceStep', () => {
     const allDone = cards.map((c) => ({ ...c, status: 'succeeded' }));
     expect(sourceStep(pdf, [], [done, outlined, ...allDone], 0)).toEqual({ step: 'ready' });
     expect(sourceStep({ ...pdf, status: 'ready' }, [], [done, outlined, ...allDone], 0)).toEqual({ step: 'ready' });
+  });
+
+  it('spoken or typed notes: read, outlined, reviewed, carded; never "Check the transcription"', () => {
+    const extract = job('extract', 'queued');
+    expect(sourceStep(spoken, [], [extract], 0)).toEqual({ step: 'reading', done: 0, total: 0 });
+    const read = { ...extract, status: 'succeeded' };
+    const outline = job('outline', 'running');
+    expect(sourceStep(spoken, [], [read, outline], 0)).toEqual({ step: 'outlining' });
+    const outlined = { ...outline, status: 'succeeded' };
+    expect(sourceStep(spoken, [], [read, outlined], 3)).toEqual({ step: 'review_outline', draftTopics: 3 });
+    const cards = job('cards', 'running');
+    expect(sourceStep(spoken, [], [read, outlined, cards], 0)).toEqual({ step: 'making_cards', done: 0, total: 1 });
+    expect(sourceStep({ ...spoken, status: 'ready' }, [], [read, outlined, { ...cards, status: 'succeeded' }], 0)).toEqual({ step: 'ready' });
+    // Its text had nothing to study: the extraction's error, with Try again.
+    const failed = job('extract', 'failed', { error: 'No readable text was found.' });
+    expect(sourceStep({ ...spoken, status: 'failed' }, [], [failed], 0)).toEqual({
+      step: 'failed',
+      message: 'No readable text was found.',
+      jobId: failed.id,
+      canSkip: false,
+    });
   });
 
   it('notes: photos being read, then checked by the user', () => {

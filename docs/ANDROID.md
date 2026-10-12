@@ -3,8 +3,8 @@
 Everything Android-specific about DualRep: the platform facts that shape the app, what the repo
 already does, and a checklist for every phase of the [roadmap](ROADMAP.md).
 
-- **Facts are as of 2026-10-08** (Phase 2 additions: 2026-10-09). Google changes Play rules every
-  year; re-check dates before relying on them.
+- **Facts are as of 2026-10-08** (Phase 2 additions: 2026-10-09; voice notes: 2026-10-12). Google
+  changes Play rules every year; re-check dates before relying on them.
 - Items marked **verify** come from search excerpts or inference, not from a primary source that was
   read in full. The full research, with sources, is in [research/android.md](research/android.md).
 - Setting up a Windows machine and a phone is in [SETUP.md](SETUP.md), not here.
@@ -49,14 +49,15 @@ already does, and a checklist for every phase of the [roadmap](ROADMAP.md).
 | CI APK build | [`.github/workflows/android.yml`](../.github/workflows/android.yml) | Builds an arm64 APK, runs [`scripts/check-16kb.sh`](../scripts/check-16kb.sh) (zip alignment and ELF alignment of every 64-bit native library; the build fails if either is off), and lists the APK's permissions in the run summary. Its runs on 2026-10-08 compiled the release (preview) APK cleanly under Expo SDK 57, PowerSync's and op-sqlite's native code included. |
 | Variants | [`app.config.ts`](../app.config.ts), chosen by `APP_VARIANT` (set per profile in [`eas.json`](../eas.json)) | `development` → `com.interverse.dualrep.dev`, scheme `dualrep-dev`; `preview` → `com.interverse.dualrep.preview`, scheme `dualrep-preview`; `production` → `com.interverse.dualrep`, scheme `dualrep`. All three install side by side. |
 | Build types | `eas.json` | `development` and `preview` build APKs for internal distribution; `production` builds an app bundle (AAB) with a remotely incremented `versionCode` |
-| Removed permissions | `android.blockedPermissions` | `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE` (also declared by expo-image-picker and expo-file-system), `RECORD_AUDIO`, `USE_BIOMETRIC` and `USE_FINGERPRINT` (pulled in through expo-secure-store; DualRep doesn't use biometrics), and `SYSTEM_ALERT_WINDOW` except in development builds (the dev client's overlay needs it). Since Phase 1 also the extras expo-notifications brings: Firebase push (`com.google.android.c2dm.permission.RECEIVE`), Google's install referrer, and 16 launcher-badge permissions ([DECISIONS.md](DECISIONS.md) D30). Since Phase 2 also `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED` and `ACCESS_MEDIA_LOCATION`, as a guard: no broad photo access, whatever a library declares (D42) |
+| Removed permissions | `android.blockedPermissions` | `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE` (also declared by expo-image-picker and expo-file-system), `USE_BIOMETRIC` and `USE_FINGERPRINT` (pulled in through expo-secure-store; DualRep doesn't use biometrics), and `SYSTEM_ALERT_WINDOW` except in development builds (the dev client's overlay needs it). Since Phase 1 also the extras expo-notifications brings: Firebase push (`com.google.android.c2dm.permission.RECEIVE`), Google's install referrer, and 16 launcher-badge permissions ([DECISIONS.md](DECISIONS.md) D30). Since Phase 2 also `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED` and `ACCESS_MEDIA_LOCATION`, as a guard: no broad photo access, whatever a library declares (D42). `RECORD_AUDIO` was on this list until voice notes (D51): 27 entries in a preview build |
+| Speech-to-text | `expo-speech-recognition` 57.1.1 (voice notes), its config plugin listed in `app.config.ts` with the iOS usage strings only | Android's own speech recognition on the **Speak or type notes** screen, with the screen on only. Adds `RECORD_AUDIO`, asked for on the first tap of **Start speaking**, and one `<queries>` entry for `android.speech.RecognitionService`. No service, no foreground service, no native library ([2.8](#28-voice-notes-speech-to-text-on-the-phone)) |
 | Backups | `android.allowBackup: false` | The auth session and local database stay out of Android cloud backups |
 | Predictive back | `android.predictiveBackGestureEnabled: false` | Off, as recommended below |
 | Orientation | `orientation: 'portrait'` | Phones stay portrait; screens must still work in landscape on ≥ 600 dp devices |
 | R8 shrinking | `expo-build-properties` with no options | Off for now ([DECISIONS.md](DECISIONS.md) D11) |
 | Notifications | `expo-notifications` 57.0.22 (Phase 1), config plugin in `app.config.ts` | The end-of-block alert: a scheduled local notification on the channel `timers-v1`, small icon `assets/notification-icon.png`. Since Phase 2 also the daily review reminder on `reviews-v1` ([2.5](#25-review-reminders-and-background-sync)). No foreground service, no exact alarms ([1.1](#11-the-focus-timer-scheduled-notification-not-a-foreground-service)) |
 | Photos, camera, documents | Phase 2: `expo-image-picker` 57.0.20 (listed in `plugins` with the iOS usage strings only), `expo-document-picker` 57.0.3, `expo-image-manipulator` 57.0.21, `expo-file-system` 57.0.7; the inline plugin `withOptionalCamera` in `app.config.ts` | The gallery uses the system Photo Picker and documents the system file picker (no permission). **Take a photo** adds `CAMERA` and is hidden below Android 10. The camera is declared "not required" ([2.7](#27-camera-and-photo-access)) |
-| Screen on | `expo-keep-awake` 57.0.2 (Phase 1) | Only during a move block ([1.4](#14-screen-on-during-sets)) |
+| Screen on | `expo-keep-awake` 57.0.2 (Phase 1) | Only during a move block ([1.4](#14-screen-on-during-sets)), and while voice notes are listening ([2.8](#28-voice-notes-speech-to-text-on-the-phone)) |
 | Audio | not installed | No `expo-audio` until audio study mode (Phase 2B), so no foreground services yet |
 | Play submission | `eas.json` → `submit.production` | Internal track, draft release, service-account key at `./secrets/play-service-account.json` (gitignored by name pattern) |
 | Icons and splash | `assets/` | Placeholder art from the Expo template; brand art is pending ([5.9](#59-brand-art-and-store-listing-assets)) |
@@ -74,20 +75,36 @@ to Play.
   `RECEIVE_BOOT_COMPLETED` and `POST_NOTIFICATIONS` (expo-notifications), and `ACCESS_NETWORK_STATE`
   and `WAKE_LOCK` (which come with expo-notifications' own dependencies). If the list shows anything
   else, compare it with the table below before releasing.
-- **Phase 2** preview APK (the expected list, from the Phase 2 research; `npx expo config --type
-  introspect` confirmed the blocks and the camera entries for all three variants, but no CI-built
-  APK has printed it yet): Phase 1's seven, plus **`CAMERA`**, the only new one
+- **Phase 2** preview APK, as first built (the expected list, from the Phase 2 research; `npx expo
+  config --type introspect` confirmed the blocks and the camera entries for all three variants, but
+  no CI-built APK has printed it yet): Phase 1's seven, plus **`CAMERA`**, the only new one
   (expo-image-picker's library manifest). So, from `aapt2 dump permissions`:
   - `permission`: `com.interverse.dualrep.preview.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`
   - `uses-permission`: `INTERNET`, `VIBRATE`, the same `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`,
     `RECEIVE_BOOT_COMPLETED`, `POST_NOTIFICATIONS`, `ACCESS_NETWORK_STATE`, `WAKE_LOCK`, `CAMERA`
   - development builds also keep `SYSTEM_ALERT_WINDOW`.
-  - **Must not appear:** `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `RECORD_AUDIO`, any
-    `READ_MEDIA_*`, `ACCESS_MEDIA_LOCATION`, any `FOREGROUND_SERVICE*`.
+  - **Must not appear:** `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, any `READ_MEDIA_*`,
+    `ACCESS_MEDIA_LOCATION`, any `FOREGROUND_SERVICE*` (and `RECORD_AUDIO`, until voice notes).
   - `aapt2 dump badging` should show `uses-feature-not-required` for `android.hardware.camera` and
     `android.hardware.camera.autofocus`.
   - The `<queries>` entries the pickers add (image capture, open document, get content) are
     package-visibility declarations, not permissions.
+- **Phase 2.1 (voice notes)** preview APK, the list to expect now (voice notes are on the same
+  branch as Phase 2, so the first Phase 2 APK you build already has them). `npx expo config --type
+  introspect` (preview variant, before and after the change) showed exactly one new permission;
+  no CI-built APK has printed it yet ([2.8](#28-voice-notes-speech-to-text-on-the-phone),
+  [DECISIONS.md](DECISIONS.md) D51):
+  - `uses-permission`: Phase 2's eight above, plus **`RECORD_AUDIO`** (from
+    expo-speech-recognition's config plugin, and expo-image-picker's plugin default).
+  - **Must not appear:** `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, any `READ_MEDIA_*`,
+    `ACCESS_MEDIA_LOCATION`, any `FOREGROUND_SERVICE*`, `MODIFY_AUDIO_SETTINGS`.
+  - One new `<queries>` entry: `<package android:name="com.google.android.googlequicksearchbox" />`
+    and `<intent><action android:name="android.speech.RecognitionService" /></intent>`. Android needs
+    the intent for an app targeting API 30+ to find the phone's speech service. It is a
+    package-visibility declaration for one named app and one intent, not a permission and not
+    `QUERY_ALL_PACKAGES`.
+  - No `<service>` comes with it (the library's own manifest is empty), and no `uses-feature`
+    changes.
 - expo-notifications' dependencies also declare `com.google.android.c2dm.permission.RECEIVE`
   (Firebase Cloud Messaging, for push), Google's install-referrer permission (expo-application, which
   expo-notifications depends on), and 16 launcher "badge" permissions (`READ_APP_BADGE` and vendor
@@ -116,7 +133,7 @@ to Play.
 | `USE_EXACT_ALARM` | — | — | — | **don't declare** |
 | `CAMERA` | expo-image-picker (its library manifest) | 2 (in) | yes, when the user taps **Take a photo** ([2.7](#27-camera-and-photo-access)) | nothing to declare; Data safety: photos (uploaded). `android.hardware.camera` and `…camera.autofocus` are declared `required="false"`, so Play doesn't hide the app from devices without a camera |
 | `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED`, `ACCESS_MEDIA_LOCATION` | none today (a guard against future libraries, for example expo-media-library) | — | — | **removed** with `android.blockedPermissions` since Phase 2: broad photo access needs a Play declaration DualRep can't justify |
-| `RECORD_AUDIO` | expo-image-picker's config plugin (default), later expo-audio / expo-speech-recognition | 2B (audio study mode) | yes | **removed** with `android.blockedPermissions` until audio mode; then Data safety (audio) |
+| `RECORD_AUDIO` | expo-speech-recognition's config plugin (and expo-image-picker's plugin default); later expo-audio | 2.1 (in, voice notes; blocked until then) | yes, on the first tap of **Start speaking** ([2.8](#28-voice-notes-speech-to-text-on-the-phone)) | nothing to declare (**verify**); Data safety: audio, see [5.5](#55-data-safety-draft) ([DECISIONS.md](DECISIONS.md) D51, D57) |
 | `MODIFY_AUDIO_SETTINGS` | expo-audio (library manifest) | 2B | no | nothing (**verify**) |
 | `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | expo-audio (**on by default**) | 2B | no | **foreground-service declaration + video** |
 | `FOREGROUND_SERVICE_MICROPHONE` | expo-audio `enableBackgroundRecording` | 2B | no (needs `RECORD_AUDIO`) | **foreground-service declaration + video** |
@@ -171,8 +188,7 @@ needs that aren't installed yet are added in that phase with `npx expo install <
     blockedPermissions: [
       'android.permission.READ_EXTERNAL_STORAGE',
       'android.permission.WRITE_EXTERNAL_STORAGE',
-      // Blocked here, not with expo-image-picker's `microphonePermission: false` (2.7).
-      'android.permission.RECORD_AUDIO',
+      // RECORD_AUDIO is allowed since voice notes (2.8); it was blocked here until then.
       // Phase 2: never broad photo or video access, whatever a future library declares.
       'android.permission.READ_MEDIA_IMAGES',
       'android.permission.READ_MEDIA_VIDEO',
@@ -191,12 +207,12 @@ needs that aren't installed yet are added in that phase with `npx expo install <
     ],
   },
   ```
-  Remove `RECORD_AUDIO` from this list in Phase 2B, when audio study mode needs it, and
-  `c2dm.permission.RECEIVE` in Phase 4, when push arrives.
+  `RECORD_AUDIO` left this list for voice notes ([2.8](#28-voice-notes-speech-to-text-on-the-phone));
+  `c2dm.permission.RECEIVE` leaves it in Phase 4, when push arrives.
 - **When:** done; check the CI permission list on every build against the
   [permission ledger](#permission-ledger). Phase 1's expo-notifications adds `POST_NOTIFICATIONS`,
   `RECEIVE_BOOT_COMPLETED`, `ACCESS_NETWORK_STATE` and `WAKE_LOCK`; its push, install-referrer and
-  launcher-badge extras are blocked. Phase 2 adds only `CAMERA`.
+  launcher-badge extras are blocked. Phase 2 adds only `CAMERA`, and voice notes only `RECORD_AUDIO`.
 
 #### 0.5 Play Console account: decide now
 - **What:** choose a **personal** or an **organization** Play developer account, and create the app
@@ -452,10 +468,11 @@ waits for the Play Console app. How to run the gate on the phone:
 
 ### Phase 2: Study engine and audio study mode
 
-**Status (2026-10-09):** 2.5 and 2.7 are built ([DECISIONS.md](DECISIONS.md) D42, D47). Audio study
-mode moved to **Phase 2B** (D49), so 2.1–2.4 and 2.6 wait for it: they stay here as the plan for
-that phase. How to run the Phase 2 gate on the phone:
-[SETUP §17](SETUP.md#17-phase-2-the-study-engine-on-your-phone).
+**Status (2026-10-12):** 2.5 and 2.7 are built ([DECISIONS.md](DECISIONS.md) D42, D47), and so is
+2.8, voice notes (Phase 2.1, D50–D57). Audio study mode moved to **Phase 2B** (D49), so 2.1–2.4 and
+2.6 wait for it: they stay here as the plan for that phase. How to run the Phase 2 gate on the
+phone: [SETUP §17](SETUP.md#17-phase-2-the-study-engine-on-your-phone); voice notes:
+[SETUP §17, voice notes](SETUP.md#voice-notes-try-them-on-your-phone).
 
 #### 2.1 Foreground services for audio study mode
 - **What:** on-the-go mode plays questions aloud and listens for answers with the screen off.
@@ -477,9 +494,9 @@ that phase. How to run the Phase 2 gate on the phone:
     recordAudioAndroid: true,
   }]],
   ```
-  Also take `android.permission.RECORD_AUDIO` out of `android.blockedPermissions` in
-  `app.config.ts` (blocked since Phase 0; Phase 2 keeps it blocked on purpose, see
-  [2.7](#27-camera-and-photo-access)).
+  `android.permission.RECORD_AUDIO` is already out of `android.blockedPermissions`: voice notes
+  took it out ([2.8](#28-voice-notes-speech-to-text-on-the-phone)). The two foreground services and
+  `expo-audio` are still to come.
 - **When:** Phase 2B (audio study mode).
 
 #### 2.2 The expo-audio defaults trap
@@ -488,7 +505,8 @@ that phase. How to run the Phase 2 gate on the phone:
 - **Why:** its config plugin defaults are `enableBackgroundPlayback: true` and
   `recordAudioAndroid: true`. Listing the plugin without options silently ships a media foreground
   service and `RECORD_AUDIO`, which trigger a Play foreground-service declaration with a video and
-  Data safety audio questions.
+  Data safety audio questions. (`RECORD_AUDIO` is already in for voice notes; the foreground service
+  is the part to keep out.)
 - **How:**
   ```ts
   plugins: [['expo-audio', { enableBackgroundPlayback: false, recordAudioAndroid: false }]],
@@ -508,7 +526,9 @@ that phase. How to run the Phase 2 gate on the phone:
 - **What:** prove screen-off speech recognition and text-to-speech before building the mode.
 - **Why:** unverified on Android 14–17. `expo-speech-recognition` (Android `SpeechRecognizer`) adds
   `RECORD_AUDIO` but no foreground service; whether system TTS from a backgrounded app survives
-  Android 17's rules is unknown.
+  Android 17's rules is unknown. Since voice notes, `expo-speech-recognition` 57.1.1 is installed
+  and `RECORD_AUDIO` allowed ([2.8](#28-voice-notes-speech-to-text-on-the-phone)), but voice notes
+  stop listening as soon as the app leaves the foreground: the screen-off case is still unproven.
 - **How:** a one-day spike with the `mediaPlayback` service running. Fallback: record with expo-audio
   inside the `microphone` service and send clips to Tracy for speech-to-text. Headset next/previous
   mappings need a local module around media3, because expo-audio's media session removes those
@@ -552,7 +572,8 @@ that phase. How to run the Phase 2 gate on the phone:
   answer.
 - **How:** video: start audio study in the foreground → lock the screen → speech continues → answer by
   voice or headset. Data safety: "Audio files → Voice or sound recordings" if any audio leaves the
-  phone.
+  phone (voice notes already raise that question for Google's online speech service:
+  [5.5](#55-data-safety-draft)).
 - **When:** before the first build with audio mode reaches a Play track.
 
 #### 2.7 Camera and photo access
@@ -575,9 +596,11 @@ that phase. How to run the Phase 2 gate on the phone:
     gallery works on every version.
   - **The plugin entry:** expo-image-picker's config plugin runs even when it isn't listed, and by
     default it adds `RECORD_AUDIO`. Its `microphonePermission: false` option would remove the
-    microphone **app-wide**, out of sight, which would break audio study mode later. So DualRep
-    lists the plugin with the iOS usage strings only, and keeps `RECORD_AUDIO` in
-    `android.blockedPermissions`, where Phase 2B can delete one line:
+    microphone **app-wide**, out of sight, which would have broken voice notes and audio study
+    mode. So DualRep lists the plugin with the iOS usage strings only. Phase 2 kept `RECORD_AUDIO`
+    in `android.blockedPermissions`; voice notes deleted that one line
+    ([2.8](#28-voice-notes-speech-to-text-on-the-phone)). The picker itself never asks for the
+    microphone (it would only to record video, which DualRep doesn't offer):
     ```ts
     plugins: [['expo-image-picker', {
       photosPermission: 'DualRep opens your photos when you add pictures of your notes.',
@@ -608,6 +631,83 @@ that phase. How to run the Phase 2 gate on the phone:
   uploads with a moving percentage; the CI run's permission list matches the
   [ledger](#permission-ledger).
 - **When:** built in Phase 2.
+
+#### 2.8 Voice notes: speech-to-text on the phone
+- **Status: built** (Phase 2.1, 2026-10-12; [DECISIONS.md](DECISIONS.md) D50, D51, D57). Nothing of
+  it has run on a phone yet.
+- **What:** on **Speak or type notes**, Android's own speech recognition turns what the person says
+  into text while the screen is on. They read it through, then add it to the plan like any material.
+- **Why it needs Android care:** the microphone is a runtime permission and a Data safety answer;
+  speech recognition behaves differently on Android 13+ and on older versions; and some phones have
+  no speech service at all.
+- **How (as built,** [`src/features/study/dictation.ts`](../src/features/study/dictation.ts) **and**
+  [`useDictation.ts`](../src/features/study/useDictation.ts)**):**
+  - `expo-speech-recognition` **57.1.1**, pinned exactly: 57.1.0 crashes on Android 11 and older
+    when no speech service connects, in exactly the restart loop DualRep runs. It is an Expo Modules
+    API module, Kotlin only, with no `.so`, so there is nothing new for the
+    [16 KB check](#07-16-kb-page-size-check). Like everything native, it doesn't run in Expo Go
+    ([0.1](#01-development-build-not-expo-go)).
+  - **The manifest:** `RECORD_AUDIO` is out of `blockedPermissions`, and the plugin is listed:
+    ```ts
+    plugins: [['expo-speech-recognition', {
+      microphonePermission: 'DualRep uses the microphone while you speak your notes.', // iOS only
+      speechRecognitionPermission: 'DualRep turns what you say into text for your notes.', // iOS only
+    }]],
+    ```
+    It adds `RECORD_AUDIO` and the `<queries>` entry for `android.speech.RecognitionService`
+    (without it, `isRecognitionAvailable()` is always false on API 30+). Don't pass
+    `androidSpeechServicePackages`: a list there replaces the default package instead of adding to
+    it.
+  - **Which recognizer:** Android 13+ with an on-device service **and** the language's model
+    installed → on the phone, offline ("Works on this phone, offline: what you say isn't sent
+    anywhere to be turned into text."). `supportsOnDeviceRecognition()` alone only says the phone's
+    maker named a service, so the language must also be in `getSupportedLocales().installedLocales`.
+    Otherwise the phone's default speech service, usually a Google app, online ("Uses Google's
+    online speech service: what you say is sent to Google to be turned into text, so it needs the
+    internet."). Neither → typing only ("No speech-to-text on this phone"). A missing language model
+    is offered with **Download … for offline use** (`androidTriggerOfflineModelDownload`: Android
+    14+ reports it done or scheduled, for example until Wi-Fi; Android 13 opens a system dialog, so
+    the app looks again when it comes back to the foreground).
+  - **Android 13+ and older:** on 13+, `continuous: true` keeps one session open (the library reads
+    the microphone itself and passes the audio to the recognizer, with no start or stop beep). On
+    12 and older each session ends at a pause, so the app starts a new one 250 ms later: expect the
+    system beep each time and a short gap where a word can be missed. The same loop runs on 13+ as a
+    safety net.
+  - **Android-13-only extras** (`EXTRA_MASK_OFFENSIVE_WORDS`) are sent only on 13+: the library sets
+    each one by reflection, and a name the phone's Android doesn't have makes `start()` fail.
+  - **Background:** since Android 9 an app in the background can't use the microphone, so listening
+    pauses when the app leaves the foreground. The screen stays on (`expo-keep-awake`, tag
+    `dualrep-dictation`) only while listening. **No foreground service** is needed or wanted.
+  - **The permission:** asked on the first tap of **Start speaking** only, never when the app
+    starts. After two refusals Android stops asking (`canAskAgain` false): "Microphone access is
+    off" with **Open system settings**, the same pattern as the camera. **Only this time** (Android
+    11+) works, because each tap checks the permission first.
+  - **No audio is kept:** `recordingOptions` is never passed. One library quirk: on Android 13+ each
+    continuous start leaves an empty (0-byte) `cache/temp_<uuid>.pcm` file. Harmless; not cleaned up
+    yet.
+  - Android 12+ shows its microphone indicator in the status bar while DualRep listens.
+- **Verify on the phone:** checks S1–S10 of
+  [research/voice/speech.md §13.3](research/voice/speech.md#133-on-the-phone-spike-before-building-the-ui-about-half-a-day)
+  (step by step for the founder in [SETUP §17](SETUP.md#voice-notes-try-them-on-your-phone)):
+
+  | # | Check | Passes when |
+  |---|---|---|
+  | S1 | Android 13+: read the screen's line, download the language if offered, then airplane mode and speak | With "Works on this phone, offline", words appear in airplane mode |
+  | S2 | Android 13+: 10 minutes of talking with long pauses, on the phone and with Google's online service | It keeps listening; it pauses by itself only after a minute of quiet |
+  | S3 | Android 12 or older (an old phone, or an emulator with a Google Play image): talk with pauses | No crash; a beep at each restart; the words keep coming |
+  | S4 | A phone or emulator without Google's speech service (or with the Google app turned off) | "No speech-to-text on this phone"; typing works; no crash |
+  | S5 | Refuse the microphone once, twice, and allow **Only this time** | The next tap asks again; then "Microphone access is off" with **Open system settings**; typing works throughout |
+  | S6 | Lock the screen, switch apps, or take a call while listening | It pauses and keeps every word; the screen doesn't dim while listening |
+  | S7 | Android 12+: the microphone switch in Quick Settings off | Write down what happens (a system dialog, or "The microphone isn't available right now…") |
+  | S8 | Punctuation on the phone and online; offensive words not masked | Note the quality; keep or drop the two settings |
+  | S9 | The CI APK's permission list and 16 KB check | Phase 2's list plus `RECORD_AUDIO` only; 16 KB OK |
+  | S10 | Gboard's and Samsung Keyboard's microphone in the notes box | The keyboard types the words; nothing else is needed |
+
+  Also check that the language shown is the phone's own (for example "English (UK)"), and that other
+  languages in the list show names, not codes like `de-DE` (Hermes' `Intl` support is unverified).
+  On an emulator, the microphone needs **Extended controls → Microphone → "Virtual microphone uses
+  host audio input"** (**verify**).
+- **When:** built in Phase 2.1; the checks go with the Phase 2 gate.
 
 ### Phase 3: Tracy coaching
 
@@ -778,8 +878,8 @@ that phase. How to run the Phase 2 gate on the phone:
 | Health and fitness → health info | Only if symptoms, diagnoses, medication or mood are stored | Avoid collecting it |
 | Photos and videos → photos | Note photos (Phase 2), later card images and avatars | Collected (photos of notes are uploaded). Location data is stripped on the phone before upload ([2.7](#27-camera-and-photo-access)), so no location is collected through them |
 | Files and docs | Uploaded PDFs and Word files (Phase 2) | Collected |
-| Audio → voice or sound recordings | Clips sent to Tracy for speech-to-text | Collected if audio leaves the phone |
-| App activity → app interactions, other user-generated content | Study and training events, cards, Tracy messages, group content | Collected |
+| Audio → voice or sound recordings | Voice notes ([2.8](#28-voice-notes-speech-to-text-on-the-phone)): on-device recognition keeps the audio on the phone; Google's online speech service (the phone's speech app) sends it to Google, never through DualRep's code or servers. Later, maybe clips sent to Tracy in audio study mode (Phase 2B) | On-device: not collected (**verify**). Google's online service: **unclear, get advice** ([DECISIONS.md](DECISIONS.md) D57); the careful answer is collected, processed ephemerally, app functionality, optional, not shared. Clips to Tracy: collected |
+| App activity → app interactions, other user-generated content | Study and training events, cards, Tracy messages, group content, and the text of spoken or typed notes | Collected |
 | Financial info → purchase history | RevenueCat / Play | Likely collected |
 | App info and performance → crash logs, diagnostics | Sentry, if added | Collected |
 | Device or other IDs | FCM token, RevenueCat user ID | Likely collected |
@@ -787,7 +887,9 @@ that phase. How to run the Phase 2 gate on the phone:
 
 Since Phase 2, Tracy sends uploaded material and photos to Anthropic (Claude) to read, transcribe and
 make cards, and, if embeddings are turned on, text to Google (Gemini). Decide (with advice) whether
-that counts as "shared" or falls under the service-provider exemption.
+that counts as "shared" or falls under the service-provider exemption. Ask about voice notes' online
+speech service at the same time, and add a microphone line to the privacy policy (a draft is in
+D57).
 
 #### 5.6 Account deletion (required)
 - **What:** an in-app way to delete the account **and** a web page where users can request deletion
@@ -812,6 +914,8 @@ that counts as "shared" or falls under the service-provider exemption.
 - [ ] Edge-to-edge screens checked with gesture and 3-button navigation, on a ≥ 600 dp emulator, in
       dark mode
 - [ ] Notifications denied: the app still works
+- [ ] Microphone denied: voice notes still take typing ([2.8](#28-voice-notes-speech-to-text-on-the-phone));
+      `expo-speech-recognition` is still 57.1.1 or a checked newer patch
 - [ ] Android 17 device or emulator for background audio (once audio mode exists)
 - [ ] R8 shrinking decision made and tested ([DECISIONS.md](DECISIONS.md) D11)
 - [ ] The review login (5.8) works on a production build installed from the internal track

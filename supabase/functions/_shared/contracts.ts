@@ -6,7 +6,7 @@
  * the two in step.
  */
 
-export const SOURCE_KINDS = ['pdf', 'doc', 'link', 'notes'] as const;
+export const SOURCE_KINDS = ['pdf', 'doc', 'link', 'notes', 'text'] as const;
 export type SourceKind = (typeof SOURCE_KINDS)[number];
 
 export const STUDY_ACTIONS = [
@@ -28,6 +28,11 @@ export const STUDY_LIMITS = {
   maxUrlChars: 2048,
   /** A transcript as Tracy may write it (dualrep_transcribe_* validators). */
   maxTranscriptChars: 20000,
+  /**
+   * The text of a 'text' source (spoken or typed notes), in UTF-16 code units (JavaScript's
+   * `length`, on the phone and here); sources.body allows 30,000 characters (code points), never fewer.
+   */
+  maxTextChars: 30000,
   /** A topic title as the outline validator accepts it. */
   maxTopicTitleChars: 120,
   /** Topics in one approve_outline request (40 per outline is Tracy's maximum; several outlines). */
@@ -43,6 +48,7 @@ export const KIND_FILE_TYPES: Record<SourceKind, Record<string, string>> = {
   doc: { docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
   notes: { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' },
   link: {},
+  text: {},
 };
 
 // ---- Requests -----------------------------------------------------------------------------------
@@ -61,7 +67,14 @@ export interface SubmitSourceRequest {
   title: string;
   /** https URL, for kind 'link' only (null otherwise). */
   url: string | null;
-  /** pdf and doc: exactly one file; notes: 1 to 20 photos; link: none. */
+  /**
+   * The notes themselves, for kind 'text' only (null otherwise): 1 to 30,000 characters after the
+   * function's clean-up (cleanStudyText: line breaks made \n, control characters other than tab and
+   * line break removed, half an emoji made U+FFFD, outer whitespace trimmed). Absent on the wire =
+   * null, so older apps are unaffected.
+   */
+  text: string | null;
+  /** pdf and doc: exactly one file; notes: 1 to 20 photos; link and text: none. */
   files: UploadedFile[];
 }
 
@@ -171,7 +184,7 @@ export const STUDY_ERROR_STATUS = {
   forbidden: 403, // the plan, source or job belongs to someone else
   not_found: 404, // no such plan, source or job (or the caller cannot see it)
   method_not_allowed: 405,
-  conflict: 409, // the source id is taken by another source, or the source is in another plan
+  conflict: 409, // the source id is taken by another source (or by notes with other text), or the source is in another plan
   not_ready: 409, // the step does not apply now (e.g. transcriptions still running); `error` says why
   no_text: 422, // the confirmed transcripts hold nothing to study
   cap_reached: 429, // the monthly limit for this stage is used up; see CapReachedBody

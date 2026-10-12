@@ -62,6 +62,35 @@ export function chunkPageText(
   return chunks;
 }
 
+/**
+ * Breaks lines longer than `width` at the last space before it, so text without sentence punctuation
+ * or line breaks (dictation can come out as one long line) is split by chunkPageText at word
+ * boundaries instead of every 1,600 characters mid-word. A line with no space in the second half of
+ * the width (one very long word, or a language written without spaces) is cut hard at the width,
+ * never between the two halves of an emoji (a UTF-16 surrogate pair). A pre-pass, so chunkPageText
+ * stays a line-by-line port of tracy-ai's. Lines that are short enough, and paragraphs (blank
+ * lines), are left as they are.
+ */
+export function breakLongLines(text: string, width = 800): string {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => {
+      const out: string[] = [];
+      let rest = line;
+      while (rest.length > width) {
+        const space = rest.lastIndexOf(' ', width);
+        let at = space > width / 2 ? space : width;
+        if (at === width && at > 1 && /[\uD800-\uDBFF]/.test(rest[at - 1])) at -= 1;
+        out.push(rest.slice(0, at).trimEnd());
+        rest = rest.slice(at).trimStart();
+      }
+      out.push(rest);
+      return out.join('\n');
+    })
+    .join('\n');
+}
+
 /** One page as Tracy transcribes it (dualrep_transcribe_notes / _pdf_pages). */
 export interface TranscribedPage {
   page: number;

@@ -5,9 +5,11 @@
  *   claim the oldest queued job, cards and embed jobs last (claim_tracy_events: running, attempt
  *   counted, locked now), unless `maxRunning` jobs are running already (Tracy on Render's free plan
  *   handles one heavy job at a time)
- *   └─ needs Tracy? GET /health (5 s). Asleep -> release_tracy_event (attempt not counted), stop:
- *      the health call wakes Render's free service and the next cron minute goes ahead. After
- *      MAX_RELEASES in a row Tracy is down rather than asleep, and the job fails with a message.
+ *   └─ needs Tracy (every stage but embed and the extract of spoken or typed notes, which only
+ *      chunks text the server already has)? GET /health (5 s). Asleep -> release_tracy_event
+ *      (attempt not counted), stop: the health call wakes Render's free service and the next cron
+ *      minute goes ahead. After MAX_RELEASES in a row Tracy is down rather than asleep, and the job
+ *      fails with a message.
  *   └─ run the stage's step: read what it needs, make ONE call (Tracy ≤ 110 s, or Gemini), write rows
  *   └─ apply the outcome, fenced: only while the job is still `running` with this run's attempts and
  *      lock time, so a run presumed dead can never overwrite a job that was retried meanwhile
@@ -24,7 +26,7 @@
  * before any row is written, and rows have derived ids. A step cut short after that is retried from
  * the stored answer: no second Tracy call, no duplicate rows.
  */
-import { chunkHeading, chunkPageText, transcribedPageText, type TranscribedPage } from '../_shared/chunker.ts';
+import { breakLongLines, chunkHeading, chunkPageText, transcribedPageText, type TranscribedPage } from '../_shared/chunker.ts';
 import type { Caps } from '../_shared/config.ts';
 import { buildDigest, expandIds, outlineEntries, readingOrder, shrunkEntries } from '../_shared/digest.ts';
 import {
@@ -60,6 +62,7 @@ import {
   MAX_RELEASES,
   maxCardsFor,
   maxTopicsFor,
+  needsTracy,
   type OutlineInput,
   type OutlineOutput,
   pageBatches,
@@ -70,7 +73,6 @@ import {
   type SavedOutline,
   saveOutline,
   type Stage,
-  STAGE_INFO,
   stageOf,
 } from '../_shared/pipeline.ts';
 import type { Fence, JobPatch, SourceFileRow, SourceRow, Store } from '../_shared/store.ts';
@@ -152,6 +154,7 @@ async function stepExtract({ deps, job }: StepCtx): Promise<Outcome> {
   const source = await deps.store.getSource(input.source_id);
   if (!source) return { kind: 'cancel', message: MESSAGES.sourceGone };
   if (source.kind === 'notes') return { kind: 'fail', message: MESSAGES.unknownJob };
+  if (source.kind === 'text') return await readText(deps, source, input);
   let url: string;
   if (source.kind === 'link') {
     if (!source.url) return { kind: 'fail', message: MESSAGES.linkUnusable };
@@ -218,6 +221,25 @@ async function stepExtract({ deps, job }: StepCtx): Promise<Outcome> {
     note: n
       ? `${n} scanned page${n === 1 ? " wasn't" : "s weren't"} transcribed: this month's page limit is used up.`
       : null,
+  };
+}
+
+/**
+ * Spoken or typed notes: the text is already on the server (sources.body, as the person checked it on
+ * the phone), so it is chunked here with the same rules as a confirmed transcript; no Tracy call, no
+ * review step. One window: done at once, and the outline follows (afterJob -> maybeStartOutline).
+ * Chunk ids are derived (page null, position), so a retry rewrites the same rows.
+ */
+async function readText(deps: WorkerDeps, source: SourceRow, input: ExtractInput): Promise<Outcome> {
+  const body = await deps.store.sourceBody(source.id);
+  const drafts = chunkPageText(breakLongLines(body ?? ''))
+    .map((c, ordinal) => ({ page: null, ordinal, content: c.content }));
+  if (!drafts.length) return { kind: 'fail', message: MESSAGES.noText };
+  await deps.store.upsertChunks(await chunkRows(source.id, source.owner_id, drafts));
+  return {
+    kind: 'done',
+    input: { source_id: input.source_id, plan_id: input.plan_id, kind: 'text', cursor_page: 1 },
+    output: { format: 'text', total_pages: null, scanned_pages: 0, skipped_pages: 0, chunks: drafts.length },
   };
 }
 
@@ -529,9 +551,9 @@ export async function runOneStep(deps: WorkerDeps, hop = 0): Promise<StepResult>
   let outcome: Outcome;
   if (!stage) {
     outcome = { kind: 'fail', message: MESSAGES.unknownJob };
-  } else if (STAGE_INFO[stage].needsTracy && !deps.tracy) {
+  } else if (needsTracy(stage, job) && !deps.tracy) {
     outcome = { kind: 'fail', message: MESSAGES.notSetUp };
-  } else if (STAGE_INFO[stage].needsTracy && !(await deps.tracy!.health())) {
+  } else if (needsTracy(stage, job) && !(await deps.tracy!.health())) {
     outcome = { kind: 'release', reason: 'tracy_asleep' };
   } else {
     try {

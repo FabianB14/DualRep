@@ -1,5 +1,5 @@
 import { assert, assertEquals } from 'jsr:@std/assert@1.0.13';
-import { checkStudyRequest, isUsableLink, parseFilePath } from './validate.ts';
+import { checkStudyRequest, cleanStudyText, isUsableLink, parseFilePath } from './validate.ts';
 
 const U = '11111111-1111-4111-8111-111111111111';
 const P = '50000000-0000-4000-8000-000000000001';
@@ -13,7 +13,7 @@ Deno.test('submit_source: a PDF, a document, a link and notes', () => {
   const pdf = submit({ kind: 'pdf', files: [{ path: `${U}/${S}/1.pdf` }] });
   assertEquals(pdf, {
     ok: true,
-    value: { action: 'submit_source', plan_id: P, source_id: S, kind: 'pdf', title: 'Lecture 3', url: null, files: [{ path: `${U}/${S}/1.pdf` }] },
+    value: { action: 'submit_source', plan_id: P, source_id: S, kind: 'pdf', title: 'Lecture 3', url: null, text: null, files: [{ path: `${U}/${S}/1.pdf` }] },
   });
   assert(submit({ kind: 'doc', files: [{ path: `${U}/${S}/1.docx` }] }).ok);
   assert(submit({ kind: 'link', url: 'https://example.org/notes', files: [] }).ok);
@@ -72,4 +72,31 @@ Deno.test('parseFilePath and isUsableLink', () => {
   assert(!isUsableLink('https://user:pw@example.org/'));
   assert(!isUsableLink('ftp://example.org/'));
   assert(!isUsableLink('not a url'));
+});
+
+Deno.test('submit_source: spoken or typed notes carry their text and no files', () => {
+  const ok = submit({ kind: 'text', title: 'Spoken notes', text: '  Osmosis\r\nmoves water.\u0000  ', files: [] });
+  assertEquals(ok, {
+    ok: true,
+    value: { action: 'submit_source', plan_id: P, source_id: S, kind: 'text', title: 'Spoken notes', url: null, text: 'Osmosis\nmoves water.', files: [] },
+  });
+  assertEquals(errorsOf(submit({ kind: 'text', files: [] })), ['text must be 1 to 30000 characters']);
+  assertEquals(errorsOf(submit({ kind: 'text', text: ' \n\t ', files: [] })), ['text must be 1 to 30000 characters']);
+  assertEquals(errorsOf(submit({ kind: 'text', text: 'a'.repeat(30001), files: [] })), ['text must be 1 to 30000 characters']);
+  assert(submit({ kind: 'text', text: 'a'.repeat(30000), files: [] }).ok);
+  assertEquals(errorsOf(submit({ kind: 'text', text: 'x', files: [{ path: `${U}/${S}/1.txt` }] }))[0], 'files must have exactly 0 entries for kind text');
+  assertEquals(errorsOf(submit({ kind: 'text', text: 42, files: [] })), ['text must be 1 to 30000 characters']);
+  // Counted after the clean-up: 30,003 characters sent, of which \r\n becomes \n and the outer spaces go.
+  const long = submit({ kind: 'text', text: ` ${'a'.repeat(15000)}\r\n${'b'.repeat(14999)} `, files: [] });
+  assertEquals(long.ok && (long.value as { text: string }).text.length, 30000);
+  assertEquals(errorsOf(submit({ kind: 'pdf', text: 'x', files: [{ path: `${U}/${S}/1.pdf` }] })), ['text is only for kind text']);
+  // An older app sends no text field for other kinds: still fine.
+  assert(submit({ kind: 'link', url: 'https://example.org/notes', files: [] }).ok);
+});
+
+Deno.test('cleanStudyText: line breaks, control characters and broken surrogates', () => {
+  assertEquals(cleanStudyText('a\r\nb\rc'), 'a\nb\nc');
+  assertEquals(cleanStudyText('tab\there\u0007\u001b[0m'), 'tab\there[0m');
+  assertEquals(cleanStudyText('emoji \ud83d\ude00 half \ud83d end'), 'emoji \ud83d\ude00 half \ufffd end');
+  assertEquals(cleanStudyText('\u0000\n  '), '');
 });

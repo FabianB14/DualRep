@@ -20,6 +20,9 @@ that sets up the database and the server functions for you, a new app build, and
 course PDF and handwritten notes become one plan, then a week of reviews. Those steps are in
 [section 17](#17-phase-2-the-study-engine-on-your-phone).
 
+**Voice notes (Phase 2.1)** come in the same build and need nothing more to set up: how to try them
+is in section 17, after the gate ([voice notes](#voice-notes-try-them-on-your-phone)).
+
 ## What it costs
 
 Everything in Phase 0 and Phase 1 runs on free tiers. Phase 2 adds pay-per-use AI calls (about
@@ -956,7 +959,10 @@ workflow.
 Signing out (Settings → **Sign out**) deletes the phone's copy of the data, **including writes that
 haven't uploaded yet**. The app warns you when that would happen. Get online and let "Waiting to
 upload" reach 0 first. It also finishes a running cycle or workout first (its end is sent to the
-server if the phone is online) and withdraws its alerts.
+server if the phone is online) and withdraws its alerts. Since voice notes it also deletes notes
+you spoke or typed but haven't added to their plan yet (**Unsent notes**): the dialog says so, and
+its button reads **Sign out and lose notes** (or **Sign out and lose changes** when uploads are
+waiting too). Add them to their plans first.
 
 ---
 
@@ -1215,6 +1221,14 @@ through sync. Studying the cards happens entirely on the phone and works offline
 together: [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline) and
 [DECISIONS.md](DECISIONS.md) D31–D49.
 
+**Voice notes (Phase 2.1) come in the same build.** On a plan, **Add material** → **Speak or type
+notes**: you talk (or type), read the words through, and add them to the plan; they become an
+outline and cards like a PDF. **There is nothing new to set up for them:** no new secret, no Render
+change and no PowerSync change. The only difference is that **Deploy backend** (step 5) now applies
+two database migrations instead of one, and the app asks for the microphone the first time you tap
+**Start speaking**. Try them once the gate's day 1 works:
+[Voice notes: try them on your phone](#voice-notes-try-them-on-your-phone) (D50–D57).
+
 **Do the steps in this order.** Tracy has to be ready before the backend calls it, the database
 before PowerSync, and PowerSync before the new app.
 
@@ -1420,8 +1434,13 @@ GitHub's download limit, not the code: open the run and click **Re-run failed jo
 
 In the run's log, the **Database migrations** step lists the migration files it would apply. On the
 dry run this list still includes the two old ones (the dry run records nothing); the real run
-records them first, so only `20261009120000_study_engine.sql` is applied. The **Edge Functions**
-step ends with `Would deploy: study tracy-worker`.
+records them first, so only the two new ones are applied: `20261009120000_study_engine.sql` (the
+study engine) and `20261012120000_text_sources.sql` (voice notes: a new kind of source and one new
+column). The **Edge Functions** step ends with `Would deploy: study tracy-worker`.
+
+(If you ever ran the real Deploy backend before voice notes were merged, the study engine is
+already applied, and the list shows only `20261012120000_text_sources.sql`. That is all voice notes
+need on the server; the functions are deployed again in the same run.)
 
 A red X instead: open the failed step and find its message in
 [If something goes wrong in Phase 2](#if-something-goes-wrong-in-phase-2).
@@ -1475,6 +1494,9 @@ PowerSync checks that the columns exist.
 **Success:** validation shows no errors, and the instance's status is healthy. An error that names
 `stage`, `plan_id` or `source_id` means step 5's real run hasn't finished: do that first.
 
+Voice notes change nothing here: the text of spoken or typed notes reaches the phone inside the
+`sources` rows it already receives, so voice notes on their own never need this step.
+
 ### Step 7: Build and install the Phase 2 app
 
 1. GitHub → **Actions** → **Android APK** → **Run workflow**. **Use workflow from:** `main`, variant
@@ -1483,8 +1505,9 @@ PowerSync checks that the columns exist.
    exactly these, in any order: the app's own
    `com.interverse.dualrep.preview.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, then `INTERNET`,
    `VIBRATE`, `RECEIVE_BOOT_COMPLETED`, `POST_NOTIFICATIONS`, `ACCESS_NETWORK_STATE`, `WAKE_LOCK`
-   (all as in Phase 1) and **`CAMERA`**, the only new one. `RECORD_AUDIO`, anything with `READ_MEDIA`,
-   `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE` or `FOREGROUND_SERVICE` must **not** appear
+   (all as in Phase 1), and two new ones: **`CAMERA`** (photos of notes) and **`RECORD_AUDIO`** (the
+   microphone, for voice notes). Anything with `READ_MEDIA`, `READ_EXTERNAL_STORAGE`,
+   `WRITE_EXTERNAL_STORAGE`, `FOREGROUND_SERVICE` or `MODIFY_AUDIO_SETTINGS` must **not** appear
    ([ANDROID.md](ANDROID.md#permission-ledger)). If one does, the app still works for testing, but
    tell whoever maintains the code before going further.
 3. Download **`dualrep-preview-arm64-apk`** at the bottom, unzip it, and install `app-release.apk`
@@ -1493,7 +1516,8 @@ PowerSync checks that the columns exist.
 4. Open DualRep **online**. Settings → **Sync**: wait for **Connected: Yes**.
 
 **Success:** Today has a **Study** group with a **Study plans** row ("Turn your course material
-into cards"), and Settings has **Answering cards** and **Daily review reminder**.
+into cards"), and Settings has **Answering cards** and **Daily review reminder**. (On a plan, **Add
+material** starts with a **Speak or type notes** row: that is voice notes.)
 
 **Before day 1, give yourself beta access** ([section 14](#14-give-yourself-beta-access-for-testing)),
 so the higher limits (30 sources and 200 pages a month) apply. This is not optional for the gate.
@@ -1663,11 +1687,116 @@ group by state
 order by state;
 ```
 
-**Success:** query 2 shows a `pdf` source and a `notes` source, both `ready` with cards; query 3
+**Success:** query 2 shows a `pdf` source and a `notes` source, both `ready` with cards (and a
+`text` source for each set of voice notes you added, also `ready` with cards); query 3
 has a row for (nearly) every day of the week; query 4 has most cards in state 2, with `next_due`
 dates spread out over the coming days and weeks. **The Phase 2 gate has passed.** Tick it in
 [ROADMAP.md](ROADMAP.md#your-manual-steps-for-the-phase-2-gate-in-order), with your notes on how
 long the steps took.
+
+### Voice notes: try them on your phone
+
+Voice notes let you say (or type) what you learned and turn it into cards, like a PDF. They come
+with the Phase 2 app, and there is **nothing more to set up**: steps 5 and 7 above already put them
+on the server and the phone. Allow about half an hour, on any day once day 1 of the gate (step 8)
+works. Adding the notes needs the internet; speaking may not.
+
+**What happens to your voice.** Android's own speech recognition turns your speech into text while
+you talk. The screen tells you where that happens, in one of three lines:
+- "Works on this phone, offline: what you say isn't sent anywhere to be turned into text." (Android
+  13 or newer, with the language downloaded on the phone)
+- "Uses Google's online speech service: what you say is sent to Google to be turned into text, so it
+  needs the internet." (most other phones)
+- "No speech-to-text on this phone" (no speech service at all): type, paste, or use your keyboard's
+  microphone.
+
+Either way DualRep never records or keeps the sound. Only the text you add is uploaded.
+
+**V1. Open the screen.** Open your plan → **Add material** → **Speak or type notes** (the row at the
+top: "Say what you learned, or type it. Saved on this phone until you add it."). You see:
+- "Say or type what you learned. It counts as one source this month, and you'll review the outline
+  before cards are made."
+- one of the three lines above. **Write down which one**, with your phone's model and Android
+  version (Settings → About phone);
+- **Language: English (US)** (your phone's language; "(works offline)" after it when the language
+  is downloaded) and **Change**;
+- the wide **Start speaking** button, and under it "Tap Start speaking and talk. DualRep listens
+  only while the mic is on, and keeps no recording.";
+- the **Your notes** box and **Name (optional)**.
+
+**V2. Allow the microphone.** Tap **Start speaking**. The first time, Android asks whether DualRep
+(preview) may **record audio**, with **While using the app**, **Only this time** and **Don't allow**
+(the exact words depend on the Android version: **verify**; Android 10 and older show **Allow** and
+**Deny**). Tap **While using the app**. DualRep never asks before you tap. If you tap **Don't
+allow**, the screen says "DualRep needs the microphone to hear you. Tap Start speaking to be asked
+again, or type." Typing works either way.
+
+**V3. Speak.** Talk normally for a minute or two about something you studied.
+- The words appear in the box as you talk. Words still being heard show in grey under it
+  ("…the Krebs cycle produces") and settle a moment later.
+- The button now says **Pause**, with a dot that moves with your voice, and the line under it says
+  "Listening for English (US). Tap Pause when you're done." The screen stays on while it listens.
+- Pauses in your speech are fine: it keeps listening. On Android 12 and older you may hear a short
+  beep each time it starts listening again.
+- It pauses by itself after a minute of quiet ("Paused after a minute of quiet. Tap the mic to carry
+  on.") and when you switch apps or lock the phone ("Paused while DualRep was in the background. Tap
+  the mic to carry on."). Everything heard so far is kept.
+
+**V4. Check the words, then add them.** Tap **Pause**. Now the box can be edited: fix misheard
+words, and add punctuation if there is none (Google's online service often leaves it out). You can
+type or paste too, and your keyboard's own microphone works in the box. Tap **Add to plan** ("Sending
+your notes…"): the plan opens again.
+
+**V5. Watch them become cards.** The new source ("Notes, 12 Oct" unless you named it, marked
+"Spoken or typed notes") goes "Waiting to start" → "Reading your material" (seconds: Tracy isn't
+needed for this step) → "Making the outline" → **Review the outline** (as in 8.5) → "Making cards"
+→ **Ready**. There is no "Check the transcription": you read the words already. Tap **Read the
+notes** on it: **Your notes** shows the text exactly as it was added (this page works offline too).
+It used 1 of this month's sources.
+
+**V6. Offline.** Turn on airplane mode and open **Speak or type notes** again.
+- Type a few lines. If V1 showed "Works on this phone, offline", tap **Start speaking** and talk too:
+  that is the real test that speech stays on the phone.
+- Go back to the plan: an **Unsent notes** card says "Saved on this phone. Add them to the plan when
+  you're back online."
+- Close DualRep completely (swipe it away in the recent apps) and open it again: the card is still
+  there.
+- Turn airplane mode off, tap **Open the notes**, then **Add to plan**.
+
+**V7. If you have time** (each one checks something the research could only read about; write down
+what you see):
+- **Download for offline use:** if the screen offers **Download English (US) for offline use**, tap
+  it. Android 14 and newer say when it's done ("English (US) is on this phone now. Speech stays on
+  the phone.") or that it will download later, maybe on Wi-Fi; Android 13 shows a system screen
+  instead. Afterwards the line should say "Works on this phone, offline": repeat V6 with speaking.
+- **A long run** (Android 13+): 10 minutes of talking with pauses. It should keep listening until
+  you tap **Pause** (or a minute of quiet).
+- **A phone call** while it listens: it pauses and keeps the words.
+- **The permission:** in system settings (Settings → Apps → DualRep (preview) → Permissions →
+  Microphone; **verify** the names) choose **Don't allow**. Back in DualRep tap **Start speaking**:
+  "Microphone access is off" with **Open system settings**. Allow it there, come back, and it works
+  again. Try **Only this time** once, too.
+- **The microphone switch** in Quick Settings (Android 12+, the **Microphone access** tile): turn it
+  off, tap **Start speaking**, and write down what happens. Turn it back on.
+- **Your keyboard's microphone** (Gboard or Samsung Keyboard): while paused, tap in the box and use
+  the keyboard's mic key.
+- **Change** the language and look at the list: English variants first, then your phone's language,
+  then others with names (like "German (Germany)"), not codes like `de-DE`.
+
+**Success:** spoken notes became a **Ready** source with cards, **Read the notes** shows their text,
+and unsent notes survived airplane mode and closing the app. Tick the steps in
+[ROADMAP.md](ROADMAP.md#your-steps-on-the-phone), with your phone, its Android version and the
+speech line it showed.
+
+**Good to know:**
+- One set of notes holds up to 20,000 characters (about 20 minutes of talking). A count appears
+  under the box from 15,000. At the limit it stops listening ("That's the most one set of notes can
+  hold (20,000 characters). Add it to the plan, then start another.").
+- Added notes can't be edited: add a corrected version as new notes.
+- **Clear the notes** (it asks first) empties the box and starts a new set.
+- **Signing out deletes notes you haven't added yet.** The sign-out dialog warns you and its button
+  says **Sign out and lose notes**. Deleting a plan deletes its unsent notes too.
+- Each set of notes uses 1 of the month's sources, like a PDF (5 free, 30 with beta access).
 
 ### If something goes wrong in Phase 2
 
@@ -1709,6 +1838,33 @@ long the steps took.
 | "… is larger than 25 MB." / "Only PDF and Word (.docx) files can be added." / "Up to 20 photos per set of notes…" | The limits. Split a big PDF, or save an old `.doc` as `.docx`. |
 | "Use a web address that starts with https://." | Links must be public `https://` pages. |
 | "Camera access is off" | **Open system settings** and allow the camera, or use the gallery. |
+
+**Voice notes** (the **Speak or type notes** screen; whatever happens, what you said so far stays in
+the box and on the phone):
+
+| The app says | What it means | What to do |
+|---|---|---|
+| "No speech-to-text on this phone" | The phone has no speech service (common on phones without Google's apps, and on emulators without Google Play) | Type or paste, or use your keyboard's microphone. To speak in the app, install or turn on Google's speech app ("Speech Recognition & Synthesis from Google", or the Google app) from Play (**verify** the names), then open the screen again. |
+| "Speech-to-text needs a download" | The phone can turn speech into text by itself once the language is downloaded, and has no online service | Tap **Download … for offline use**. Type meanwhile. |
+| "DualRep needs the microphone to hear you. Tap Start speaking to be asked again, or type." | You tapped **Don't allow** | Tap **Start speaking** and allow it. |
+| "Microphone access is off" (with **Open system settings**), or "DualRep can't use the microphone. You can still type." | Android won't ask again (refused twice, or turned off in settings) | **Open system settings** → Permissions → Microphone → allow while using the app (**verify** the names), then come back. |
+| "The microphone isn't available right now. Another app may be using it. Tap the mic to try again." | A call or another app is using the microphone, or (not tested yet) the microphone switch in Quick Settings is off | Finish the call or close the other app, check the Quick Settings switch, then tap **Start speaking**. |
+| "Lost the connection to the speech service. Everything so far is kept. Tap the mic to try again." | Google's online service needs the internet | Go online and tap again; or download the language for offline use if the screen offers it; or type. |
+| "This phone can't turn English (India) speech into text. Choose another language, or type." (with your language) | The phone's speech service doesn't know that language | **Change** → pick another language. |
+| "English (US) isn't downloaded on this phone yet. Download it for offline use, or type." (with your language) | The offline language is missing | Tap **Download … for offline use**, or type. |
+| "The speech service stopped. Tap the mic to try again." | The phone's speech service failed three times in a row | Tap **Start speaking** again. If it keeps happening, restart the phone. |
+| "Speech-to-text stopped. Everything so far is kept. Tap the mic to try again." | Another error from the phone's speech service | Tap **Start speaking** again. |
+| "Paused after a minute of quiet." / "Paused while DualRep was in the background." | Normal: it saves battery, and Android doesn't let an app in the background hear | Tap **Start speaking** to carry on. |
+| "That's the most one set of notes can hold (20,000 characters). Add it to the plan, then start another." | The limit for one set of notes | **Add to plan**, then start a new set. |
+| Under the box: "21,000 of 20,000 characters. Shorten the notes, or add the rest as another set of notes." (or "One set of notes can be up to 20,000 characters…" after **Add to plan**) | Too much was typed or pasted | Cut some, or move part into a second set of notes. |
+| "Say or type some notes first." | The box is empty | Say or type something. |
+| "No internet connection. Adding and preparing material needs the internet; studying doesn't." | You tapped **Add to plan** offline | Nothing is lost: the plan shows **Unsent notes**. Go online, **Open the notes**, **Add to plan**. |
+| "These notes were already added before your last changes. Add them again as new notes to keep the changes." | An earlier **Add to plan** reached the server but its answer was lost, and you changed the notes since | Tap **Add to plan** again: your changed version is added as new notes. The earlier version stays in the plan (it counted as a source too). |
+| "The app sent something the server couldn't read. Update the app and try again." (when adding notes) | The server is older than the app: Deploy backend hasn't run since voice notes were merged | Run **Deploy backend** (step 5), then **Add to plan** again. The notes wait on the phone meanwhile. |
+| The words have little or no punctuation | Google's online service often adds none | Add it while paused if you like; the cards don't need it. |
+| A short beep each time listening starts again | Android 12 and older restart listening after every pause | Normal. |
+| The plan shows the added notes **and** an **Unsent notes** card | An **Add to plan** answer was lost on the way back | **Open the notes** → **Add to plan**: the server knows these notes already, and the card goes away. |
+| "These notes aren't on this phone" (on **Your notes**) | The notes haven't synced to the phone yet | Go back to the plan and try again in a moment. |
 
 **A source's status says "Couldn't finish"** (with **Try again** next to it):
 
@@ -1783,6 +1939,7 @@ in Anthropic's console (**Usage**).
 | Price per million tokens, in / out | $2 / $10 | $0.10 / $0.50 (prompts up to 100,000 tokens) |
 | A 100-page course PDF (outline and cards; reading a text PDF is free) | about **$1.10** (likely $0.80–$1.80) | about **$0.06** |
 | One handwritten page | about **$0.03** | about **$0.002** |
+| One set of voice notes (outline and cards; turning speech into text and reading the text cost nothing) | about **$0.01–0.02** for a few minutes of talking, up to about **$0.10** for a full 20,000 characters (estimates) | under **$0.01** |
 | Safety fallback on another model ([step 3a](#step-3-set-up-tracy-on-render-then-merge-its-pull-request)) | Yes | No |
 
 (For comparison, `claude-haiku-4-5`: about $0.34 per 100-page PDF and $0.006 per handwritten page,

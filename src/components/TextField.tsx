@@ -14,6 +14,13 @@ export type TextFieldProps = Omit<TextInputProps, 'style'> & {
   hint?: string;
   /** Larger, letter-spaced text (e.g. the 6-digit code). */
   large?: boolean;
+  /**
+   * For long text (with `multiline`): a box at least this many lines tall, with the text starting at
+   * the top instead of the middle.
+   */
+  minLines?: number;
+  /** With `minLines`: grow up to this many lines, then scroll inside the box. */
+  maxLines?: number;
 };
 
 /**
@@ -27,6 +34,8 @@ export function TextField({
   error,
   hint,
   large = false,
+  minLines,
+  maxLines,
   onFocus,
   onBlur,
   accessibilityLabel,
@@ -70,6 +79,12 @@ export function TextField({
             backgroundColor: editable ? colors.surface : colors.disabled.background,
           },
           large && { letterSpacing: 6, textAlign: 'center' },
+          minLines !== undefined && {
+            minHeight: Math.max(touch.comfortable, minLines * typography.bodyLarge.lineHeight + 2 * space[3]),
+            paddingVertical: space[3],
+            textAlignVertical: 'top',
+          },
+          minLines !== undefined && maxLines !== undefined && { maxHeight: maxLines * typography.bodyLarge.lineHeight + 2 * space[3] },
         ]}
         {...rest}
       />

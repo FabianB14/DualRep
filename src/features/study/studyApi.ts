@@ -13,7 +13,11 @@
 
 // ---- The contract (mirrors supabase/functions/_shared/contracts.ts) ----------------------------
 
-export const SOURCE_KINDS = ['pdf', 'doc', 'link', 'notes'] as const;
+/**
+ * 'notes' = photos of handwritten notes; 'text' = notes the person spoke or typed on the phone (the
+ * text itself goes in the submit, nothing is uploaded first).
+ */
+export const SOURCE_KINDS = ['pdf', 'doc', 'link', 'notes', 'text'] as const;
 export type SourceKind = (typeof SOURCE_KINDS)[number];
 
 /** Limits the function checks (the Storage bucket enforces the byte limit and MIME list too). */
@@ -24,9 +28,19 @@ export const STUDY_API_LIMITS = {
   maxTitleChars: 200,
   maxUrlChars: 2048,
   maxTranscriptChars: 20000,
+  /** Spoken or typed notes, in UTF-16 code units (`string.length`), after cleanStudyText. */
+  maxTextChars: 30000,
   maxTopicTitleChars: 120,
   maxApproveTopics: 400,
 } as const;
+
+/**
+ * The phone's own limit for one set of spoken or typed notes, counted after cleanStudyText: 20,000
+ * characters (about 20 minutes of speech). It is under the function's maxTextChars, so notes the phone
+ * accepts always pass there, and a long dictation becomes two sources rather than one the outline has
+ * to squeeze.
+ */
+export const NOTE_MAX_CHARS = 20_000;
 
 /** File name extension → the MIME type Storage must hold, per kind. Files are named `<n>.<ext>`. */
 export const KIND_FILE_TYPES: Readonly<Record<SourceKind, Readonly<Record<string, string>>>> = {
@@ -34,6 +48,7 @@ export const KIND_FILE_TYPES: Readonly<Record<SourceKind, Readonly<Record<string
   doc: { docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
   notes: { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' },
   link: {},
+  text: {},
 };
 
 export type UploadedFile = { path: string };
@@ -45,6 +60,14 @@ export type SubmitSourceRequest = {
   kind: SourceKind;
   title: string;
   url: string | null;
+  /**
+   * kind 'text' only (left out for the other kinds): the notes the person spoke or typed and read
+   * through on the phone. The server cleans it as cleanStudyText does, then needs 1 to 30,000
+   * characters. The same source id sent again with the same text is `already_submitted`; with other
+   * text it is a 409 `conflict` (the first text stays), so changed notes go under a new id.
+   */
+  text?: string | null;
+  /** [] for kinds link and text. */
   files: UploadedFile[];
 };
 
@@ -109,6 +132,22 @@ export const STUDY_ERROR_CODES = [
   'not_configured',
 ] as const;
 export type StudyErrorCode = (typeof STUDY_ERROR_CODES)[number];
+
+/**
+ * Spoken or typed notes as the study function stores them (the same rules as its cleanStudyText):
+ * \r\n and \r become \n, control characters other than tab and line break are removed, a lone
+ * surrogate becomes U+FFFD, and outer whitespace is trimmed. The editor counts this, so its counter
+ * agrees with what the server checks.
+ */
+export function cleanStudyText(text: string): string {
+  return (
+    text
+      .replace(/\r\n?/g, '\n')
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+      .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD')
+      .trim()
+  );
+}
 
 // ---- Errors as the app sees them ----------------------------------------------------------------
 

@@ -90,6 +90,7 @@ describe('studyText', () => {
 
   it('names kinds, card types and relations', () => {
     expect(sourceKindLabel('notes')).toBe('Photos of notes');
+    expect(sourceKindLabel('text')).toBe('Spoken or typed notes');
     expect(sourceKindLabel(null)).toBe('Material');
     expect(cardTypeLabel('cloze')).toBe('Fill the gap');
     expect(cardTypeLabel('other')).toBe('Question');
@@ -107,6 +108,8 @@ describe('studyText', () => {
     );
     expect(materialProgressText({ phase: 'uploading', done: 2, total: 3 }, 'notes')).toBe('Uploading photo 3 of 3…');
     expect(materialProgressText({ phase: 'submitting', done: 0, total: 1 }, 'link')).toBe('Starting to read it…');
+    expect(materialProgressText({ phase: 'submitting', done: 0, total: 1 }, 'text')).toBe('Sending your notes…');
+    expect(materialProgressText({ phase: 'done', done: 1, total: 1 }, 'text')).toBe('Added.');
   });
 });
 

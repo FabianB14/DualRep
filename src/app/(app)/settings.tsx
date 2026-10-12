@@ -12,6 +12,7 @@ import { updateProfile } from '@/features/settings/profileRepo';
 import { signOutWarning } from '@/features/settings/signOut';
 import { useProfile } from '@/features/settings/useProfile';
 import { PREF_LIMITS, ratingButtons, useStudyPrefs, type StudyPrefsPatch } from '@/features/study/studyPrefs';
+import { countUnsentNotes } from '@/features/study/textDrafts';
 import { SyncStatusCard } from '@/features/sync/SyncStatusCard';
 import type { NotificationPermission } from '@/features/timer/notifications';
 import { useNotificationPermission } from '@/features/timer/useNotificationPermission';
@@ -108,9 +109,11 @@ export default function SettingsScreen() {
   };
 
   const confirmSignOut = async () => {
-    // Signing out deletes this phone's copy of the data, including writes not uploaded yet.
+    // Signing out deletes this phone's copy of the data, including writes not uploaded yet and notes
+    // not added to their plan yet (kept only on the phone).
     const pendingUploads = await getUploadQueueCount().catch(() => 0);
-    const warning = signOutWarning(pendingUploads, cycleRunning);
+    const unsentNotes = await countUnsentNotes().catch(() => 0);
+    const warning = signOutWarning(pendingUploads, cycleRunning, unsentNotes);
     Alert.alert(warning.title, warning.message, [
       { text: 'Cancel', style: 'cancel' },
       { text: warning.confirmLabel, style: 'destructive', onPress: () => void doSignOut() },

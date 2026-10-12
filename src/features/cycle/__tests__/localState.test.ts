@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { createElement } from 'react';
 import { act, create } from 'react-test-renderer';
 
-import { deleteLocalState, parseLocalValue, readLocalState, useLocalState, writeLocalState } from '../localState';
+import { deleteLocalState, parseLocalValue, readLocalState, readLocalStateByPrefix, useLocalState, writeLocalState } from '../localState';
 
 type Call = { via: 'tx' | 'db'; method: string; sql: string; params: unknown[] };
 function mockCreateDb() {
@@ -15,6 +15,13 @@ function mockCreateDb() {
       if (!stored.has(key)) return null;
       return sql.startsWith('SELECT value') ? { value: stored.get(key) } : { id: key };
     }
+    if (method === 'getAll') {
+      const prefix = String(params[1]);
+      return [...stored.keys()]
+        .filter((key) => key.slice(0, Number(params[0])) === prefix)
+        .sort()
+        .map((key) => ({ id: key, value: stored.get(key) }));
+    }
     return { rowsAffected: 1 };
   };
   const tx = { execute: record('tx', 'execute'), getOptional: record('tx', 'getOptional') };
@@ -23,6 +30,7 @@ function mockCreateDb() {
     stored,
     execute: record('db', 'execute'),
     getOptional: record('db', 'getOptional'),
+    getAll: record('db', 'getAll'),
     writeTransaction: async <T,>(callback: (context: typeof tx) => Promise<T>) => callback(tx),
   };
 }
@@ -62,6 +70,28 @@ describe('readLocalState', () => {
 
   it('is null when nothing is stored', async () => {
     await expect(readLocalState('missing')).resolves.toBeNull();
+  });
+});
+
+describe('readLocalStateByPrefix', () => {
+  it('reads every key that starts with the prefix, taking _ and % literally', async () => {
+    mockDb.stored.set('study-text-draft:p2', '{"text":"b"}');
+    mockDb.stored.set('study-text-draft:p1', '{broken');
+    mockDb.stored.set('study-prefs', '{}');
+    mockDb.stored.set('cycle', '{}');
+    await expect(readLocalStateByPrefix('study-text-draft:')).resolves.toEqual([
+      { key: 'study-text-draft:p1', value: null },
+      { key: 'study-text-draft:p2', value: { text: 'b' } },
+    ]);
+    expect(mockDb.calls).toEqual([
+      {
+        via: 'db',
+        method: 'getAll',
+        sql: 'SELECT id, value FROM local_state WHERE substr(id, 1, ?) = ? ORDER BY id',
+        params: [17, 'study-text-draft:'],
+      },
+    ]);
+    await expect(readLocalStateByPrefix('study_')).resolves.toEqual([]);
   });
 });
 

@@ -18,6 +18,7 @@ import {
 } from '@/components';
 import { useMinute, usePlan } from '@/features/study/hooks';
 import { deletePlan, updatePlan } from '@/features/study/studyRepo';
+import { clearTextDraft } from '@/features/study/textDrafts';
 import { haptic, useTheme } from '@/theme';
 
 /**
@@ -82,6 +83,8 @@ export default function EditPlanScreen() {
     try {
       const deleted = await deletePlan(planId, user.id);
       if (!deleted) throw new Error('The plan isn’t yours or isn’t on this phone.');
+      // Its unsent spoken or typed notes (kept only on this phone) go with it.
+      await clearTextDraft(planId).catch(() => undefined);
       haptic('success');
       router.dismissTo('/plans');
     } catch (problem) {

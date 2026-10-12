@@ -427,3 +427,44 @@ Deno.test('cancel_job: skipping the last scanned page starts the outline; cancel
   await t.call({ action: 'cancel_job', job_id: extract.id });
   assertEquals([t.store.jobs.get(extract.id)?.status, t.store.sources.get(SOURCE)?.status], ['cancelled', 'failed']);
 });
+
+// ---- spoken or typed notes (kind 'text') --------------------------------------------------------
+
+const NOTES_TEXT = '# Osmosis\n\nWater moves across a membrane towards the side with more solute.\n\nIt needs no energy.';
+const submitText = { action: 'submit_source', plan_id: PLAN, source_id: SOURCE, kind: 'text', title: 'Spoken notes', text: NOTES_TEXT, files: [] };
+
+Deno.test('submit_source with spoken or typed notes: the text is kept with the source and counts as one source', async () => {
+  const s = scenario();
+  const r = await s.call(submitText);
+  assertEquals(r.status, 202);
+  const job = s.store.jobsOf(SOURCE, 'extract')[0];
+  assertEquals(r.body, { ok: true, source_id: SOURCE, status: 'processing', job_ids: [job.id], already_submitted: false });
+  assertEquals(s.store.sources.get(SOURCE), { id: SOURCE, owner_id: USER, kind: 'text', title: 'Spoken notes', url: null, status: 'processing' });
+  assertEquals(await s.store.sourceBody(SOURCE), NOTES_TEXT);
+  assertEquals([s.store.files.size, s.store.planSources], [0, [{ plan_id: PLAN, source_id: SOURCE }]]);
+  assertEquals(
+    [job.job, job.stage, job.cap_units, job.input],
+    ['study_builder', 'extract', 1, { source_id: SOURCE, plan_id: PLAN, kind: 'text', cursor_page: 1 }],
+  );
+  assertEquals(s.kicks, [0]);
+
+  // Sent again (the first response was lost): nothing new.
+  const again = await s.call(submitText);
+  assertEquals(again.body, { ok: true, source_id: SOURCE, status: 'processing', job_ids: [job.id], already_submitted: true });
+  // Sent again after the person changed the text: refused, so the app can add the new version as new
+  // notes instead of the change being dropped without a word. The first text stays.
+  const changed = await rejects(s.call({ ...submitText, text: 'Changed after the first tap.' }), 'conflict', 409);
+  assertEquals(changed.message, 'These notes were already added before your last changes. Add them again as new notes to keep the changes.');
+  assertEquals(await s.store.sourceBody(SOURCE), NOTES_TEXT);
+  assertEquals(s.store.jobs.size, 1);
+  // The same id as another kind is a different source.
+  await rejects(s.call({ ...submitText, kind: 'link', url: 'https://example.org/', text: null }), 'conflict', 409);
+});
+
+Deno.test('text notes over the monthly source limit: 429, and neither the source nor its text is kept', async () => {
+  const s = scenario({ caps: { sources: { free: 1, paid: 30 }, pages: DEFAULT_CAPS.pages } });
+  assertEquals((await s.call(submitText)).status, 202);
+  const err = await rejects(s.call({ ...submitText, source_id: SOURCE2 }), 'cap_reached', 429);
+  assertEquals((err.body() as unknown as { stage: string; used: number; limit: number }).stage, 'extract');
+  assertEquals([s.store.sources.has(SOURCE2), await s.store.sourceBody(SOURCE2)], [false, null]);
+});

@@ -97,14 +97,18 @@ export const SOURCE_KIND_LABELS: Record<string, string> = {
   doc: 'Word document',
   notes: 'Photos of notes',
   link: 'Web page',
+  text: 'Spoken or typed notes',
 };
 
 export function sourceKindLabel(kind: string | null | undefined): string {
   return (kind && SOURCE_KIND_LABELS[kind]) || 'Material';
 }
 
-/** What the add-material screen says while it works: "Uploading photo 2 of 5 (40%)". */
-export function materialProgressText(progress: AddMaterialProgress, kind: 'document' | 'notes' | 'link'): string {
+/**
+ * What the add-material screens say while they work: "Uploading photo 2 of 5 (40%)". `notes` = photos
+ * of notes; `text` = spoken or typed notes, which have nothing to prepare or upload.
+ */
+export function materialProgressText(progress: AddMaterialProgress, kind: 'document' | 'notes' | 'link' | 'text'): string {
   const thing = kind === 'notes' ? 'photo' : 'file';
   const many = progress.total > 1;
   const which = many ? ` ${thing} ${Math.min(progress.done + 1, progress.total)} of ${progress.total}` : '';
@@ -119,7 +123,7 @@ export function materialProgressText(progress: AddMaterialProgress, kind: 'docum
       return `Uploading${which || (kind === 'link' ? '' : ` the ${thing}`)}${percent}…`;
     }
     case 'submitting':
-      return 'Starting to read it…';
+      return kind === 'text' ? 'Sending your notes…' : 'Starting to read it…';
     case 'done':
       return 'Added.';
   }

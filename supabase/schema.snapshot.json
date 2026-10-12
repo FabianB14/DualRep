@@ -1156,6 +1156,12 @@
           "type": "timestamp",
           "nullable": false,
           "has_default": true
+        },
+        {
+          "name": "body",
+          "type": "text",
+          "nullable": true,
+          "has_default": false
         }
       ]
     },

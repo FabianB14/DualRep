@@ -5,18 +5,20 @@ protected. It describes the migrations as built: the schema,
 [`supabase/migrations/20261008000000_initial_schema.sql`](../supabase/migrations/20261008000000_initial_schema.sql),
 the Phase 1 starter-library seed,
 [`20261008120000_starter_library.sql`](../supabase/migrations/20261008120000_starter_library.sql)
-(rows only, no schema change), and the Phase 2 study engine,
+(rows only, no schema change), the Phase 2 study engine,
 [`20261009120000_study_engine.sql`](../supabase/migrations/20261009120000_study_engine.sql) (new
 columns, the `sources` Storage bucket, the job queue and its schedule:
-[the study pipeline](#the-study-pipeline)). When this page and a migration disagree, the migration
-wins.
+[the study pipeline](#the-study-pipeline)), and voice notes (Phase 2.1),
+[`20261012120000_text_sources.sql`](../supabase/migrations/20261012120000_text_sources.sql)
+(spoken or typed notes as a `text` source, with their text in `sources.body`). When this page and a
+migration disagree, the migration wins.
 
 Related files:
 
 | File | What it is |
 |---|---|
-| [`supabase/migrations/`](../supabase/migrations/) | The schema, RLS policies, grants, triggers, system presets and the `powersync` publication (first migration); the 90 starter exercises (second); the study engine (third) |
-| [`supabase/tests/`](../supabase/tests/) | pgTAP tests for every table and policy, the starter library and the study engine: 15 files, 626 tests (`npm run db:test`, or `supabase test db`) |
+| [`supabase/migrations/`](../supabase/migrations/) | The schema, RLS policies, grants, triggers, system presets and the `powersync` publication (first migration); the 90 starter exercises (second); the study engine (third); text sources for voice notes (fourth) |
+| [`supabase/tests/`](../supabase/tests/) | pgTAP tests for every table and policy, the starter library, the study engine and text sources: 16 files, 682 tests (`npm run db:test`, or `supabase test db`) |
 | [`supabase/functions/`](../supabase/functions/) | The Edge Functions `study` and `tracy-worker` (Deno), and their shared code in `_shared/` |
 | [`scripts/library/starter-library-sql.mjs`](../scripts/library/starter-library-sql.mjs) | Writes the starter-library migration from the app's own list; `npm run check:library` checks it is up to date |
 | [`supabase/schema.snapshot.json`](../supabase/schema.snapshot.json) | Column list per table, written by `npm run db:test`, read by `npm run validate:sync` |
@@ -98,10 +100,11 @@ A PUT sends the whole row, including `created_at` and `updated_at` from the phon
 checks the SELECT policy against a row being upserted too, so every SELECT policy admits any row its
 INSERT policy admits.
 
-Columns the server fills in itself are never uploaded. Today that is `groups.invite_code` and,
-since Phase 2, `cards.source_id` (`serverGenerated` in [`src/db/tables.ts`](../src/db/tables.ts)):
-the connector strips them from every PUT and refuses a PATCH that includes one
-(`DUALREP_WRITE_NOT_ALLOWED`). The server's value reaches the phone with the next sync.
+Columns the server fills in itself are never uploaded. Today that is `groups.invite_code`, since
+Phase 2 `cards.source_id`, and since voice notes `sources.body` (`serverGenerated` in
+[`src/db/tables.ts`](../src/db/tables.ts)): the connector strips them from every PUT and refuses a
+PATCH that includes one (`DUALREP_WRITE_NOT_ALLOWED`). The server's value reaches the phone with the
+next sync.
 
 **Columns uploaded together** (Phase 2, `patchTogether` in `tables.ts`): a PATCH of `card_states`
 that changes any of its 9 FSRS columns (`state`, `due`, `stability`, `difficulty`,
@@ -228,7 +231,8 @@ Keys in `local_state`:
 |---|---|---|
 | `cycle` | The running study → move → study cycle: the phase, the timers' end times, the circuit, where you are in it, the sets logged so far, the ids of the rows it will write, and the writes not done yet. It holds the user's id, so another account's cycle is never resumed. | Before every write or alert the loop decides on, so an app restart picks up exactly where it was ([DECISIONS.md](DECISIONS.md) D23) |
 | `alert-test` | The Timer check's test alert: when it was scheduled, when it was due, and when Android showed it | When a test is scheduled, and when its result is read |
-| `study-prefs` | Phase 2: this phone's study settings: 2 or 4 answer buttons, typed answers on or off, new cards a day, the review reminder (on or off, and its time) | When Settings changes one |
+| `study-prefs` | Phase 2: this phone's study settings: 2 or 4 answer buttons, typed answers on or off, new cards a day, the review reminder (on or off, and its time); since voice notes also `dictationLang`, the language spoken notes are in (a tag such as `en-GB`, or null for the phone's language) | When Settings changes one, or a language is picked on **Speak or type notes** |
+| `study-text-draft:<planId>` | Voice notes (Phase 2.1): that plan's **Unsent notes**, spoken or typed but not added yet: `{v: 1, planId, sourceId, title, text, updatedAt}`. `sourceId` is reused by every **Add to plan** attempt, so a retry never adds the notes twice. One per plan ([DECISIONS.md](DECISIONS.md) D55) | At most a second after each change on **Speak or type notes**, and at once on a pause, before **Add to plan**, when the screen closes or the app leaves the foreground. Deleted once the server has the notes, when they are emptied, and when the plan is deleted on this phone; signing out deletes it with the rest (the sign-out dialog warns) |
 | `study-defaults` | Phase 2: the cycle start panel's last choice: the study plan (or none) and the filter (everything so far or newest source) | When a focus block is started from a start panel that offers plans, or **Study now** is tapped |
 | `study-self-test` | Phase 2: the running block's id and when its closing self-test began, so an app restart keeps the same self-test | When the self-test starts |
 
@@ -256,7 +260,7 @@ RLS narrows it further to the user's own rows.
 | `transitions` | Focus block → move block handoff | create, edit, delete | `user_private` |
 | `groups` | Friend groups | create (insert-ignore), rename, delete | `user_owned`, `group_shared` |
 | `group_members` | Who is in which group | delete (leave only; removing someone is an RPC) | `group_shared` |
-| `sources` | Uploaded study material | create, edit, delete (the server keeps `status`; in Phase 2 the `study` function creates them) | `user_owned`, `group_shared` |
+| `sources` | Study material: uploaded files and links, or spoken or typed notes | create, edit, delete (the server keeps `status` and `body`; in Phase 2 the `study` function creates them) | `user_owned`, `group_shared` |
 | `source_files` | Files and photos of a source | create, edit, delete (the phone edits transcripts; the `study` function creates them) | `user_owned`, `group_shared` |
 | `source_chunks` | Embedded text chunks | nothing (server only) | never synced |
 | `study_plans` | Single or cumulative plans | create, edit, delete | `user_owned`, `group_shared` |
@@ -541,10 +545,26 @@ from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, made by `generate_invite_code()`).
 ### Study material
 
 **`sources`**: `owner_id`, `group_id` uuid? → groups (set null), `kind` text (`pdf`, `doc`, `link`,
-`notes`), `title` text, `url` text?, `status` text (`pending`, `processing`, `ready`, `failed`).
+`notes`, and since voice notes `text`), `title` text, `url` text?, `status` text (`pending`,
+`processing`, `ready`, `failed`), `body` text? (since voice notes).
+- `kind`: `notes` means **photos** of handwritten notes; `text` means notes the person **spoke or
+  typed** on the phone (voice notes, [DECISIONS.md](DECISIONS.md) D52).
 - **Written by** (Phase 2): the `study` Edge Function's `submit_source`, with the service role, after
-  the phone uploaded the files. The phone makes the id. The phone may still edit its sources (the
-  title, sharing) and delete them.
+  the phone uploaded the files (for `text`, nothing is uploaded: the text comes in the request).
+  The phone makes the id. The phone may still edit its sources (the title, sharing) and delete them.
+- **`body`** (voice notes): the text of a `text` source, exactly as the `study` function stored it
+  (cleaned: line breaks made plain, control characters removed, outer spaces trimmed); null for
+  every other kind. CHECK `sources_body_check`: null, or kind `text` with 1 to 30,000 characters
+  (`char_length`). It syncs with the row, so the phone can show the notes again offline; the app
+  reads it only on that page, never in the plan's source list. The worker cuts it into
+  `source_chunks` ([the study pipeline](#the-study-pipeline)).
+- **`body` belongs to the server** (trigger `keep_server_body`, function `keep_server_source_body`,
+  BEFORE INSERT or UPDATE OF `body`, `kind`): for a phone's write, an INSERT stores no text and an
+  UPDATE keeps the stored text; a source that has text also keeps its `kind` (changing it would
+  break the CHECK, and a refused write would be dropped on the phone). Ignored rather than refused,
+  like `status`. The CHECK doesn't require text on every `text` source, because the trigger empties a
+  phone's insert; such a row (the app never makes one) fails at reading with "No readable text was
+  found." The app never uploads `body` (`serverGenerated`).
 - **`status` belongs to the server** (trigger `keep_server_status`, function
   `keep_server_source_status`): `pending` → `processing` (the first job is queued) → `ready` (no
   cards job left open) or `failed` (an extract or outline step failed or was cancelled; **Try again**
@@ -577,10 +597,11 @@ integer?, `transcript` text?, `confirmed` boolean (default false).
 from the source), `page` integer?, `content` text, `embedding` `extensions.vector(1536)`?,
 `embed_model` text? (`gemini-embedding-2@1536#p1` when embeddings are on). HNSW index on
 `embedding` (`vector_cosine_ops`).
-- **Written by:** the `tracy-worker` (extracted and transcribed pages) and `confirm_transcripts`
-  (confirmed notes), with the service role. Each chunk's id is derived from its source, page and
-  position, so writing a page again replaces it instead of adding a copy. `embedding` stays null
-  unless a `GEMINI_API_KEY` is set ([DECISIONS.md](DECISIONS.md) D35).
+- **Written by:** the `tracy-worker` (extracted and transcribed pages, and since voice notes the
+  text of `text` sources, with `page` null) and `confirm_transcripts` (confirmed notes), with the
+  service role. Each chunk's id is derived from its source, page and position, so writing a page
+  again replaces it instead of adding a copy. `embedding` stays null unless a `GEMINI_API_KEY` is set
+  ([DECISIONS.md](DECISIONS.md) D35).
 - **RLS:** read like sources (for retrieval through the API). **Grants:** select only.
 - **Never synced** to phones and not in the `powersync` publication: embeddings are large.
 
@@ -741,7 +762,7 @@ most one call to Tracy (up to 110 s).
 
 | Job / `stage` | Queued by | Input (server only) | When it succeeds |
 |---|---|---|---|
-| `study_builder` / `extract` | `submit_source` for a PDF, Word file or link (counted: 1 source) | `{source_id, plan_id, kind, cursor_page}` | Writes `source_chunks` (page and text). Pages without a text layer go to `transcribe` jobs of up to 4 pages. A long PDF re-queues itself for its next window of pages. The last of these jobs to finish queues the outline (and `embed` when embeddings are on) |
+| `study_builder` / `extract` | `submit_source` for a PDF, Word file or link, or spoken or typed notes (counted: 1 source) | `{source_id, plan_id, kind, cursor_page}`; `kind` is `pdf`, `doc`, `link` or `text` | Writes `source_chunks` (page and text). Pages without a text layer go to `transcribe` jobs of up to 4 pages. A long PDF re-queues itself for its next window of pages. **`text`:** no Tracy call and no `/health` check: the worker cuts `sources.body` into passages itself (`chunkPageText(breakLongLines(body))`, `page` null), in one go; empty text fails with "No readable text was found." The last of these jobs to finish queues the outline (and `embed` when embeddings are on) |
 | `handwriting` / `transcribe` | `submit_source` for notes (one job per photo, counted: 1 page each), or `extract` for scanned PDF pages (counted per page) | `{source_id, plan_id, source_file_id}` or `{source_id, plan_id, pdf_pages: […]}` | A photo: writes `source_files.transcript`, `confirmed` stays false, and the source waits for the person (`confirm_transcripts`). Scanned PDF pages: chunked straight away |
 | `study_builder` / `outline` | The last `extract`/`transcribe` job, or `confirm_transcripts` | `{source_id, plan_id}` | Writes new `topics` as `draft` (numbered after the plan's existing topics) and keeps the topic → chunk mapping in `output`. Waits for `approve_outline`, unless it only added to existing topics: then the worker approves it itself |
 | `study_builder` / `cards` | `approve_outline`: one per kept topic (at most 40 chunks each), plus one per existing topic the outline added material to | `{plan_id, source_id, topic_id, chunk_ids}` | Inserts `cards` and `card_links`; the topic becomes `ready`; when no cards job of the source is left open, `sources.status = 'ready'` |
@@ -754,6 +775,13 @@ most one call to Tracy (up to 110 s).
 line per source: "Waiting to start", "Reading your material", "Check the transcription", "Making the
 outline", "Review the outline", "Making cards (2 of 5)", "Ready", or "Couldn't finish" with the
 `error` and **Try again**. Embedding jobs never show.
+
+**Spoken or typed notes** (kind `text`, voice notes) take the same path with one step fewer:
+`submit_source` (the text in the request; stored in `sources.body`) → one counted `extract` job,
+chunked by the worker without Tracy → outline → **Review the outline** → cards. There is no "Check
+the transcription": the person read the text before adding it. The phone also reads `sources.body`
+for the read-only **Your notes** page. Notes not added yet live only on the phone, as a
+`local_state` draft ([tables that live only on the phone](#tables-that-live-only-on-the-phone)).
 
 **The queue functions** (security definer, `search_path = ''`, executable **only by
 `service_role`**):
@@ -800,8 +828,8 @@ only to the phone's database, one local transaction per answer, so it works offl
 On upload, the `card_states` PATCH carries all 9 FSRS columns
 ([columns uploaded together](#how-a-phone-write-reaches-postgres)). Pausing a card is a separate
 UPDATE of `suspended`. Plans, hand-made topics, cards and links are ordinary owner writes, and
-deleting a plan on the phone also deletes its topics, cards and links, and the user's sources that
-no other plan uses.
+deleting a plan on the phone also deletes its topics, cards and links, the user's sources that no
+other plan uses, and the plan's unsent notes (its `study-text-draft:<planId>` draft).
 
 ---
 
@@ -843,8 +871,10 @@ entitlement); `add_group_owner_membership`; `enforce_group_member_limit` (8);
 unshared); `copy_source_ownership` and `propagate_source_ownership` (source_files, source_chunks);
 `copy_card_plan_id`, `propagate_topic_plan_id`, `copy_card_link_plan_id`, `propagate_card_plan_id`;
 `skip_stale_card_state`; since Phase 2 `copy_card_source_id` (`cards.source_id` from its chunk) and
-`keep_server_source_status` (`sources.status` belongs to the server); and the eight normalizing
-functions in
+`keep_server_source_status` (`sources.status` belongs to the server); since voice notes
+`keep_server_source_body` (trigger `keep_server_body`, BEFORE INSERT or UPDATE OF `body`, `kind`:
+`sources.body` belongs to the server, and a source with text keeps its kind); and the eight
+normalizing functions in
 [normalized writes](#writes-the-server-normalizes-instead-of-refusing) (`clear_unreadable_plan`,
 `clear_unreadable_exercise`, `clear_unreadable_source_chunk`, `clear_foreign_workout_refs`,
 `clear_foreign_profile_defaults`, `clear_foreign_workout_session`, `clear_foreign_interval_block`,
@@ -878,6 +908,7 @@ differences and why.
 | `source_chunks.embedding` (pgvector, size not stated) | `vector(1536)` plus `embed_model`; HNSW cosine index; never synced | pgvector indexes stop at 2,000 dimensions and Gemini's default is 3072, so the size is pinned. `embed_model` says which rows to re-embed after a model change. |
 | Smaller additions | `profiles.fsrs_params`; `presets.kind`; `sources.status`; `study_plans.title`; `cards.page`; `card_links.created_by`; `workout_sessions.duration_minutes`; `created_at`/`updated_at` everywhere | Per-user FSRS settings; a stable name for each system preset; upload processing state; a plan name; "every card stores the page it came from"; who may edit a link; walk minutes. |
 | Study builder, outline review (Phase 2) | `topics.status` (`draft`, `confirmed`, `ready`); `cards.source_id` derived by a trigger; `tracy_events.stage`, `plan_id`, `source_id` (synced) and `cap_units`, `counted_at`, `ran`, `releases` (server only); `sources.status` owned by the server; a `storage_path` CHECK; the private `sources` Storage bucket; the queue functions and a pg_cron schedule | The phone shows the outline review, each source's progress and "p. 12, Lecture 3" from synced rows only (it never receives chunks); the monthly caps count sources and pages, not rows; a phone can't point the worker at someone else's file ([DECISIONS.md](DECISIONS.md) D36–D40). |
+| `sources`: "Kind is pdf, doc, link, or notes" | Voice notes (Phase 2.1): `sources.kind` gains `text`, and the nullable `sources.body` holds its text (1 to 30,000 characters, server-owned through the trigger `keep_server_body`); no new table, no sync or RLS change | A person can speak or type what they learned and get cards from it. The text rides on the row that already syncs, so the phone shows it again offline, and the cap, retries and progress are the extract stage's ([DECISIONS.md](DECISIONS.md) D52–D54). |
 | Postgres conventions (not stated) | `text` + CHECK instead of enums; `on delete cascade` from `auth.users`, `on delete set null` (never restrict) for links that can point at other people's rows; explicit grants; optional references and sharing normalized instead of refused | Easy to extend; Play's account-deletion rule (a delete never depends on anyone else's data); Supabase's 2026 grant change; offline writes are never dropped because of what others did. |
 
 ---
@@ -902,7 +933,7 @@ differences and why.
    [SETUP §17 step 5](SETUP.md#step-5-deploy-the-backend-a-dry-run-then-for-real)). Then redeploy
    the sync config if it changed ([step 6](SETUP.md#step-6-update-the-powersync-sync-config)), and
    only then ship the app build that uses it. New migrations need timestamps after
-   `20261009120000`.
+   `20261012120000` (voice notes' text sources).
 
 **Seed data changes too.** The starter library is a migration. To change it, edit
 [`starterLibraryData.ts`](../src/features/training/starterLibraryData.ts), point `MIGRATION` in

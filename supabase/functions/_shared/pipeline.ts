@@ -8,6 +8,7 @@
  *   submit_source ─▶ extract (pdf/doc/link) ─┬─▶ transcribe (scanned PDF pages, ≤ 4 per job)
  *                                            └─▶ (all done) ─▶ outline ─▶ approve_outline ─▶ cards × n
  *   submit_source ─▶ transcribe × photos (notes) ─▶ confirm_transcripts ─▶ outline ─▶ …
+ *   submit_source ─▶ extract (text: chunked by the worker, no Tracy call) ─▶ outline ─▶ …
  *   (embed runs beside the outline when GEMINI_API_KEY is set; it never blocks anything)
  *   An outline that only adds material to topics the plan already has proposes nothing to review:
  *   the worker approves it itself and queues its cards jobs (tracy-worker/worker.ts stepOutline).
@@ -20,7 +21,10 @@ export type Stage = (typeof STAGES)[number];
 export type PipelineJob = 'study_builder' | 'handwriting';
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
-/** What each stage is: its tracy_events.job, whether it calls Tracy (and so needs it awake). */
+/**
+ * What each stage is: its tracy_events.job, whether it calls Tracy (and so needs it awake; see
+ * needsTracy for the one job of a Tracy stage that does not).
+ */
 export const STAGE_INFO: Record<Stage, { job: PipelineJob; needsTracy: boolean }> = {
   extract: { job: 'study_builder', needsTracy: true },
   transcribe: { job: 'handwriting', needsTracy: true },
@@ -85,6 +89,14 @@ export interface NewJob {
   input: Record<string, unknown>;
 }
 
+/**
+ * Whether this job's step calls Tracy (and so waits for /health first). A text source's extraction
+ * only chunks text the server already has, so it runs while Tracy is asleep or restarting; its
+ * outline then waits for Tracy like any other.
+ */
+export const needsTracy = (stage: Stage, job: Pick<JobRow, 'input'>) =>
+  STAGE_INFO[stage].needsTracy && !(stage === 'extract' && job.input?.kind === 'text');
+
 /** The stage of a claimed job, or null for a job this pipeline does not run. */
 export function stageOf(job: Pick<JobRow, 'job' | 'stage'>): Stage | null {
   const stage = STAGES.find((s) => s === job.stage);
@@ -99,7 +111,8 @@ export const isOpen = (job: Pick<JobRow, 'status'>) => OPEN.includes(job.status)
 export interface ExtractInput {
   source_id: string;
   plan_id: string;
-  kind: 'pdf' | 'doc' | 'link';
+  /** 'text': spoken or typed notes, chunked by the worker itself (no Tracy call). */
+  kind: 'pdf' | 'doc' | 'link' | 'text';
   /** The first page of the next window (1-based). */
   cursor_page: number;
   /** Scanned pages that were not transcribed because the monthly page limit was used up. */

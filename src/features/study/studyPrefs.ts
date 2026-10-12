@@ -1,7 +1,7 @@
 /**
  * Study settings that belong to this phone, not to the account (Phase 2 decision 10): how answers
- * are given (2 or 4 rating buttons, typed short answers), the daily review reminder, and the new-card
- * pace. Kept in the local-only `local_state` table (key `study-prefs`), like the alert settings: a
+ * are given (2 or 4 rating buttons, typed short answers), the daily review reminder, the new-card
+ * pace, and the language spoken notes are in. Kept in the local-only `local_state` table (key `study-prefs`), like the alert settings: a
  * tablet used for typing and a phone used on the bus may well want different ones. Cleared with the
  * rest of the local data on sign-out.
  *
@@ -36,6 +36,11 @@ export type StudyPrefs = {
   dailyNewCap: number;
   /** New cards per focus block, 1–20, or null: from the block's length (5 in 25 minutes). */
   newPerBlock: number | null;
+  /**
+   * The language spoken notes are in, as a BCP 47 tag ("en-GB"), or null: the phone's language. Per
+   * phone, because it is the phone's speech service that has to know it.
+   */
+  dictationLang: string | null;
 };
 
 export const PREF_LIMITS = { dailyNewCap: { min: 5, max: 100 }, newPerBlock: { min: 1, max: 20 } } as const;
@@ -47,7 +52,15 @@ export const DEFAULT_STUDY_PREFS: StudyPrefs = Object.freeze({
   reminder: Object.freeze({ enabled: false, hour: 18, minute: 0 }),
   dailyNewCap: QUEUE_RULES.dailyNewCap,
   newPerBlock: null,
+  dictationLang: null,
 }) as StudyPrefs;
+
+/** A language tag as speech recognition takes it: "en", "en-GB", "zh-Hant-TW" (never "en_GB"). */
+const LANGUAGE_TAG = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8}){0,3}$/;
+
+export function isLanguageTag(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 35 && LANGUAGE_TAG.test(value);
+}
 
 function wholeIn(value: unknown, min: number, max: number): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max ? value : null;
@@ -67,6 +80,7 @@ export function parseStudyPrefs(value: unknown): StudyPrefs {
     },
     dailyNewCap: wholeIn(raw.dailyNewCap, PREF_LIMITS.dailyNewCap.min, PREF_LIMITS.dailyNewCap.max) ?? DEFAULT_STUDY_PREFS.dailyNewCap,
     newPerBlock: wholeIn(raw.newPerBlock, PREF_LIMITS.newPerBlock.min, PREF_LIMITS.newPerBlock.max),
+    dictationLang: isLanguageTag(raw.dictationLang) ? raw.dictationLang : null,
   };
 }
 
@@ -83,7 +97,8 @@ export function applyPrefsPatch(prefs: StudyPrefs, patch: StudyPrefsPatch): Stud
     parsed.reminder.hour === next.reminder.hour &&
     parsed.reminder.minute === next.reminder.minute &&
     parsed.dailyNewCap === next.dailyNewCap &&
-    parsed.newPerBlock === next.newPerBlock;
+    parsed.newPerBlock === next.newPerBlock &&
+    parsed.dictationLang === next.dictationLang;
   if (!same) throw new RangeError('Invalid study setting');
   return parsed;
 }

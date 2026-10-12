@@ -7,7 +7,7 @@ strength training blocks, guided by Tracy (Interverse's AI), and shareable with
 friends. Android first, then iOS, then Meta glasses.
 
 - Study: quiz-first blocks, FSRS spaced repetition, concept links, built from
-  your own PDFs, docs, links, and photos of handwritten notes.
+  your own PDFs, docs, links, photos of handwritten notes, and notes you speak or type.
 - Move: micro circuits or full sessions from focus presets and your gym or home
   equipment, with a rules-based spotter on the phone.
 - Handoff: when the focus timer ends, the next exercise is already on screen.
@@ -15,11 +15,12 @@ friends. Android first, then iOS, then Meta glasses.
 
 ## Status
 
-**Phase 2 (Study engine) is built; its gate is next.** Your own course material becomes quiz cards
-inside the focus block:
+**Phase 2 (Study engine) and voice notes (Phase 2.1) are built; the Phase 2 gate is next.** Your
+own course material becomes quiz cards inside the focus block:
 
-- study plans (one source, or a growing course), built from PDFs, Word files, web pages and photos
-  of handwritten notes;
+- study plans (one source, or a growing course), built from PDFs, Word files, web pages, photos
+  of handwritten notes, and notes you speak or type on the phone (voice notes, Phase 2.1: Android's
+  own speech recognition, offline on phones that can do it, and no audio is kept);
 - a transcription check for the notes, an outline review, cards with the page they came from, and a
   concept map;
 - quiz-first focus blocks (due reviews, then new cards, then a closing self-test) with FSRS
@@ -31,8 +32,10 @@ inside the focus block:
 The code is on the branch `claude/bold-fermi-oglgch` (in both repos) until the pull requests are
 merged. Nothing in Phase 2 has run against the real services or a phone yet. The gate (a real course
 PDF and a page of handwritten notes become one plan, then a week of reviews) is run by hand:
-[docs/SETUP.md §17](docs/SETUP.md#17-phase-2-the-study-engine-on-your-phone). Audio study mode moved
-to Phase 2B.
+[docs/SETUP.md §17](docs/SETUP.md#17-phase-2-the-study-engine-on-your-phone). Voice notes are on the
+same branch and need nothing more to set up
+([how to try them](docs/SETUP.md#voice-notes-try-them-on-your-phone)). Audio study mode moved to
+Phase 2B.
 
 **Phase 1 (Core loop) is built and on `main`.** The study → move → study loop runs on the phone,
 offline: a focus timer with an end-of-block alert, a workout that appears by itself when the timer
@@ -43,7 +46,7 @@ mode with a home setup and a gym setup):
 
 **Phase 0 (Foundation) passed its gate on 2026-10-08** on a real Android phone: a row created
 offline appeared in Postgres after reconnecting. The database has 23 tables with row level security
-(626 pgTAP tests). Progress and next steps: [docs/ROADMAP.md](docs/ROADMAP.md).
+(682 pgTAP tests). Progress and next steps: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Stack
 
@@ -112,7 +115,7 @@ Without them the app opens on a "Setup needed" screen instead of crashing.
 | `npm run validate:sync` | Compiles `powersync/sync-config.yaml` with PowerSync's compiler against the schema snapshot and checks it against the app's table registry |
 | `npm run check:library` | Fails if the starter-library migration, or its 7 SQL Editor parts in `supabase/sql-editor/starter-library/`, is out of date with the app's list (`src/features/training/starterLibraryData.ts`) |
 | `node scripts/library/starter-library-sql.mjs` | Rewrites the starter-library migration from that list (after changing it; see [DECISIONS.md](docs/DECISIONS.md) D21) |
-| `npm run db:test` | Applies the migrations to a throwaway Postgres 16 (with stand-ins for Supabase's Storage, pg_cron, pg_net and Vault) and runs the pgTAP tests (15 files); rewrites `supabase/schema.snapshot.json` (Linux or WSL, with pgvector and pgTAP; CI runs it) |
+| `npm run db:test` | Applies the migrations to a throwaway Postgres 16 (with stand-ins for Supabase's Storage, pg_cron, pg_net and Vault) and runs the pgTAP tests (16 files); rewrites `supabase/schema.snapshot.json` (Linux or WSL, with pgvector and pgTAP; CI runs it) |
 | `deno check study/index.ts tracy-worker/index.ts`, `deno lint`, `deno test` | Run inside `supabase/functions/` with Deno 2: type-check, lint and test the Edge Functions (CI's **Edge Functions** job runs them; the app's TypeScript and jest leave that folder out) |
 
 ## Repo layout
@@ -122,10 +125,10 @@ Without them the app opens on a "Setup needed" screen instead of crashing.
 | `src/app/` | Screens and navigation (expo-router) |
 | `src/auth/` | Sign-in with an emailed 6-digit code; session state |
 | `src/db/` | The on-device database: table registry, PowerSync schema, Supabase connector, Sync Check helpers |
-| `src/features/` | Feature code: the study → move → study cycle (`cycle/`), the study engine (`study/`: FSRS, the block's queue, typed-answer matching, uploads, the `study` function's client, the reminder, the study panel), the timer and its alerts (`timer/`), training (starter library, circuits, spotter, units, swaps), setups, presets, the user's own exercises, history, settings, sync status, the Sync Check, "Setup needed" |
+| `src/features/` | Feature code: the study → move → study cycle (`cycle/`), the study engine (`study/`: FSRS, the block's queue, typed-answer matching, uploads, speech-to-text for voice notes and their drafts, the `study` function's client, the reminder, the study panel), the timer and its alerts (`timer/`), training (starter library, circuits, spotter, units, swaps), setups, presets, the user's own exercises, history, settings, sync status, the Sync Check, "Setup needed" |
 | `src/components/`, `src/theme/` | Shared UI and design tokens |
 | `src/lib/` | Configuration, the Supabase client, secure session storage, ids, timestamps |
-| `supabase/` | Migrations (the schema, the starter library, the study engine), the Edge Functions `study` and `tracy-worker` (`functions/`, Deno), the starter library split into parts for the SQL Editor (`sql-editor/`), pgTAP tests, email templates, local CLI config, schema snapshot |
+| `supabase/` | Migrations (the schema, the starter library, the study engine, text sources for voice notes), the Edge Functions `study` and `tracy-worker` (`functions/`, Deno), the starter library split into parts for the SQL Editor (`sql-editor/`), pgTAP tests, email templates, local CLI config, schema snapshot |
 | `powersync/` | Sync Streams config and PowerSync instance config |
 | `scripts/` | The database test harness, the sync-config validator, the 16 KB page-size check for APKs (`check-16kb.sh`), the starter-library generator (`library/`) and the exercise dataset import (`exercise-import/`) |
 | `.github/workflows/` | CI (`ci.yml`), the installable APK build (`android.yml`), **Deploy backend** (`deploy-backend.yml`, run by hand: migrations, Edge Functions and their secrets) and the exercise import SQL (`exercise-import.yml`, run by hand) |
@@ -144,8 +147,8 @@ Without them the app opens on a "Setup needed" screen instead of crashing.
 - [Decisions](docs/DECISIONS.md): what was decided, why, and when to revisit.
 - [Tracy integration](docs/TRACY_INTEGRATION.md): how DualRep calls Tracy, and the
   changes made to Tracy in Phase 2.
-- [Research](docs/research/README.md): the Phase 0 research reports
-  (2026-10-08), kept for reference.
+- [Research](docs/research/README.md): the research reports behind Phase 0
+  (2026-10-08), Phase 2 (2026-10-09) and voice notes (2026-10-12), kept for reference.
 
 ---
 

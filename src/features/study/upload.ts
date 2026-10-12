@@ -24,6 +24,8 @@
  *   are refused: decoding one takes 200 MB or more of memory.
  * - Taking a photo needs Android 10 (API 29) or later: below that, expo-image-picker also asks for
  *   WRITE_EXTERNAL_STORAGE, which DualRep blocks. The gallery and files work everywhere.
+ * - Spoken or typed notes (kind 'text') have nothing to prepare or upload: the cleaned text travels
+ *   in the submit itself, and the study function stores it with the source.
  *
  * APIs as in expo-document-picker 57.0.3, expo-image-picker 57.0.20, expo-image-manipulator 57.0.21
  * and expo-file-system 57.0.7 (build/*.d.ts).
@@ -38,8 +40,10 @@ import { readEnv } from '@/lib/env';
 import { newId } from '@/lib/ids';
 
 import {
+  cleanStudyText,
   isStudyApiError,
   KIND_FILE_TYPES,
+  NOTE_MAX_CHARS,
   STUDY_API_LIMITS,
   StudyApiError,
   studyErrorMessage,
@@ -62,6 +66,8 @@ export const UPLOAD_RULES = {
   nativeUploadBytes: 5 * 1024 * 1024,
   maxTitleChars: STUDY_API_LIMITS.maxTitleChars,
   maxUrlChars: STUDY_API_LIMITS.maxUrlChars,
+  /** Spoken or typed notes (the phone's limit, under the server's; see NOTE_MAX_CHARS). */
+  maxTextChars: NOTE_MAX_CHARS,
 } as const;
 
 export const BUCKET = 'sources';
@@ -95,6 +101,8 @@ export type UploadProblemCode =
   | 'no_files'
   | 'bad_link'
   | 'bad_title'
+  | 'no_text'
+  | 'too_long'
   | 'unreadable';
 
 export class UploadError extends Error {
@@ -177,6 +185,24 @@ export function validateLink(url: string): string {
     /^https:\/\/[^\s/?#@:]+(:\d{1,5})?([/?#]\S*)?$/i.test(trimmed);
   if (!ok) throw new UploadError('bad_link', 'Use a web address that starts with https://.');
   return trimmed;
+}
+
+/** "20,000" (the same digits on every phone, like the counter under the notes). */
+export function charCountText(n: number): string {
+  return n.toLocaleString('en-US');
+}
+
+/** Spoken or typed notes, cleaned as the server will store them: 1 to 20,000 characters. */
+export function validateText(text: string): string {
+  const cleaned = cleanStudyText(text);
+  if (!cleaned) throw new UploadError('no_text', 'Say or type some notes first.');
+  if (cleaned.length > UPLOAD_RULES.maxTextChars) {
+    throw new UploadError(
+      'too_long',
+      `One set of notes can be up to ${charCountText(UPLOAD_RULES.maxTextChars)} characters. Shorten them, or add the rest as another set of notes.`,
+    );
+  }
+  return cleaned;
 }
 
 /** The source's title: given, else from the material. 1 to 200 characters. */
@@ -513,7 +539,8 @@ export async function uploadFile(
 export type MaterialInput =
   | { kind: 'pdf' | 'doc'; document: PickedDocument; title?: string | null }
   | { kind: 'notes'; photos: PickedPhoto[]; title?: string | null }
-  | { kind: 'link'; url: string; title?: string | null };
+  | { kind: 'link'; url: string; title?: string | null }
+  | { kind: 'text'; text: string; title?: string | null };
 
 export type AddMaterialProgress = {
   phase: 'preparing' | 'uploading' | 'submitting' | 'done';
@@ -571,9 +598,15 @@ export async function addMaterial(context: UploadContext | null, input: Material
   let kind: SourceKind;
   let title: string;
   let url: string | null = null;
+  let text: string | null = null;
   const prepared: PreparedFile[] = [];
   try {
-    if (input.kind === 'link') {
+    if (input.kind === 'text') {
+      // Nothing to upload: the text goes in the submit itself.
+      kind = 'text';
+      text = validateText(input.text);
+      title = sourceTitle(input.title, notesTitle(options.now ?? Date.now()));
+    } else if (input.kind === 'link') {
       kind = 'link';
       url = validateLink(input.url);
       title = sourceTitle(input.title, linkTitle(url));
@@ -607,7 +640,16 @@ export async function addMaterial(context: UploadContext | null, input: Material
     checkCancel();
     progress({ phase: 'submitting', done: 0, total: 1 });
     await options.beforeSubmit?.().catch(() => undefined);
-    const request = { plan_id: options.planId, source_id: sourceId, kind, title, url, files: prepared.map((file) => ({ path: file.path })) };
+    const request = {
+      plan_id: options.planId,
+      source_id: sourceId,
+      kind,
+      title,
+      url,
+      // Only kind text carries `text` (the server refuses it on the other kinds).
+      ...(kind === 'text' ? { text } : {}),
+      files: prepared.map((file) => ({ path: file.path })),
+    };
     const sleep = options.sleep ?? defaultSleep;
     for (let attempt = 0; ; attempt += 1) {
       checkCancel();

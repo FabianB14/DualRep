@@ -5,7 +5,7 @@ import Svg, { Path } from 'react-native-svg';
  * than an icon font, so nothing extra is bundled or loaded at startup. Icons are always decorative:
  * the control next to or around them carries the accessible name.
  */
-export type GlyphName = 'chevron-right' | 'check' | 'minus' | 'plus' | 'close';
+export type GlyphName = 'chevron-right' | 'check' | 'minus' | 'plus' | 'close' | 'mic' | 'pause';
 
 const PATHS: Record<GlyphName, string> = {
   'chevron-right': 'M9 5l7 7-7 7',
@@ -13,6 +13,8 @@ const PATHS: Record<GlyphName, string> = {
   minus: 'M5 12h14',
   plus: 'M12 5v14M5 12h14',
   close: 'M6 6l12 12M18 6L6 18',
+  mic: 'M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7',
+  pause: 'M9 6v12M15 6v12',
 };
 
 export type GlyphProps = {

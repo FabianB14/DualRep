@@ -642,3 +642,72 @@ Deno.test('the sweep removes files no source_files row points at', async () => {
   assertEquals(await sweepOrphans(s.store), 1);
   assertEquals([...s.store.objects.keys()], [`${USER}/${SOURCE}/2.pdf`]);
 });
+
+// ---- spoken or typed notes (kind 'text') --------------------------------------------------------
+
+Deno.test('spoken notes go from the phone to cards with no Tracy extract call and no transcription step', async () => {
+  const s = scenario();
+  scriptPdf(s); // only its outline and cards answers are used
+  const text = Array.from({ length: 12 }, (_, i) => `Point ${i + 1}: the cell membrane controls what enters and leaves the cell.`).join(' ') +
+    '\n\n' + 'enzymes speed up reactions without being used up '.repeat(40); // one long unpunctuated line
+  const r = await s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE, kind: 'text', title: 'Spoken notes', text, files: [] });
+  assertEquals(r.status, 202);
+
+  // Tracy is restarting: the text is chunked anyway (no /health wait for a text extract).
+  s.tracy.awake = false;
+  let step = await s.step();
+  assertEquals(step.kind === 'step' && [step.stage, step.outcome], ['extract', 'done']);
+  assertEquals(s.tracy.healthChecks, 0);
+  assertEquals(s.tracy.callsOf('extract'), []);
+  const chunks = [...s.store.chunks.values()].filter((c) => c.source_id === SOURCE);
+  assert(chunks.length >= 3);
+  assert(chunks.every((c) => c.page === null && c.content.length <= 1600));
+  // No word was cut in two: every word of every chunk is a word of the text.
+  const vocabulary = new Set(text.split(/\s+/));
+  assert(chunks.every((c) => c.content.split(/\s+/).every((w) => vocabulary.has(w))));
+  assertEquals(s.store.chunks.has(await chunkId(SOURCE, null, 0)), true);
+  // The outline is queued straight away (no "Check the transcription"), and waits for Tracy.
+  assertEquals(s.store.jobsOf(SOURCE, 'outline').map((j) => j.id), [await outlineJobId(SOURCE)]);
+  step = await s.step();
+  assertEquals(step.kind === 'step' && [step.stage, step.outcome], ['outline', 'release']);
+
+  s.tracy.awake = true;
+  step = await s.step();
+  assertEquals(step.kind === 'step' && [step.stage, step.outcome], ['outline', 'done']);
+  const outlineCall = s.tracy.callsOf('dualrep_build_outline')[0].body;
+  assertEquals((outlineCall.chunks as { page: number | null }[]).every((c) => c.page === null), true);
+  const drafts = [...s.store.topics.values()].filter((t) => t.status === 'draft');
+  await s.call({ action: 'approve_outline', plan_id: PLAN, source_id: null, topics: drafts.map((t) => ({ id: t.id, keep: true })) });
+  await s.drain();
+  assertEquals(s.store.sources.get(SOURCE)?.status, 'ready');
+  assert(s.store.cards.size > 0);
+  assert([...s.store.cards.values()].every((c) => c.page === null));
+});
+
+Deno.test('text notes whose text is missing fail with the no-text message, and Try again can run them again', async () => {
+  const s = scenario();
+  await s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE, kind: 'text', title: 'Typed', text: 'Mitosis has four phases.', files: [] });
+  s.store.bodies.delete(SOURCE); // as if a phone had made the row itself (its body is never stored)
+  const step = await s.step();
+  assertEquals(step.kind === 'step' && [step.stage, step.outcome], ['extract', 'fail']);
+  const extract = s.store.jobsOf(SOURCE, 'extract')[0];
+  assertEquals([extract.status, extract.error, s.store.sources.get(SOURCE)?.status], ['failed', MESSAGES.noText, 'failed']);
+  s.store.bodies.set(SOURCE, 'Mitosis has four phases.');
+  assertEquals((await s.call({ action: 'retry_job', job_id: extract.id })).status, 202);
+  assertEquals(s.store.sources.get(SOURCE)?.status, 'processing');
+  const again = await s.step();
+  assertEquals(again.kind === 'step' && [again.stage, again.outcome], ['extract', 'done']);
+  assertEquals(s.store.jobsOf(SOURCE, 'outline').length, 1);
+});
+
+Deno.test('text notes are read even when Tracy is not configured; their outline then says it is not set up', async () => {
+  const s = scenario();
+  await s.call({ action: 'submit_source', plan_id: PLAN, source_id: SOURCE, kind: 'text', title: 'Typed', text: 'Mitosis has four phases.', files: [] });
+  const worker = { ...s.worker, tracy: null };
+  let r = await runOneStep(worker);
+  assertEquals(r.kind === 'step' && [r.stage, r.outcome], ['extract', 'done']);
+  assertEquals([...s.store.chunks.values()].map((c) => [c.page, c.content]), [[null, 'Mitosis has four phases.']]);
+  r = await runOneStep(worker);
+  assertEquals(r.kind === 'step' && [r.stage, r.outcome], ['outline', 'fail']);
+  assertEquals([s.store.jobsOf(SOURCE, 'outline')[0].error, s.store.sources.get(SOURCE)?.status], [MESSAGES.notSetUp, 'failed']);
+});

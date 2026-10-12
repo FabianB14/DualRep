@@ -17,7 +17,8 @@
  *     403 forbidden       the plan, source or job is someone else's
  *     404 not_found       no such plan, source or job
  *     405 method_not_allowed
- *     409 conflict        the source id is taken, or the source is not in this plan
+ *     409 conflict        the source id is taken, the source is not in this plan, or notes were sent
+ *                         again with other text
  *     409 not_ready       this step does not apply now (error says why, e.g. "Some pages are still
  *                         being transcribed.")
  *     422 no_text         the confirmed transcripts hold nothing to study
@@ -33,19 +34,34 @@
  * ── Actions ──────────────────────────────────────────────────────────────────────────────────────
  * submit_source: after the files are uploaded to Storage, create the source and queue its first step.
  *   { "action": "submit_source", "plan_id": "…", "source_id": "<made on the phone>",
- *     "kind": "pdf" | "doc" | "link" | "notes", "title": "Lecture 3" (1-200 chars),
+ *     "kind": "pdf" | "doc" | "link" | "notes" | "text", "title": "Lecture 3" (1-200 chars),
  *     "url": "https://…" (kind link only, else null or absent),
+ *     "text": "…" (kind text only, else null or absent),
  *     "files": [{ "path": "<user_id>/<source_id>/1.pdf" }] }
  *   files: pdf -> exactly one `1.pdf`; doc -> exactly one `1.docx`; notes -> 1 to 20 photos
- *   `<n>.jpg|jpeg|png|webp` (n = the page, 1-based, each once); link -> []. Each file must already be
- *   in the `sources` bucket with its content type (application/pdf, the docx type, image/jpeg,
- *   image/png, image/webp) and at most 25 MiB. The plan must be the caller's own.
+ *   `<n>.jpg|jpeg|png|webp` (n = the page, 1-based, each once); link and text -> []. Each file must
+ *   already be in the `sources` bucket with its content type (application/pdf, the docx type,
+ *   image/jpeg, image/png, image/webp) and at most 25 MiB. The plan must be the caller's own.
  *   -> 202 { "ok": true, "source_id": "…", "status": "processing", "job_ids": ["…"],
  *            "already_submitted": false }
  *   Sending the same request again is safe: -> 200 with "already_submitted": true.
  *   Over the monthly limit -> 429 cap_reached, and nothing is kept (the uploaded files are swept
  *   after 3 days).
  *   The server writes the sources, source_files and plan_sources rows; the phone sees them by sync.
+ *
+ *   kind text (notes the person spoke or typed and read through on the phone): nothing is uploaded
+ *   first; the notes travel in "text". After clean-up (\r\n and \r -> \n; control characters other
+ *   than tab and line break removed; half an emoji -> U+FFFD; outer whitespace trimmed) the text
+ *   must be 1 to 30,000 characters (JavaScript length), else 400 bad_request with "text must be 1 to
+ *   30000 characters"; "text" on any other kind -> "text is only for kind text". The text is stored
+ *   with the source (sources.body, synced, so the phone can show it again) and one extraction is
+ *   queued: 1 source of the monthly limit, like a PDF or a link (429 cap_reached with stage extract).
+ *   The worker turns the text into passages itself (no Tracy call), then the outline ->
+ *   approve_outline -> cards follow as for any source. No transcription step: the person has
+ *   already checked the text. The same source id sent again with other text (the first answer was
+ *   lost, then the person edited the notes) -> 409 conflict "These notes were already added before
+ *   your last changes. Add them again as new notes to keep the changes."; the first text stays, and
+ *   the app adds the changed version under a new source id.
  *
  * confirm_transcripts: a notes source whose photos are all transcribed (every transcription job of
  *   the source succeeded, or was cancelled = skipped). Saves the person's edits, marks every file
@@ -93,6 +109,7 @@
  *
  * ── What the phone follows (synced rows; nothing else needs polling) ─────────────────────────────
  *   sources.status        pending -> processing -> ready | failed
+ *   sources.body          the text of a text source, as it was stored (null for other kinds)
  *   tracy_events          stage (extract | transcribe | outline | cards | embed), status, error
  *                         (short, content-free, shown next to "Try again"), plan_id, source_id. A
  *                         succeeded extract job may carry a note in `error` (e.g. scanned pages

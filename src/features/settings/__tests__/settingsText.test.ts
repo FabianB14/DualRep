@@ -43,6 +43,25 @@ describe('signOutWarning', () => {
     );
     expect(signOutWarning(0, false)).toEqual(signOutWarning(0));
   });
+
+  it('says unsent spoken or typed notes would be lost (they are only on this phone)', () => {
+    expect(signOutWarning(0, false, 1)).toEqual({
+      title: 'Sign out?',
+      message: 'Notes you haven’t added to their plan yet are only on this phone and will be lost. Add them first to keep them.',
+      confirmLabel: 'Sign out and lose notes',
+    });
+    expect(signOutWarning(0, true, 2).message).toBe(
+      'Your cycle in progress is finished first. Its end is sent to the server if the phone is online. Notes you haven’t added to 2 plans yet are only on this phone and will be lost. Add them first to keep them.',
+    );
+    expect(signOutWarning(3, false, 1)).toEqual({
+      title: 'Sign out?',
+      message:
+        '3 changes have not been uploaded yet and will be lost. Connect to the internet first to keep them. Notes you haven’t added to their plan yet are only on this phone and will be lost. Add them first to keep them.',
+      confirmLabel: 'Sign out and lose changes',
+    });
+    expect(signOutWarning(0, false, Number.NaN)).toEqual(signOutWarning(0));
+    expect(signOutWarning(0, false, 0)).toEqual(signOutWarning(0));
+  });
 });
 
 describe('timer check wording', () => {

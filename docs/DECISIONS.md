@@ -1204,3 +1204,290 @@ in [DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline).
   reviews) doesn't need it.
 - **Alternatives:** build it now, unproven.
 - **Revisit when:** the Phase 2 gate has passed.
+
+---
+
+## Phase 2.1: voice notes (2026-10-12)
+
+D50–D57 record voice notes: notes a person speaks or types on the phone become a source of a study
+plan, like a PDF. How to try them on the phone:
+[SETUP §17](SETUP.md#voice-notes-try-them-on-your-phone); the tables and the pipeline:
+[DATA_MODEL.md](DATA_MODEL.md#the-study-pipeline); Android: [ANDROID.md 2.8](ANDROID.md#28-voice-notes-speech-to-text-on-the-phone).
+The research behind them: [research/voice/speech.md](research/voice/speech.md) (the phone) and
+[research/voice/pipeline.md](research/voice/pipeline.md) (the server).
+
+## D50. Speech-to-text on the phone, with expo-speech-recognition 57.1.1 (2026-10-12)
+
+- **Decision:** spoken notes are turned into text on the phone by Android's own speech recognition
+  (`SpeechRecognizer`), through **`expo-speech-recognition` 57.1.1**, pinned exactly. No audio is
+  ever kept or uploaded: only the text the person reads through and adds.
+  - **Why 57.1.1, although it was only 4 days old** (published 2026-10-08): its only code change
+    catches an error thrown by `SpeechRecognizer.destroy()` on Android 11 and older when no speech
+    service ever connected (for example a phone with no default speech service). In 57.1.0 that
+    error was not caught, so **the app crashed**, and DualRep's restart loop on Android 12 and older
+    calls `destroy()` every few seconds. DualRep supports Android 7 to 11 too (minSdk 24). The whole
+    57.1.0 → 57.1.1 change is three try/catch blocks. Check for a 57.1.2 before release.
+  - It is an Expo Modules API module: Kotlin only, no native library (nothing for the 16 KB check).
+    It supports SDK 57, React Native 0.86 and the New Architecture by its author's statement; the
+    first CI APK build is the first real compile.
+  - **Which recognizer**, checked when the screen opens, after a download, and when the app comes
+    back to the foreground:
+    - **On this phone, offline:** Android 13+ only, when the phone has an on-device speech service
+      (`supportsOnDeviceRecognition()`) and the language's model is installed
+      (`getSupportedLocales().installedLocales`, asked with a 3 s time limit; case and `_`/`-` are
+      ignored). Started with `requiresOnDeviceRecognition`, which never uses the network.
+    - **Google's online service:** otherwise, when the phone has a speech service at all
+      (`isRecognitionAvailable()`, usually a Google app). The screen says it plainly: "Uses Google's
+      online speech service: what you say is sent to Google to be turned into text, so it needs the
+      internet." When the language can be downloaded for the on-device service, it offers
+      **Download English (US) for offline use** (with the chosen language's name).
+    - **Download only:** no online service, but the on-device service could have the language after
+      a download.
+    - **None:** "No speech-to-text on this phone": type, paste, or use the keyboard's microphone.
+      There is no mic button then.
+  - **Start settings:** always a real language tag (never `''`, which would send Java's `en_US`);
+    `continuous` only on Android 13+ (older versions end each session at a pause, so the app starts
+    the next one itself); punctuation (`addsPunctuation`) only with on-device recognition, the only
+    place it is known to work; Android-13-only settings (`EXTRA_MASK_OFFENSIVE_WORDS: false`: they
+    are the person's own words) only on Android 13+, because the library sets each one by
+    reflection and a name older Android doesn't have makes `start()` fail; one result; the voice
+    level every 150 ms. `recordingOptions` and `audioSource` are never passed, so no audio file is
+    written.
+  - **The listening loop:** a new session 250 ms after one ends by itself. After a "busy" or
+    "client" error it retries after 300, 600 and 1,200 ms, then pauses ("The speech service
+    stopped."). Network, language, permission, busy-microphone and unknown errors pause with a
+    plain sentence ([SETUP §17](SETUP.md#if-something-goes-wrong-in-phase-2) lists them). It also
+    pauses after 60 s with no new words, when the app leaves the foreground (Android gives a
+    background app silence), and at the note limit. Pausing calls `stop()`, then `abort()` if the
+    last words haven't come within 4 s. Words still being heard when a session ends are kept. The
+    screen stays on only while listening (keep-awake tag `dualrep-dictation`).
+- **Why:** free, no server and no Tracy call, offline on many Android 13+ phones, and the person
+  checks the text before anything is made from it. The text box is needed anyway (fixing words,
+  typing, pasting), so the keyboard's own microphone comes free beside the app's.
+- **Alternatives:** 57.1.0 (older, but it crashes on Android 11 and below in exactly DualRep's
+  loop); only the keyboard's microphone (no say over online or offline, the language, or restarts,
+  and some keyboards have none); recording audio and sending clips to Tracy or another speech
+  service (an upload, a cost, and audio leaving the phone through DualRep); a one-time consent
+  sheet before Google's online service is first used (suggested in speech.md §9, not built: the
+  status line says it every time instead).
+- **Revisit when:** the phone checks ([ROADMAP Phase 2.1](ROADMAP.md#phase-21-voice-notes)) show
+  something the research didn't (continuous listening stopping on the online service, punctuation
+  quality, the microphone switch in Quick Settings); a 57.1.2 or a new Expo SDK arrives; audio study
+  mode (Phase 2B) needs speech with the screen off.
+
+## D51. RECORD_AUDIO is allowed, for speech-to-text only (2026-10-12)
+
+- **Decision:** `android.permission.RECORD_AUDIO` is no longer in `blockedPermissions` in
+  `app.config.ts`, and the `expo-speech-recognition` config plugin is listed. That is the whole
+  Android change.
+  - `npx expo config --type introspect` (preview variant), before and after: the only permission
+    added is `RECORD_AUDIO` (the blocked list goes from 28 entries to 27); one new `<queries>` entry
+    (the package `com.google.android.googlequicksearchbox` and the intent
+    `android.speech.RecognitionService`, which Android needs to find the phone's speech service when
+    an app targets API 30+); no `<service>`, no foreground service, no `MODIFY_AUDIO_SETTINGS`, no
+    `uses-feature` change. The CI APK should list Phase 2's permissions plus `RECORD_AUDIO`
+    ([ANDROID.md permission ledger](ANDROID.md#permission-ledger)); no APK has been built yet.
+  - No `expo-audio`. expo-image-picker's plugin also declares `RECORD_AUDIO` by default; the picker
+    never asks for it (it would only to record video, which DualRep doesn't offer).
+  - The plugin's two texts ("DualRep uses the microphone while you speak your notes.", "DualRep
+    turns what you say into text for your notes.") are for iOS only; Android shows its own dialog.
+  - **Asked in context:** only on the first tap of **Start speaking**, with the reason already on
+    screen ("DualRep listens only while the mic is on, and keeps no recording."). Refused once: the
+    next tap asks again. Refused for good (Android stops asking after a second refusal): "Microphone
+    access is off" with **Open system settings**. Typing works in every case.
+- **Why:** Android's speech recognition needs the permission in the app that starts it. This amends
+  [D42](#d42-android-camera-is-the-only-new-permission-2026-10-09) ("`RECORD_AUDIO` stays in
+  `blockedPermissions`") and [D49](#d49-audio-study-mode-moves-to-phase-2b-2026-10-09): Phase 2B no
+  longer needs to unblock it, but still brings `expo-audio` and its foreground services.
+- **Alternatives:** keep it blocked and offer only the keyboard's microphone (D50).
+- **Revisit when:** Phase 2B adds foreground services; check the ledger again then.
+
+## D52. Spoken or typed notes are a `text` source, stored in `sources.body` (2026-10-12)
+
+- **Decision:** a new migration,
+  [`20261012120000_text_sources.sql`](../supabase/migrations/20261012120000_text_sources.sql)
+  (`20261009120000` is not edited):
+  - `sources.kind` accepts `'text'` (its CHECK is dropped and added in one statement).
+  - A new nullable column, **`sources.body`**, with no default: the text as it was added. A CHECK
+    (`sources_body_check`) allows it only on kind `text`, 1 to 30,000 characters (`char_length`).
+  - **`body` belongs to the server**, like `status`: trigger `keep_server_body` (function
+    `keep_server_source_body`, before an insert, or an update of `body` or `kind`). For a phone's
+    write (`current_user = 'authenticated'`) an INSERT stores no text and an UPDATE keeps the stored
+    text, and a source that has text also keeps its kind (a phone changing it would break the CHECK,
+    and a refused write is dropped on the phone). Ignored, not refused. The service role writes it
+    freely.
+  - The CHECK doesn't require text on every `text` source: the trigger empties a phone's insert,
+    and refusing that row would drop it on the phone. Such a source (the app never makes one) fails
+    at reading with "No readable text was found."
+  - **No publication, RLS, grant, queue-function or sync-config change.** `sources` is already
+    published with no column list and synced with `SELECT *`, so the phone gets `body` and the
+    notes page works offline; whoever can read a source can read its text. **No PowerSync
+    redeploy.** The app marks `body` `serverGenerated` in `tables.ts` (stripped from every PUT, a
+    PATCH of it refused), and reads it only on the notes page (`SOURCE_TEXT_SQL`), never in the
+    plan's source list.
+  - **The `study` function:** `submit_source` with `kind: 'text'` carries the notes in a new field,
+    `text`, with `files: []` and nothing uploaded first. The text is cleaned (`\r\n` and `\r` become
+    `\n`, control characters other than tab and line break are removed, half an emoji becomes
+    U+FFFD, outer spaces are trimmed), then must be 1 to 30,000 characters (JavaScript length, which
+    is never less than the database's count, so the database never refuses what the function
+    accepted). `text` on any other kind is a 400. `text` is optional on the wire, so older app
+    builds still pass. The app cleans the same way, so its counter matches.
+  - **The same source id sent again** with the same text answers `already_submitted`; with
+    **other** text, 409 `conflict`: "These notes were already added before your last changes. Add
+    them again as new notes to keep the changes." The first text stays, and the app adds the changed
+    version under a new source id (D55). Without this, a lost answer followed by an edit would
+    have dropped the edit without a word.
+  - **Limits:** 30,000 characters on the server; **20,000** on the phone (about 20 minutes of
+    speech), counted after the same cleaning, so a long dictation becomes two sources rather than
+    one outline squeezed hard. The app's limit being lower means the server never refuses what the
+    phone accepted.
+  - **Read-only once added:** the cards are always made from exactly the stored text. To change
+    notes, add the corrected version as new notes.
+- **Why:** the row already syncs and is already protected by RLS, so one column needs nothing new
+  anywhere else.
+- **Alternatives:** a `.txt` file in Storage read by Tracy's `/ai/extract` (works without a Tracy
+  change, but adds an upload, a bucket change and a wait for Tracy, and can't be read offline); a
+  separate `source_texts` table (a publication change, a new sync stream, a PowerSync redeploy, RLS
+  and grants); reusing kind `notes` with a made-up `source_files` row (its path is required and
+  checked, and the monthly limit would never count it); the text only in the job's input (never
+  synced, so the phone could never show it again).
+- **Revisit when:** editing notes after adding them is wanted, or longer notes are (the outline
+  could take about 100,000 characters: change the CHECK and two constants).
+
+## D53. The worker reads a text source itself, without Tracy (2026-10-12)
+
+- **Decision:** a text source queues **the same `extract` job** as a PDF or a link (input kind
+  `text`). For it, the worker's extract step makes no Tracy call: it reads `sources.body` and cuts
+  it into passages with the chunker used for confirmed transcripts,
+  `chunkPageText(breakLongLines(body))`, with no page and derived chunk ids (a retry rewrites the
+  same rows). Then the usual gate starts the outline → **Review the outline** → cards.
+  - `needsTracy(stage, job)` skips Tracy's `/health` check only for a text extract, so it runs
+    while Tracy is restarting or not set up. The outline after it waits for Tracy like any other.
+  - **No "Check the transcription" step:** the person has already read the text (the phone's
+    progress has a transcription branch only for photos of notes).
+  - **`breakLongLines`** (width 800): dictation can come out as one long line with no
+    punctuation, which `chunkPageText` would cut every 1,600 characters, mid-word. This pre-pass
+    breaks such lines at the last space before 800 characters; only a line with no space in the
+    second half is cut at 800, and never between the two halves of an emoji. `chunkPageText` stays
+    a line-by-line copy of Tracy's.
+  - Empty text fails with "No readable text was found."; **Try again** works.
+  - Cards from notes have no page, so they show only the notes' name ("Notes, 12 Oct" by default).
+- **Why:** the text is already on the server; a Tracy call would only add a download, a wait and a
+  way to fail. Retry, cancel, the monthly limit and the error display come with the extract stage.
+- **Alternatives:** chunking in the `study` function and queuing the outline at once (it still
+  needs a counted job, and an outline job retried after a cancel would get past the limit, D36).
+- **Revisit when:** confirmed transcripts get the same pre-pass (a transcript line over 1,600
+  characters with no punctuation can still be cut mid-word).
+
+## D54. A set of notes counts as 1 source of the monthly limit (2026-10-12)
+
+- **Decision:** the text source's `extract` job is counted like a PDF's: stage `extract`, 1 unit,
+  against the monthly **sources** limit (5 free, 30 paid,
+  [D36](#d36-monthly-caps-count-units-per-stage-2026-10-09)). No SQL change. Over the limit the
+  function answers 429 `cap_reached` with stage `extract`, the source is removed again, the notes
+  stay on the phone, and the app says the usual "You've used all 5 sources for this month. …".
+  Cancel, Try again and the give-back rules are unchanged.
+- **Why:** the outline and cards calls cost real money, which is what the limits protect: about
+  $0.01 for a short set of notes and $0.10 for a full 20,000 characters on Sonnet 5.5 (estimates
+  from D33's figures, not measured). Not pages: the page limit pays for reading handwriting and
+  scans, and its message says so. Not weighted by length: a 100-page PDF is 1 unit too.
+- **Alternatives:** not counted; counted as pages; a separate limit for notes (needs a new stage
+  value, or a kind filter in `check_tracy_cap`).
+- **Revisit when:** testers dictate every day and 5 free sources a month feels tight.
+
+## D55. Unsent notes stay on the phone as a draft (2026-10-12)
+
+- **Decision:** what is on the **Speak or type notes** screen is saved in `local_state` under the
+  key `study-text-draft:<planId>`: one draft per plan, `{v: 1, planId, sourceId, title, text,
+  updatedAt}`. Never synced or uploaded.
+  - **When it is saved:** at most 1 s after a change (the timer isn't restarted by each change, so
+    steady dictation is still saved every second), and at once on a pause, before **Add to plan**,
+    when the screen closes and when the app leaves the foreground. In the background each change is
+    saved straight away, because Android pauses JavaScript timers there and may end the app. Words
+    still being heard are included. Emptied notes delete the draft; a draft over 40,000 characters
+    is cut there. Writes run one after another, so a late save can't bring back a draft deleted
+    after a successful add.
+  - The plan shows **Unsent notes** ("Saved on this phone, not added to the plan yet.", or offline
+    "Saved on this phone. Add them to the plan when you're back online.") with **Open the notes**.
+  - **One source id per draft**, reused by every **Add to plan** attempt, so a retry after a lost
+    answer is `already_submitted`, never a second source. Offline or a time-out keeps the id. A 409
+    `conflict` (the notes changed after an earlier attempt reached the server) gives the draft a new
+    id, so the next tap adds this version as new notes. **Clear the notes** gives the next notes a
+    new id too. Only one **Add to plan** runs at a time, including while it waits up to 4 s for the
+    last words.
+  - **Deleting a plan** on this phone deletes its draft. **Signing out** deletes every draft with
+    the rest of `local_state`, so the sign-out dialog says so when there are any: "Notes you haven't
+    added to their plan yet are only on this phone and will be lost. Add them first to keep them.",
+    with the button **Sign out and lose notes**.
+  - Adding the notes needs the internet, like all material
+    ([D32](#d32-one-edge-function-study-starts-ai-work-for-the-user-2026-10-09),
+    [D41](#d41-uploads-go-to-a-private-bucket-prepared-on-the-phone-2026-10-09)).
+- **Why:** speaking and typing must work offline, and nothing a person said should be lost to a
+  dropped connection, a restart or a lost answer.
+- **Alternatives:** the phone inserting the `sources` row through PowerSync's upload queue, with a
+  trigger queuing the job (D32 rejected exactly that: no clean place for the limit, and a retried
+  upload could undo the pipeline); adding the notes by themselves when the connection comes back (a
+  later nicety).
+- **Revisit when:** testers lose notes at sign-out or want them on two phones. Known gaps: a plan
+  deleted on another phone leaves its draft here (and sign-out still counts it); after a lost
+  answer the plan can show the added notes and **Unsent notes** together until **Add to plan** is
+  tapped again (it then answers `already_submitted` and clears the draft).
+
+## D56. The Speak or type notes screen (2026-10-12)
+
+- **Decision:**
+  - **Routes** (added to [D48](#d48-the-study-screens-2026-10-09)'s list):
+    `/plans/[id]/speak` (**Speak or type notes**), its own screen rather than a fourth segment on
+    Add material. Add material has a **Speak or type notes** row at the top ("Say what you learned,
+    or type it. Saved on this phone until you add it."), and its segmented control is labelled "Or
+    add a file, photos or a web page". The plan's **Unsent notes** card opens the same screen. After
+    a successful add it goes back to the plan. `/plans/[id]/notes/[sourceId]` (**Your notes**) shows
+    added notes again, read-only, from the synced row (works offline), opened by **Read the notes**
+    on each text source.
+  - **One primary action, Add to plan.** The mic is a 56 dp full-width toggle styled as an outlined
+    control, not a second primary button: "Start speaking", "Pause", "Finishing…" (read out as
+    "Start speaking", "Pause speaking", "Finishing the last words", with a busy state). Its dot grows
+    with the voice and stays still when Reduce motion is on. The status line under it is read out
+    when it changes.
+  - **The notes box** is read-only while listening (so a cursor and arriving words never fight),
+    keeps the newest words in view, and shows words still being heard in grey below it. Each stretch
+    of speech is joined with a space; carrying on after a pause starts a new paragraph. A counter
+    appears from 15,000 characters; over 20,000, the box and **Add to plan** say how to fix it. Its
+    hint says the keyboard's microphone works there too.
+  - **Language:** the phone's language by default (`dictationLang` null in `study-prefs`, so it
+    follows a change on the phone; plain `en` means US English). The list shows the English variants
+    first, then the phone's language, then whatever the phone's speech service lists (Android 13+);
+    languages installed on the phone are marked "offline". It can't be changed while listening.
+  - An optional **Name** (default "Notes, 12 Oct") and **Clear the notes** (asks first).
+- **Why:** a separate screen leaves Add material's file, photo and link steps as they were and
+  gives the **Unsent notes** card one place to open. The rest follows D48: one primary action,
+  nothing that needs dragging, and only the server call needs the internet.
+- **Alternatives:** a fourth "Voice" segment on Add material (the research's suggestion: crowded at
+  320 dp, and the draft and the microphone would share a screen with uploads).
+- **Revisit when:** testers have used it: the 60 s quiet pause, the 20,000 limit and the counter
+  are first guesses.
+
+## D57. Google Play: the microphone and Data safety (2026-10-12)
+
+- **Decision (to confirm before release):**
+  - `RECORD_AUDIO` is an ordinary runtime permission, believed not to need Play's Permissions
+    Declaration Form (**verify**). No foreground-service declaration: there is no service.
+  - **Data safety, on-device recognition:** the audio never leaves the phone, so it isn't
+    "collected" (**verify** Google's definition).
+  - **Data safety, Google's online service:** the audio goes from the phone's speech service (a
+    Google app) to Google, never through DualRep's code or servers. Whether Play counts that as
+    DualRep collecting "Voice or sound recordings" is **unclear: get advice**, together with the
+    Anthropic and Gemini question in [ANDROID.md 5.5](ANDROID.md#55-data-safety-draft). The careful
+    answer would be: collected, processed ephemerally, for app functionality, optional, not shared.
+  - **The notes' text** is collected either way (App activity → other user-generated content),
+    like other material, and goes to Anthropic through Tracy to make the outline and cards.
+  - **The privacy policy** needs a microphone line, for example: "When you speak your notes, your
+    phone's speech recognition turns your voice into text. On phones that support it, this happens
+    on the phone. Otherwise your phone sends the audio to Google's speech service. DualRep never
+    records or stores your voice; only the text you choose to add is uploaded."
+- **Why:** each permission becomes a Play declaration or a Data safety answer, and the online path
+  should be plain both to the person (the status line says it) and to Play.
+- **Alternatives:** on-device only (every phone below Android 13, and many above, would have no
+  speech-to-text in the app).
+- **Revisit when:** the Play Console listing is filled in (Phase 5), or Google's definitions can be
+  read in full (the research could only see search excerpts).
